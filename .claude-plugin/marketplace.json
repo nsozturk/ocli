@@ -1,0 +1,20 @@
+{
+  "name": "ocli",
+  "owner": { "name": "Enes Öztürk" },
+  "metadata": {
+    "description": "Live, workflow-style progress for headless coding CLIs inside Claude Code.",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "ocli-monitor",
+      "source": "./plugin",
+      "description": "Workflow-style live cards for headless coding-CLI runs (Codex, opencode, agy, Muse) from normalized live event files.",
+      "version": "0.2.0",
+      "author": { "name": "Enes Öztürk" },
+      "license": "MIT",
+      "keywords": ["codex", "opencode", "antigravity", "muse", "live", "workflow", "orchestration"],
+      "category": "development"
+    }
+  ]
+}

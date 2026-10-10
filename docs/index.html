@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ocli — live, workflow-style progress for headless coding CLIs in Claude Code</title>
+<meta name="description" content="ocli streams Codex, opencode, Antigravity agy and Muse runs into normalized live-event files and draws them as Workflow-style cards with phases inside Claude Code.">
+<link rel="canonical" href="https://&lt;owner&gt;.github.io/ocli/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ocli">
+<meta property="og:title" content="ocli — live progress for headless coding CLIs in Claude Code">
+<meta property="og:description" content="A dispatcher that normalizes each CLI's JSON event stream, and a Claude Code plugin that draws the runs as live Workflow-style cards.">
+<meta property="og:image" content="https://&lt;owner&gt;.github.io/ocli/assets/banner.png">
+<meta property="og:url" content="https://&lt;owner&gt;.github.io/ocli/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="ocli — live progress for headless coding CLIs in Claude Code">
+<meta name="twitter:description" content="Codex, opencode, agy and Muse runs as live Workflow-style cards in Claude Code.">
+<meta name="twitter:image" content="https://&lt;owner&gt;.github.io/ocli/assets/banner.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "ocli",
+  "softwareVersion": "0.2.0",
+  "description": "Live, workflow-style progress for headless coding CLIs (Codex, opencode, Antigravity agy, Muse) inside Claude Code: a dispatcher that writes normalized live-event files and a Claude Code plugin that draws them as cards.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": { "@type": "Person", "name": "Enes Öztürk" },
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "keywords": "claude code, plugin, codex, opencode, antigravity, gemini, muse, coding agents, orchestration, live events"
+}
+</script>
+<style>
+:root{--bg:#090d16;--card-bg:#0f172a;--accent:#8b5cf6;--accent2:#22d3ee;--border:#1e293b;--text:#e2e8f0;--muted:#94a3b8;--code:#0b1222}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+a{color:var(--accent2)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;padding:12px 20px;background:rgba(9,13,22,.92);border-bottom:1px solid var(--border);backdrop-filter:blur(6px)}
+.brand{font:700 20px ui-monospace,Menlo,monospace;background:linear-gradient(90deg,#a78bfa,#22d3ee);-webkit-background-clip:text;background-clip:text;color:transparent}
+.tag{font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:1px 8px}
+.nav .gh{margin-left:auto;color:var(--text);text-decoration:none;border:1px solid var(--border);border-radius:8px;padding:4px 10px}
+.wrap{display:grid;grid-template-columns:240px minmax(0,1fr);max-width:1180px;margin:0 auto}
+aside{position:sticky;top:57px;align-self:start;height:calc(100vh - 57px);overflow:auto;padding:20px 16px;border-right:1px solid var(--border)}
+aside input{width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text)}
+aside a{display:block;padding:5px 8px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:14px}
+aside a.active,aside a:hover{color:var(--text);background:var(--card-bg)}
+aside .group{margin:16px 0 4px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#64748b}
+main{padding:24px 32px 80px;min-width:0}
+.banner-hero img{width:100%;border-radius:12px;border:1px solid var(--border)}
+section{padding-top:12px}
+h1{font-size:30px;margin:24px 0 8px}
+h2{font-size:22px;margin:36px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px}
+pre{position:relative;background:var(--code);border:1px solid var(--border);border-radius:10px;padding:14px 16px;overflow:auto;font-size:13.5px;line-height:1.5}
+pre button{position:absolute;top:8px;right:8px;font-size:12px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--muted);cursor:pointer}
+table{border-collapse:collapse;width:100%;font-size:14px;display:block;overflow:auto}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--card-bg)}
+:not(pre)>code{background:var(--card-bg);border:1px solid var(--border);border-radius:5px;padding:1px 5px;font-size:.9em}
+.hidden{display:none}
+@media (max-width:820px){.wrap{grid-template-columns:1fr}aside{position:static;height:auto;border-right:0;border-bottom:1px solid var(--border)}main{padding:16px}}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <span class="brand">ocli</span><span class="tag">v0.2.0</span><span class="tag">MIT</span>
+  <a class="gh" href="https://github.com/&lt;owner&gt;/ocli">GitHub</a>
+</nav>
+<div class="wrap">
+<aside>
+  <input id="q" type="search" placeholder="Search docs…" aria-label="Search docs">
+  <div class="group">Overview</div>
+  <a href="#overview">What it is</a>
+  <a href="#card">The card</a>
+  <div class="group">Use</div>
+  <a href="#quick-start">Quick start</a>
+  <a href="#flags">Dispatcher flags</a>
+  <a href="#policy">Policy and routes</a>
+  <a href="#permissions">Permissions</a>
+  <div class="group">Architecture</div>
+  <a href="#how">How it works</a>
+  <a href="#contract">Live-event contract</a>
+  <a href="#limitations">Limitations</a>
+  <div class="group">AI agents</div>
+  <a href="#agents">Agent integration</a>
+</aside>
+<main>
+<div class="banner-hero">
+  <img src="assets/banner.png" onerror="this.src='../assets/banner.png'" alt="ocli banner: live, workflow-style progress for headless coding CLIs in Claude Code">
+</div>
+
+<section id="overview">
+<h1>ocli</h1>
+<p>Live, workflow-style progress for headless coding CLIs inside Claude Code. When Claude Code
+orchestrates Codex, opencode, Antigravity <code>agy</code> or Muse as background developers, each
+one runs out of sight. ocli is a <strong>dispatcher</strong> that runs one CLI per call and turns its
+native JSON event stream into one normalized live-event file per run, and a <strong>Claude Code
+plugin</strong> that draws those runs as Workflow-style cards with phases, live.</p>
+</section>
+
+<section id="card">
+<h2>The card</h2>
+<pre><code>╭──────────────────────────────────────────────╮
+│ fix-parser                             4m12s │
+│ ocli · Running                               │
+│ 4 runs · 131k tokens                         │
+│ Fix the tokenizer edge cases                 │
+│ Phases                                       │
+│ ▸ implement ●●● glm-5.3, gpt-6-astra     2/3 │
+│   ↳ tool.end bash: npm test                  │
+│ ▸ review ● muse-spark-1.3-contributor    1/1 │
+╰──────────────────────────────────────────────╯</code></pre>
+<p>One card per task, newest activity first. One dot per run (running, completed, blocked or stale,
+failed). Press a phase row to expand it into its runs. Ended runs raise one toast each.</p>
+</section>
+
+<section id="quick-start">
+<h2>Quick start</h2>
+<p>1. Install the plugin in a terminal session of Claude Code:</p>
+<pre><code>/plugin install ocli-monitor --marketplace &lt;owner&gt;/ocli</code></pre>
+<p>2. Get the dispatcher (Node.js 20+, no dependencies) and make the policy yours:</p>
+<pre><code>git clone https://github.com/&lt;owner&gt;/ocli.git
+cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json</code></pre>
+<p>The example routes pin the models they were verified with. Set each route's <code>model</code> to
+one your CLI lists, read <a href="#permissions">Permissions and sandboxing</a>, and dispatch each
+route once by hand before you trust it.</p>
+<p>3. Keep the run files out of git: they hold full prompts and raw transcripts. Add to the
+project's <code>.gitignore</code>:</p>
+<pre><code>orchestra/
+.orchestra-last.md</code></pre>
+<p>4. Dispatch from your project root, then open the pane with <code>/ocli</code>:</p>
+<pre><code>node /path/to/ocli/dispatcher/dispatch.mjs \
+  --role implement --task fix-parser \
+  --phase implement --title "Fix the tokenizer edge cases" \
+  --prompt "$(cat brief.md)" --verify "npm test"</code></pre>
+</section>
+
+<section id="flags">
+<h2>Dispatcher flags</h2>
+<table>
+<tr><th>flag</th><th>meaning</th></tr>
+<tr><td><code>--role</code></td><td>a policy route: <code>implement</code> (opencode), <code>reason</code> (codex), <code>breadth</code> (agy), <code>muse</code></td></tr>
+<tr><td><code>--task</code></td><td>groups runs into one card; <code>[A-Za-z0-9][A-Za-z0-9._-]*</code></td></tr>
+<tr><td><code>--prompt</code></td><td>the brief, passed as one argv element, never through a shell</td></tr>
+<tr><td><code>--phase</code></td><td>the card phase (default: the role)</td></tr>
+<tr><td><code>--title</code></td><td>what the run is for (default: the prompt's first line)</td></tr>
+<tr><td><code>--root</code></td><td>the workspace the CLI works in (default: cwd)</td></tr>
+<tr><td><code>--verify</code></td><td>a command run afterwards; its exit code becomes <code>score</code> 1/0</td></tr>
+<tr><td><code>--suffix</code></td><td>per-run text appended last, keeping the prompt prefix cache-stable</td></tr>
+<tr><td><code>--parent</code></td><td>the record id of the run this one continues</td></tr>
+</table>
+<p>Exit codes: <code>0</code> recorded, <code>1</code> verifier failed, <code>2</code> refused, CLI
+not startable, or errored. A failed or blocked run that left the work tree unchanged is unscored
+(<code>score: null</code>) even when the verifier passes. Live files go to <code>&lt;cwd&gt;/orchestra/live</code>; <code>ORCHESTRA_LIVE_DIR</code>
+moves them (then set the plugin's <code>liveDirs</code> to the same absolute dir).</p>
+</section>
+
+<section id="policy">
+<h2>Policy and routes</h2>
+<p><code>dispatcher/policy.json</code> wins when it exists; otherwise
+<code>dispatcher/policy.example.json</code> is used. Each route names a CLI, a model and an argv
+template with the placeholders <code>{model} {effort} {variant} {task} {root} {prompt}</code>. A route
+whose <code>status</code> is not <code>ok</code> is refused. The <code>_notes</code> of each route
+record the CLI facts that bite: agy ignores the cwd and stops when the model waits on a long command,
+opencode needs <code>--auto</code> and <code>--dir</code>, a Muse wrapper may turn the sandbox off.</p>
+</section>
+
+<section id="permissions">
+<h2>Permissions and sandboxing</h2>
+<p>A headless CLI cannot answer a permission prompt, so the example routes pass each CLI's own
+no-prompt flags. <strong>Only the codex routes run inside a sandbox</strong>
+(<code>-s workspace-write</code> confines writes to the worktree). opencode (<code>--auto</code>),
+Muse (<code>--disable-approval</code>) and agy (<code>--dangerously-skip-permissions</code>) run with
+every approval off, and a git worktree is not a security boundary: such an agent can read and write
+anything your user can, use the network and push with your git credentials. Run those routes only
+in a disposable VM or container, or under a dedicated user account. The agy <code>breadth</code>
+route ships <code>unverified</code> and is refused until you set it to <code>ok</code> in your own
+policy.</p>
+</section>
+
+<section id="how">
+<h2>How it works</h2>
+<pre><code> dispatch.mjs ── argv, stdin closed ──▶ codex exec / opencode run / agy / muse
+      ▲                                         │ JSON lines on stdout
+      └──────── events.mjs normalize() ◀────────┘
+      │ append, 0600
+      ├─▶ orchestra/live/&lt;task&gt;/&lt;runId&gt;.jsonl      normalized events (v1) ──▶ ocli-monitor pane
+      ├─▶ orchestra/live/&lt;task&gt;/&lt;runId&gt;.raw.jsonl  every raw line
+      └─▶ orchestra/tree/&lt;task&gt;.jsonl               one record per finished run</code></pre>
+<p>Quota claims are checked: transcript text that quotes "rate limit" is not a refusal. A run is
+<code>blocked</code> only when the provider's usage counter (codex) or the CLI's own error event
+confirms it. No verifier means <code>score: null</code>; unknown is never written as 0.</p>
+</section>
+
+<section id="contract">
+<h2>Live-event contract</h2>
+<p>Every line carries <code>v:1</code>, <code>runId</code>, a contiguous <code>seq</code>, the
+dispatcher's receipt time <code>at</code>, <code>task</code>, <code>role</code>, <code>cli</code> and
+a <code>kind</code>: <code>run.start</code>, <code>step</code>, <code>message</code>,
+<code>warn</code>, <code>tool.start</code>, <code>tool.end</code>, <code>usage</code>,
+<code>unparsed</code>, <code>run.end</code>. <code>run.end.status</code> is <code>completed</code>,
+<code>failed</code>, <code>blocked</code>, <code>spawn-error</code> or <code>dispatch-error</code>.
+Any tool that writes this contract shows up in the pane. Full specification:
+<a href="https://github.com/&lt;owner&gt;/ocli/blob/main/docs/LIVE-EVENTS.md">docs/LIVE-EVENTS.md</a>.</p>
+</section>
+
+<section id="limitations">
+<h2>Limitations</h2>
+<ul>
+<li>Claude Code 2.1.294 has no <code>$.ui.notify</code> and no <code>$.session.root</code>: blocked runs arrive as toasts, and the default live dir comes from the session cwd.</li>
+<li>In the desktop app the pane appears only after the plugin was installed from a terminal session.</li>
+<li>Error event shapes for agy and Muse (and codex <code>turn.failed</code>, opencode <code>error</code>) are derived from source, not captured.</li>
+<li>Only codex exposes a local usage counter; other refusals are labelled unconfirmed.</li>
+</ul>
+</section>
+
+<section id="agents">
+<h2>Agent integration</h2>
+<p><code>AGENTS.md</code> is the contract for coding agents working in or with this repo.
+<code>GLOBAL_AGENT_RULE.md</code> is a standalone snippet to paste into your agent's global
+instructions so a lead agent dispatches through ocli by default.</p>
+<pre><code>node &lt;ocli&gt;/dispatcher/dispatch.mjs --role reason --task review-42 --phase review \
+  --title "Review slice 42" --root ../repo-review-42 --prompt "$(cat review.md)"</code></pre>
+</section>
+</main>
+</div>
+<script>
+document.querySelectorAll('pre').forEach(function (pre) {
+  var b = document.createElement('button'); b.type = 'button'; b.textContent = 'Copy';
+  b.onclick = function () {
+    navigator.clipboard.writeText(pre.querySelector('code').innerText).then(function () {
+      b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1200);
+    });
+  };
+  pre.appendChild(b);
+});
+var links = Array.prototype.slice.call(document.querySelectorAll('aside a'));
+var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+document.getElementById('q').addEventListener('input', function (e) {
+  var q = e.target.value.trim().toLowerCase();
+  sections.forEach(function (s, i) {
+    var hit = !q || s.textContent.toLowerCase().indexOf(q) !== -1;
+    s.classList.toggle('hidden', !hit); links[i].classList.toggle('hidden', !hit);
+  });
+});
+window.addEventListener('scroll', function () {
+  var current = 0;
+  sections.forEach(function (s, i) { if (s.getBoundingClientRect().top < 120) current = i; });
+  links.forEach(function (a, i) { a.classList.toggle('active', i === current); });
+});
+</script>
+</body>
+</html>

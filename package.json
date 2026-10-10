@@ -1,0 +1,13 @@
+{
+  "name": "ocli",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Live, workflow-style progress for headless coding CLIs (Codex, opencode, Antigravity agy, Muse) inside Claude Code.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Enes Öztürk",
+  "engines": { "node": ">=20" },
+  "keywords": ["claude-code", "claude-code-plugin", "codex", "opencode", "gemini", "antigravity", "muse", "coding-agents", "orchestration", "live-events"],
+  "scripts": { "test": "vitest run" },
+  "devDependencies": { "vitest": "^3.2.7" }
+}
