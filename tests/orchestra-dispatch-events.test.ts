@@ -11,7 +11,7 @@ vi.mock('node:fs/promises', async original => ({ ...await original<Record<string
 vi.mock('../dispatcher/witness.mjs', async original => ({ ...await original<Record<string, unknown>>(), witness: mocks.witness }));
 vi.mock('../dispatcher/usage.mjs', () => ({ readCodexUsage: vi.fn(async () => ({status:'unknown'})), readGlmUsage: vi.fn(async () => ({status:'unknown'})), claudeUsageFromLead: vi.fn(), usageDelta: mocks.delta, gateFor: vi.fn() }));
 // @ts-expect-error plain ESM tooling
-import { main, runPhase, runTitle } from '../dispatcher/dispatch.mjs';
+import { main, runBrief, runPhase, runTitle } from '../dispatcher/dispatch.mjs';
 const realWitness = (await vi.importActual<{ witness: (...args: unknown[]) => unknown }>('../dispatcher/witness.mjs')).witness;
 const originalPolicy = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
 let policy: typeof originalPolicy;
@@ -776,4 +776,38 @@ it('the prefix hash never alters the prompt or argv the CLI is spawned with', as
   expect(withSuffix.argv.some(arg => arg.includes(withSuffix.start.prefixSha))).toBe(false);
   expect(withSuffix.node.prompt).toBe('shared spec');
   expect(withSuffix.node.promptBytes).toBe(Buffer.byteLength('shared spec', 'utf8'));
+});
+
+// run.start.brief: what the person reads in the pane's expanded card, never the whole prompt.
+const SPEC = '\n# Slice RK1 \u2014 catalogue adapter\n\nWrite the catalogue adapter for\nthe GLM route.\n\n## Details\nSECRET-LATER-PARAGRAPH\n';
+it('runBrief: the --suffix, the first heading and the first paragraph, folded, joined with " · "', () => {
+  expect(runBrief(undefined, SPEC, 'slice RK1 · worktree ../wt-rk1')).toBe('slice RK1 · worktree ../wt-rk1 · Slice RK1 \u2014 catalogue adapter · Write the catalogue adapter for the GLM route.');
+  // No suffix, no heading: the first paragraph alone; it never reaches past the first blank line.
+  expect(runBrief(undefined, 'line one\nline two\n\nlater', undefined)).toBe('line one line two');
+  // A paragraph ends at a heading too, and a prompt of headings only gives the first heading.
+  expect(runBrief(undefined, 'intro\n# H\nbody', '')).toBe('H · intro');
+  expect(runBrief(undefined, '## Only\n### Headings', '')).toBe('Only');
+  expect(runBrief(undefined, SPEC, undefined)).not.toContain('SECRET-LATER-PARAGRAPH');
+});
+it('runBrief: --brief wins (an empty one falls back); escapes, controls and bidi stripped; at most 600 code points, never a split pair', () => {
+  expect(runBrief('  Port the\n adapter  ', SPEC, 'suffix')).toBe('Port the adapter');
+  expect(runBrief('', 'p', 's')).toBe('s · p');
+  expect(runBrief(undefined, 'a\u001b[31mb\u001b]8;;https://x\u0007c\u0007d \u202eе\u2066x\u2069 \u200by', undefined)).toBe('abcd еx y');
+  const long = runBrief(undefined, 'a'.repeat(599) + '\u{1F600}' + 'z'.repeat(5000), undefined);
+  expect([...long]).toHaveLength(600);
+  expect(long.endsWith('\u{1F600}')).toBe(true);
+  expect([...runBrief('b'.repeat(900), '', '')]).toHaveLength(600);
+});
+it('run.start carries the brief: derived from --suffix and the prompt, or --brief as given', async () => {
+  await main(['--role', 'reason', '--task', 'mock-live', '--prompt', SPEC, '--suffix', 'slice RK1']);
+  expect(events()[0]).toMatchObject({ kind: 'run.start', brief: 'slice RK1 · Slice RK1 \u2014 catalogue adapter · Write the catalogue adapter for the GLM route.' });
+  vi.resetAllMocks();
+  mocks.policy.mockImplementation(async () => JSON.stringify(policy));
+  mocks.spawn.mockImplementation(() => {
+    child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), pid: 126 });
+    queueMicrotask(() => child.emit('close', 0, null));
+    return child;
+  });
+  await main(['--role', 'reason', '--task', 'mock-live', '--brief', 'Own words', '--prompt', SPEC]);
+  expect(events()[0].brief).toBe('Own words');
 });

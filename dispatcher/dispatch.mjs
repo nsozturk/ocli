@@ -22,6 +22,7 @@
 //   node dispatcher/dispatch.mjs --role implement --task fix-parser --prompt "..." [--verify "npm test"]
 //                     [--title <what it is for>] [--phase <card phase, default: the role>]
 //                     [--parent <nodeId>] [--root <dir>] [--suffix <per-run text, appended LAST for cache stability>]
+//                     [--brief <what the person reads in the pane; default: derived from --suffix and the prompt>]
 //   node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task fix-parser
 //                                (writes the task's plan for the pane's card; spawns nothing, records no node)
 
@@ -142,6 +143,28 @@ export function runTitle(title, prompt) {
   return paneLabel(title || String(prompt ?? '').split('\n').find(line => line.trim()) || '', 120);
 }
 
+const BRIEF_MAX = 600;
+const isHeading = line => /^\s*#{1,6}\s/.test(line);
+
+/** What the run was asked to do, for the person reading the pane's expanded card: --brief, else the
+ * --suffix (the slice line and worktree), the prompt's first markdown heading and its first
+ * non-heading paragraph, joined with " · ". Each part is whitespace-folded first (paneLabel strips a
+ * newline rather than folding it), then cleaned like the title; at most 600 code points. Never the
+ * whole prompt. */
+export function runBrief(brief, prompt, suffix) {
+  const label = text => paneLabel(String(text ?? '').replace(/\s+/g, ' '), BRIEF_MAX);
+  // || not ??: an empty (or all-control) --brief falls back to the derived one, as --title does.
+  const own = label(brief);
+  if (own) return own;
+  const lines = String(prompt ?? '').split('\n');
+  const heading = (lines.find(isHeading) ?? '').replace(/^\s*#+\s*/, '');
+  const paragraph = [];
+  for (let i = lines.findIndex(line => line.trim() && !isHeading(line)); i >= 0 && i < lines.length && lines[i].trim() && !isHeading(lines[i]); i++) {
+    paragraph.push(lines[i]);
+  }
+  return label([suffix, heading, paragraph.join(' ')].map(label).filter(Boolean).join(' · '));
+}
+
 /** Which phase of the task a run belongs to, for the pane's card: --phase, cleaned like the title
  * and at most 40 code points; absent, or empty once cleaned, the route's role. */
 export function runPhase(phase, role) {
@@ -218,7 +241,8 @@ function createLive(args, route, workspace, prefixSha) {
     get events() { return events; },
     start(pid) {
       emit({ kind: 'run.start', model: route.model, root: workspace, parentId: args.parent ?? null, pid,
-        title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role), prefixSha });
+        title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role), prefixSha,
+        brief: runBrief(args.brief, args.prompt, args.suffix) });
     },
     line(stream, line) {
       const at = new Date().toISOString();

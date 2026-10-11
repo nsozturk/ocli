@@ -146,6 +146,7 @@ there is simply no card.
 | `--verify` | a shell command run after the CLI; its exit code becomes `score` 1/0 |
 | `--suffix` | per-run text appended last, so the shared prompt prefix stays cache-stable |
 | `--parent` | the record id of the run this one continues |
+| `--brief` | what the person reads in the pane's expanded card (default: the `--suffix`, the prompt's first heading and first paragraph, at most 600 code points) |
 | `--declare-phases` | with `--task` only: write the task's plan (comma-separated phase names) and exit |
 
 Exit codes: `0` the run was recorded (whatever the CLI's own exit code), `1` `--verify` failed,

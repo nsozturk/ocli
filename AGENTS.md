@@ -22,7 +22,7 @@ working in this repository or using it to dispatch other CLIs.
 ```sh
 node dispatcher/dispatch.mjs --role <route> --task <task> --prompt "<brief>" \
   [--phase <card phase>] [--title <one line>] [--root <workspace>] [--verify "<cmd>"] \
-  [--suffix <per-run text>] [--parent <recordId>]
+  [--suffix <per-run text>] [--parent <recordId>] [--brief <what the person reads in the pane>]
 node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task <task>   # plan only, no run
 node dispatcher/digest.mjs [--since <ISO>] [--json 1]                                # last 12 hours
 ```
