@@ -170,13 +170,17 @@ Every newly appended dispatch node has an additive `candidates` field computed b
 Old nodes remain unchanged and may lack it. This is recording only: eligibility never changes
 dispatch behavior, even when the chosen route is ineligible. No new provider calls are made.
 
-- `v: 1`, `rule: "lead-explicit-role"`, `chosen`: the explicitly requested role.
+- `v: 1`, `rule`: `"lead-explicit-role"` (an explicit `--role`) or `"aa-rank"` (`--role auto`), `chosen`: the route that ran.
 - `reason`: optional `--pick-reason`, cleaned like a pane label and capped at 200 Unicode code
   points; absent or empty becomes `null`.
 - `rotation`: a copy of `developers.rotation.order`, or `[]` if absent.
 - `routes`: dispatchable policy routes (those with `argv`) in policy key order, skipping
   `__proto__`, `constructor`, and `prototype`. Each records `role`, `cli`, `model`,
-  `inRotation`, policy `status`, `gate`, `gateSource`, `eligible`, and `excludedBy`.
+  `inRotation`, policy `status`, `gate`, `gateSource`, `eligible`, `excludedBy`, and `aa`: the
+  Artificial Analysis Intelligence Index of exactly this (cli, model, effort) from
+  `dispatcher/model-ranking.json` (else the shipped example), or `null` when that reasoning level was not
+  measured or no ranking file is readable. `aa` is an opinion recorded beside the facts; it never
+  changes eligibility.
 - Gate source precedence: `no-budget` → `uncapped` → `live` (chosen capped route with usable
   `usageBefore`) → `tree` → `none`. Tree readings use the newest `recordedAt` across files
   (later lines win ties; missing timestamps sort oldest), preferring usable `usageAfter`

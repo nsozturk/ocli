@@ -10,6 +10,7 @@ live dir, and never spawns or owns a CLI process.
 
 ## Changes
 
+- **0.5.0** — Cline (Cline Pass) is a developer CLI: its `--json` stream (tool calls, usage, final text, errors) feeds the cards like the others. The dispatcher records each route's Artificial Analysis Intelligence Index (`aa`), lists routes by it (`--list-routes`) and can pick by it (`--role auto [--min-aa N]`).
 - **0.4.0** — The card's head is the toggle: it opens the card in place, with one block per run
   saying what the run was asked (`run.start.brief`, new and optional in the live contract), where it
   works, what it is doing and how it ended; the closed card keeps one line per phase (parts joined

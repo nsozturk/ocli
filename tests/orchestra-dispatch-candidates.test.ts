@@ -46,6 +46,7 @@ const codexHistory = (usedPercent: number, recordedAt: string) => ({
 
 describe('dispatch records the candidate set (RS1)', () => {
   let treeDir: string;
+  let currentPolicy: any;
   let exitCode: typeof process.exitCode;
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -55,9 +56,14 @@ describe('dispatch records the candidate set (RS1)', () => {
     treeDir = mkdtempSync(path.resolve('tmp', 'rs1-tree-'));
     vi.stubEnv('ORCHESTRA_TREE_DIR', treeDir);
     const fsp = await import('node:fs/promises');
-    const policy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
-    policy.developers = { rotation: { order: ['implement', 'reason', 'muse'] } };
-    vi.spyOn(fsp, 'readFile').mockResolvedValue(JSON.stringify(policy));
+    currentPolicy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+    currentPolicy.developers = { rotation: { order: ['implement', 'reason', 'muse'] } };
+    // Policy reads get the test policy; every other read (the ranking file) is real.
+    const realRead = fsp.readFile.bind(fsp);
+    vi.spyOn(fsp, 'readFile').mockImplementation((async (file: any, ...rest: any[]) =>
+      /policy(\.example)?\.json$/.test(String(file)) ? JSON.stringify(currentPolicy) : realRead(file, ...rest)) as any);
+    // No ranking unless a test provides one.
+    vi.stubEnv('ORCHESTRA_RANKING_FILE', path.join(treeDir, 'no-ranking.json'));
     mocks.gate.mockImplementation((...a: unknown[]) => realGateFor(...a));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -93,7 +99,7 @@ describe('dispatch records the candidate set (RS1)', () => {
     expect(candidates().rule).toBe('lead-explicit-role');
     expect(candidates().chosen).toBe('reason');
     expect(candidates().routes.map((r: { role: string }) => r.role))
-      .toEqual(['breadth', 'implement', 'reason', 'easy', 'muse']);
+      .toEqual(['breadth', 'implement', 'reason', 'easy', 'muse', 'cline-mimo', 'cline-qwen']);
     // One line of valid JSON: the append is a single record, newline-terminated.
     expect(mocks.appendFile.mock.calls[0][0]).toBe(path.join(treeDir, 'mock-candidates.jsonl'));
     expect(mocks.appendFile.mock.calls[0][1].slice(0, -1)).not.toContain('\n');
@@ -103,7 +109,7 @@ describe('dispatch records the candidate set (RS1)', () => {
     await dispatch();
     expect(candidates().rotation).toEqual(['implement', 'reason', 'muse']);
     const flags = Object.fromEntries(candidates().routes.map((r: { role: string; inRotation: boolean }) => [r.role, r.inRotation]));
-    expect(flags).toEqual({ breadth: false, implement: true, reason: true, easy: false, muse: true });
+    expect(flags).toEqual({ breadth: false, implement: true, reason: true, easy: false, muse: true, 'cline-mimo': false, 'cline-qwen': false });
   });
 
   it('takes the chosen route gate from its own usageBefore reading, with no extra provider call', async () => {
@@ -239,13 +245,11 @@ describe('dispatch records the candidate set (RS1)', () => {
     expect(process.exitCode).toBe(exitCode);
   });
 
-  it('uses an empty rotation when the package policy has none', async () => {
+  it('uses the rotation the example policy ships', async () => {
     const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
-    const fsp = await import('node:fs/promises');
-    vi.spyOn(fsp, 'readFile').mockResolvedValue(fs.readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+    currentPolicy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
     await dispatch();
-    expect(candidates().rotation).toEqual([]);
-    expect(candidates().routes.every((r: { inRotation: boolean }) => !r.inRotation)).toBe(true);
+    expect(candidates().rotation).toEqual(['implement', 'reason', 'muse', 'cline-mimo', 'cline-qwen']);
   });
 
   it('prefers later equal timestamps, ignores missing timestamps and malformed/non-object lines', async () => {
@@ -283,6 +287,78 @@ describe('dispatch records the candidate set (RS1)', () => {
     vi.spyOn(fs, 'readFile').mockResolvedValue(injected);
     await dispatch();
     expect(candidates().routes.map((r: { role: string }) => r.role))
-      .toEqual(['breadth', 'implement', 'reason', 'easy', 'muse']);
+      .toEqual(['breadth', 'implement', 'reason', 'easy', 'muse', 'cline-mimo', 'cline-qwen']);
+  });
+  // --- model ranking (AA Intelligence Index) ---------------------------------------------------
+  const rankingWith = (entries: unknown[]) => {
+    const file = path.join(treeDir, 'ranking.json');
+    writeFileSync(file, JSON.stringify({ schemaVersion: 1, source: 'test', observedAt: '2026-10-11', entries }));
+    vi.stubEnv('ORCHESTRA_RANKING_FILE', file);
+  };
+  const entry = (cli: string, modelArg: string, effortArg: string | null, aa: number) =>
+    ({ model: modelArg, effort: effortArg, aa, access: [{ cli, modelArg, effortArg }] });
+  const policyWith = async (edit: (p: any) => void) => { edit(currentPolicy); };
+
+  it('records the AA score of exactly the route (cli, model, effort); a different effort is unranked', async () => {
+    rankingWith([entry('agy', 'gemini-3.8-flash-high', null, 41), entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 45),
+      entry('codex', 'gpt-6-astra', 'high', 51), entry('cline', 'cline-pass/qwen3.8-max', 'high', 45)]);
+    await dispatch();
+    expect(routeOf('breadth').aa).toBe(41);
+    expect(routeOf('reason').aa).toBe(51);
+    expect(routeOf('implement').aa).toBe(45);
+    // cline-qwen sets no effort; the only entry is for `high`: unranked, never 45.
+    expect(routeOf('cline-qwen').aa).toBeNull();
+    expect(candidates().rule).toBe('lead-explicit-role');
+  });
+
+  it('a missing or unreadable ranking file records aa null everywhere and never costs the dispatch', async () => {
+    vi.stubEnv('ORCHESTRA_RANKING_FILE', path.join(treeDir, 'absent.json'));
+    await dispatch();
+    expect(candidates().error).toBeUndefined();
+    expect(candidates().routes.every((r: { aa: unknown }) => r.aa === null)).toBe(true);
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('--role auto picks the highest-AA eligible route in the rotation and records rule aa-rank', async () => {
+    rankingWith([entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 40), entry('codex', 'gpt-6-astra', 'high', 46),
+      entry('muse', 'muse-spark-1.3-contributor', 'max', 44), entry('agy', 'gemini-3.8-flash-high', null, 99),
+      entry('cline', 'cline-pass/qwen3.8-max', null, 98)]);
+    // auto calls no provider: a capped route is eligible only on a recorded reading under its cap.
+    seedTree(codexHistory(Math.max(0, CAP - 10), '2026-10-11T09:00:00.000Z'));
+    await dispatch('auto');
+    // breadth (99) and cline-qwen (98, eligible) are not in the rotation: never auto-picked.
+    expect(candidates().chosen).toBe('reason');
+    expect(candidates().rule).toBe('aa-rank');
+    expect(candidates().reason).toBe('aa-rank: reason aa=46 over muse aa=44');
+    expect(mocks.spawn.mock.calls[0][0]).toBe('codex');
+  });
+
+  it('--role auto breaks an AA tie by rotation order and never picks an unranked route', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 44), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    seedTree(codexHistory(Math.max(0, CAP - 10), '2026-10-11T09:00:00.000Z'));
+    await policyWith(p => { p.developers.rotation.order = ['muse', 'implement', 'reason']; });
+    await dispatch('auto');
+    expect(candidates().chosen).toBe('muse'); // implement is unranked; muse precedes reason in the rotation
+  });
+
+  it('--role auto with --min-aa above every eligible ranked route refuses and spawns nothing', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 46), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    await expect(dispatch('auto', '--min-aa', '50')).rejects.toThrow(/no eligible ranked route in the rotation at aa >= 50/);
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.appendFile).not.toHaveBeenCalled();
+  });
+
+  it('--role auto treats a capped route with no reading as ineligible (no blind spend, no provider call)', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    await dispatch('auto');
+    expect(candidates().chosen).toBe('muse');
+    expect(mocks.codex).not.toHaveBeenCalled();
+  });
+
+  it('--role auto never picks an ineligible route however high its AA', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    seedTree(codexHistory(CAP, '2026-10-11T09:00:00.000Z')); // codex at its cap in the tree -> budget-stop
+    await dispatch('auto');
+    expect(candidates().chosen).toBe('muse');
   });
 });

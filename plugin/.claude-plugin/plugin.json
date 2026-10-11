@@ -1,6 +1,6 @@
 {
   "name": "ocli-monitor",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "ocli (Orchestrated CLI): run headless coding CLIs (Codex, opencode, Antigravity agy, Muse) under one lead and watch them live in Claude Code as Workflow-style cards.",
   "types": "./types/index.d.ts",
   "userConfig": {

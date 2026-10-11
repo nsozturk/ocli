@@ -7,3 +7,4 @@ dispatcher/policy.json
 # Written into a worktree by developer CLIs during a dispatch
 .orchestra-last.md
 .roundtable/
+dispatcher/model-ranking.json

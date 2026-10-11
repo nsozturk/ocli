@@ -1,0 +1,676 @@
+{
+  "schemaVersion": 1,
+  "source": "Artificial Analysis Intelligence Index",
+  "observedAt": "2026-10-11",
+  "_source": "EXAMPLE. Artificial Analysis Intelligence Index scores recorded 2026-10-11 for (model, reasoning level) pairs one machine could reach. Copy to dispatcher/model-ranking.json (gitignored) and keep only what YOUR CLIs can reach; refresh the scores from artificialanalysis.ai yourself — nothing here fetches them.",
+  "_rules": "One entry per (model, effort) exactly as AA measured it. effort null = AA published a single score with no reasoning level; it matches only a route that sets no effort. A route whose (cli, model, effort) is not listed is UNRANKED (aa null) — never the nearest neighbour. aa is stored, rank is derived at read time over the set being compared. access[].effortArg is the value the route's effort (or opencode variant) must equal; null = the route sets none (agy encodes the level in the model id).",
+  "entries": [
+    {
+      "model": "claude-opus-5.5",
+      "effort": "max",
+      "aa": 58,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-opus-5-5",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-opus-5.5",
+      "effort": "xhigh",
+      "aa": 56,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-opus-5-5",
+          "effortArg": "xhigh"
+        }
+      ]
+    },
+    {
+      "model": "claude-sonnet-5.5",
+      "effort": "max",
+      "aa": 56,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-sonnet-5-5",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-opus-5.5",
+      "effort": "high",
+      "aa": 54,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-opus-5-5",
+          "effortArg": "high"
+        },
+        {
+          "cli": "agy",
+          "modelArg": "claude-opus-5-5-high",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "claude-fable-5.1",
+      "effort": "max",
+      "aa": 53,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-fable-5-1",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-fable-5.1",
+      "effort": "xhigh",
+      "aa": 53,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-fable-5-1",
+          "effortArg": "xhigh"
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "max",
+      "aa": 53,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6-astra",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-sonnet-5.5",
+      "effort": "xhigh",
+      "aa": 52,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-sonnet-5-5",
+          "effortArg": "xhigh"
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "xhigh",
+      "aa": 52,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6-astra",
+          "effortArg": "xhigh"
+        }
+      ]
+    },
+    {
+      "model": "claude-fable-5.1",
+      "effort": "high",
+      "aa": 51,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-fable-5-1",
+          "effortArg": "high"
+        }
+      ]
+    },
+    {
+      "model": "claude-opus-5.5",
+      "effort": "medium",
+      "aa": 51,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-opus-5-5",
+          "effortArg": "medium"
+        },
+        {
+          "cli": "agy",
+          "modelArg": "claude-opus-5-5-medium",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "aa": 51,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6-astra",
+          "effortArg": "high"
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "aa": 50,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6-astra",
+          "effortArg": "medium"
+        }
+      ]
+    },
+    {
+      "model": "claude-fable-5.1",
+      "effort": "medium",
+      "aa": 49,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-fable-5-1",
+          "effortArg": "medium"
+        }
+      ]
+    },
+    {
+      "model": "muse-spark-1.3",
+      "effort": "max",
+      "aa": 48,
+      "creator": "Meta",
+      "access": [
+        {
+          "cli": "muse",
+          "modelArg": "muse-spark-1.3-contributor",
+          "effortArg": "max"
+        },
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/muse-spark-1.3-contributor",
+          "effortArg": "max"
+        }
+      ],
+      "note": "cline --thinking has no 'max' level (none..xhigh): the cline access is listed for completeness and is unreachable until cline exposes max"
+    },
+    {
+      "model": "claude-fable-5.1",
+      "effort": "low",
+      "aa": 47,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-fable-5-1",
+          "effortArg": "low"
+        }
+      ]
+    },
+    {
+      "model": "claude-sonnet-5.5",
+      "effort": "high",
+      "aa": 47,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-sonnet-5-5",
+          "effortArg": "high"
+        },
+        {
+          "cli": "agy",
+          "modelArg": "claude-sonnet-5-5-high",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "effort": "low",
+      "aa": 46,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6-astra",
+          "effortArg": "low"
+        }
+      ]
+    },
+    {
+      "model": "mimo-v2.6-pro",
+      "effort": null,
+      "aa": 46,
+      "creator": "Xiaomi",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/mimo-v2.6-pro",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "glm-5.3",
+      "effort": "max",
+      "aa": 45,
+      "creator": "Z AI",
+      "access": [
+        {
+          "cli": "opencode",
+          "modelArg": "zai-coding-plan/glm-5.3",
+          "effortArg": "max"
+        },
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/glm-5.3",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "muse-spark-1.3",
+      "effort": "xhigh",
+      "aa": 45,
+      "creator": "Meta",
+      "access": [
+        {
+          "cli": "muse",
+          "modelArg": "muse-spark-1.3-contributor",
+          "effortArg": "xhigh"
+        },
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/muse-spark-1.3-contributor",
+          "effortArg": "xhigh"
+        }
+      ]
+    },
+    {
+      "model": "qwen3.8-max",
+      "effort": null,
+      "aa": 45,
+      "creator": "Alibaba",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/qwen3.8-max",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "kimi-k3",
+      "effort": "max",
+      "aa": 44,
+      "creator": "Kimi",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/kimi-k3",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "step-5-preview",
+      "effort": null,
+      "aa": 44,
+      "creator": "StepFun",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-free/step-5-preview",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "claude-haiku-5.5",
+      "effort": "max",
+      "aa": 43,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-haiku-5-5",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-opus-5.5",
+      "effort": "low",
+      "aa": 42,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-opus-5-5",
+          "effortArg": "low"
+        },
+        {
+          "cli": "agy",
+          "modelArg": "claude-opus-5-5-low",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": null,
+      "aa": 42,
+      "creator": "Z AI",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/glm-5.3-flash",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "effort": "max",
+      "aa": 42,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-5.6-terra",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-haiku-5.5",
+      "effort": "xhigh",
+      "aa": 41,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-haiku-5-5",
+          "effortArg": "xhigh"
+        }
+      ]
+    },
+    {
+      "model": "claude-sonnet-5.5",
+      "effort": "medium",
+      "aa": 41,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-sonnet-5-5",
+          "effortArg": "medium"
+        },
+        {
+          "cli": "agy",
+          "modelArg": "claude-sonnet-5-5-medium",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "effort": "high",
+      "aa": 41,
+      "creator": "Google",
+      "access": [
+        {
+          "cli": "agy",
+          "modelArg": "gemini-3.8-flash-high",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "effort": "medium",
+      "aa": 40,
+      "creator": "Google",
+      "access": [
+        {
+          "cli": "agy",
+          "modelArg": "gemini-3.8-flash-medium",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "deepseek-v4.1-flash",
+      "effort": "max",
+      "aa": 39,
+      "creator": "DeepSeek",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/deepseek-v4.1-flash",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-haiku-5.5",
+      "effort": "high",
+      "aa": 38,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-haiku-5-5",
+          "effortArg": "high"
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "effort": "xhigh",
+      "aa": 38,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-5.6-terra",
+          "effortArg": "xhigh"
+        }
+      ]
+    },
+    {
+      "model": "mimo-v2.6-flash",
+      "effort": null,
+      "aa": 38,
+      "creator": "Xiaomi",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/mimo-v2.6-flash",
+          "effortArg": null
+        },
+        {
+          "cli": "cline",
+          "modelArg": "cline-free/mimo-v2.6-flash",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "claude-sonnet-5.5",
+      "effort": "low",
+      "aa": 36,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-sonnet-5-5",
+          "effortArg": "low"
+        },
+        {
+          "cli": "agy",
+          "modelArg": "claude-sonnet-5-5-low",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "effort": "max",
+      "aa": 36,
+      "creator": "DeepSeek",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/deepseek-v4-pro",
+          "effortArg": "max"
+        }
+      ]
+    },
+    {
+      "model": "claude-haiku-5.5",
+      "effort": "medium",
+      "aa": 34,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-haiku-5-5",
+          "effortArg": "medium"
+        }
+      ]
+    },
+    {
+      "model": "glm-5.3",
+      "effort": "low",
+      "aa": 34,
+      "creator": "Z AI",
+      "access": [
+        {
+          "cli": "opencode",
+          "modelArg": "zai-coding-plan/glm-5.3",
+          "effortArg": "low"
+        },
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/glm-5.3",
+          "effortArg": "low"
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "aa": 34,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-5.6-terra",
+          "effortArg": "high"
+        }
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "effort": "low",
+      "aa": 33,
+      "creator": "Google",
+      "access": [
+        {
+          "cli": "agy",
+          "modelArg": "gemini-3.8-flash-low",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "aa": 30,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-5.6-terra",
+          "effortArg": "medium"
+        }
+      ]
+    },
+    {
+      "model": "kimi-k3",
+      "effort": "low",
+      "aa": 30,
+      "creator": "Kimi",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/kimi-k3",
+          "effortArg": "low"
+        }
+      ]
+    },
+    {
+      "model": "claude-haiku-5.5",
+      "effort": "low",
+      "aa": 29,
+      "creator": "Anthropic",
+      "access": [
+        {
+          "cli": "claude",
+          "modelArg": "claude-haiku-5-5",
+          "effortArg": "low"
+        }
+      ]
+    },
+    {
+      "model": "minimax-m3",
+      "effort": null,
+      "aa": 29,
+      "creator": "MiniMax",
+      "access": [
+        {
+          "cli": "cline",
+          "modelArg": "cline-pass/minimax-m3",
+          "effortArg": null
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "effort": "low",
+      "aa": 27,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-5.6-terra",
+          "effortArg": "low"
+        }
+      ]
+    }
+  ]
+}

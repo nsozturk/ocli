@@ -23,6 +23,9 @@
 //                     [--title <what it is for>] [--phase <card phase, default: the role>]
 //                     [--parent <nodeId>] [--root <dir>] [--suffix <per-run text, appended LAST for cache stability>]
 //                     [--brief <what the person reads in the pane; default: derived from --suffix and the prompt>]
+//                     [--pick-reason <why this route; recorded on the node>]
+//   node dispatcher/dispatch.mjs --role auto [--min-aa 44] ...   (highest-AA eligible route in the rotation; rule aa-rank)
+//   node dispatcher/dispatch.mjs --list-routes [--json]           (routes by AA Intelligence Index; spawns nothing)
 //   node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task fix-parser
 //                                (writes the task's plan for the pane's card; spawns nothing, records no node)
 
@@ -38,6 +41,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { paneLabel } from './pane-label.mjs';
 import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor, BUDGET } from './usage.mjs';
 import { providerForNode, readNodes, latestReading } from './tree-read.mjs';
+import { aaFor, loadRanking } from './ranking.mjs';
 
 /**
  * Which provider's usage counter backs each route. A role absent here has no readable counter, so a
@@ -403,7 +407,7 @@ const NON_CANDIDATE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
  * budget row (or none at all) -> deliberately uncapped -> the chosen route's live usageBefore
  * reading -> the newest recorded tree reading -> no reading anywhere, which is `unknown`, never
  * assumed room (the rotation's skip rule refuses to spend blind on a capped route). */
-function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor }) {
+function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, ranking }) {
   const provider = providerForNode({ cli: route.cli, model: route.model });
   let gate;
   let gateSource;
@@ -442,17 +446,21 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
     ...(gateSource === 'tree' ? { gateReadAt } : {}),
     eligible,
     excludedBy,
+    // AA Intelligence Index of exactly this (cli, model, effort); null = unranked (not measured, or no
+    // ranking file). An opinion recorded beside the facts above, never one of them.
+    aa: aaFor(ranking, route),
   };
 }
 
 /** The full candidate set: every dispatchable route in policy key order, the rotation, the rule
  * that picked (the lead's --role; the dispatcher applies no other), and an optional cleaned
  * --pick-reason. The chosen route MAY be ineligible — that is recorded, never refused. */
-async function buildCandidates({ policy, chosenRole, reasonText, usageBefore }) {
+async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, rule = 'lead-explicit-role' }) {
   const rotationSource = policy?.developers?.rotation?.order;
   const rotation = Array.isArray(rotationSource) ? [...rotationSource] : [];
   const inRotation = new Set(rotation);
   const { nodes } = await readNodes(treeRoot());
+  const ranking = await loadRanking();
   // One tree scan shared by every capped route: provider -> newest recorded reading.
   const readings = new Map();
   const treeReadingFor = provider => {
@@ -464,11 +472,11 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore }) 
     if (NON_CANDIDATE_KEYS.has(role)) continue;
     const route = policy.routes[role];
     if (!route?.argv) continue; // not dispatchable (architect): never a candidate
-    routes.push(candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor }));
+    routes.push(candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, ranking }));
   }
   return {
     v: 1,
-    rule: 'lead-explicit-role',
+    rule,
     chosen: chosenRole,
     reason: paneLabel(reasonText, 200) || null,
     rotation,
@@ -476,11 +484,61 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore }) 
   };
 }
 
+/** Your own dispatcher/policy.json (gitignored) wins; without one, the shipped example is used. */
+async function readPolicy() {
+  const text = await readFile(path.join(HERE, 'policy.json'), 'utf8').catch(error => {
+    if (error?.code !== 'ENOENT') throw error;
+    return readFile(path.join(HERE, 'policy.example.json'), 'utf8');
+  });
+  return JSON.parse(text);
+}
+
+/** Routes ordered for the lead's choice: AA desc, unranked last in policy order. Tree-only gates — no
+ * provider is called to list them (the RS1 boundary). */
+async function rankedCandidates(policy) {
+  const set = await buildCandidates({ policy, chosenRole: null, reasonText: null, usageBefore: null });
+  const order = new Map(set.routes.map((r, i) => [r.role, i]));
+  return [...set.routes].sort((a, b) => (a.aa === null) - (b.aa === null) || (b.aa ?? 0) - (a.aa ?? 0) || order.get(a.role) - order.get(b.role));
+}
+
+/** --list-routes [--json]: the picker. Prints and returns; spawns nothing. */
+async function listRoutes(args) {
+  const policy = await readPolicy();
+  const routes = await rankedCandidates(policy);
+  if ('json' in args) { process.stdout.write(`${JSON.stringify(routes, null, 2)}\n`); return routes; }
+  for (const r of routes) {
+    const effort = policy.routes[r.role]?.effort ?? policy.routes[r.role]?.variant ?? '-';
+    process.stdout.write(`${String(r.aa ?? '-').padStart(3)}  ${r.role.padEnd(16)} ${String(r.cli).padEnd(9)} ${String(r.model).padEnd(40)} ${String(effort).padEnd(7)} `
+      + `${r.eligible ? 'eligible' : `excluded:${r.excludedBy}`}${r.inRotation ? '  [rotation]' : ''}\n`);
+  }
+  process.stdout.write('aa = Artificial Analysis Intelligence Index of exactly this (model, effort); - = not measured at this effort (unranked).\n');
+  return routes;
+}
+
+/** --role auto: the highest-AA eligible route IN THE ROTATION (ties: rotation order), at or above
+ * --min-aa. An unranked route is never auto-picked. No such route -> refuse; nothing is spawned. */
+async function pickByAA(policy, minAaRaw) {
+  const minAA = minAaRaw === undefined ? null : Number(minAaRaw);
+  if (minAA !== null && !Number.isFinite(minAA)) throw new Error(`--min-aa must be a number, got ${minAaRaw}`);
+  const rotation = Array.isArray(policy?.developers?.rotation?.order) ? policy.developers.rotation.order : [];
+  const set = await buildCandidates({ policy, chosenRole: null, reasonText: null, usageBefore: null });
+  const pool = set.routes
+    .filter(r => r.eligible && r.inRotation && r.aa !== null && (minAA === null || r.aa >= minAA))
+    .sort((a, b) => b.aa - a.aa || rotation.indexOf(a.role) - rotation.indexOf(b.role));
+  if (pool.length === 0) {
+    const seen = set.routes.filter(r => r.inRotation).map(r => `${r.role}(aa ${r.aa ?? '-'}, ${r.eligible ? 'eligible' : r.excludedBy})`).join(', ');
+    throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. Nothing was spawned.`);
+  }
+  const [first, second] = pool;
+  return { role: first.role, reason: `aa-rank: ${first.role} aa=${first.aa}${second ? ` over ${second.role} aa=${second.aa}` : ' (only ranked eligible route)'}` };
+}
+
 export async function main(argvInput = process.argv.slice(2)) {
   const args = parseArgs(argvInput);
   // `in`, not `!== undefined`: the flag last with no value parses to undefined and must still be
   // this mode (and fail as naming no phase), not fall through to "--role is required".
   if ('declare-phases' in args) return declarePhases(args);
+  if ('list-routes' in args) return listRoutes(args);
   for (const required of ['role', 'task', 'prompt']) {
     if (!args[required]) throw new Error(`--${required} is required`);
   }
@@ -492,6 +550,14 @@ export async function main(argvInput = process.argv.slice(2)) {
     return readFile(path.join(HERE, 'policy.example.json'), 'utf8');
   });
   const policy = JSON.parse(policyText);
+  let rule = 'lead-explicit-role';
+  if (args.role === 'auto') {
+    const picked = await pickByAA(policy, args['min-aa']);
+    args.role = picked.role;
+    args['pick-reason'] = args['pick-reason'] ? `${picked.reason}; ${args['pick-reason']}` : picked.reason;
+    rule = 'aa-rank';
+    process.stderr.write(`[dispatch] --role auto -> ${picked.role} (${picked.reason})\n`);
+  }
   const route = policy.routes[args.role];
   if (!route) throw new Error(`no route named ${args.role}; the policy declares ${Object.keys(policy.routes).join(', ')}`);
   if (!route.argv) throw new Error(`route ${args.role} is not dispatchable (${route.note ?? 'no argv'})`);
@@ -516,7 +582,7 @@ export async function main(argvInput = process.argv.slice(2)) {
   // Recording is additive and must never prevent the selected route from running.
   let candidates;
   try {
-    candidates = await buildCandidates({ policy, chosenRole: args.role, reasonText: args['pick-reason'], usageBefore });
+    candidates = await buildCandidates({ policy, chosenRole: args.role, reasonText: args['pick-reason'], usageBefore, rule });
   } catch (error) {
     candidates = { v: 1, error: String(error?.message ?? error) };
   }

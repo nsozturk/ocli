@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.4.0-8b5cf6" alt="Version 0.4.0">
+  <img src="https://img.shields.io/badge/version-0.5.0-8b5cf6" alt="Version 0.5.0">
   <img src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white" alt="Node.js 22+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/runtime%20deps-zero-0ea5e9" alt="Zero runtime dependencies">
@@ -18,11 +18,11 @@
 
 # ocli — Orchestrated CLI
 
-> **ocli (Orchestrated CLI):** run headless coding CLIs — Codex, opencode, Antigravity `agy`, Muse —
+> **ocli (Orchestrated CLI):** run headless coding CLIs — Codex, opencode, Antigravity `agy`, Muse, Cline —
 > under one lead and watch them live in Claude Code as Workflow-style cards.
 
 **ocli** shows what your headless coding CLIs are doing while they do it. When Claude Code
-orchestrates other agents (Codex, opencode, Antigravity `agy`, Muse) as background developers, each
+orchestrates other agents (Codex, opencode, Antigravity `agy`, Muse, Cline) as background developers, each
 one runs out of sight: you get a final message, or a stuck terminal, and nothing in between. ocli is
 two small pieces: a **dispatcher** that runs one CLI per call and turns its native JSON event stream
 into one normalized live-event file per run, and a **Claude Code plugin** that draws those runs as
@@ -146,13 +146,15 @@ there is simply no card.
 
 | flag | meaning |
 |---|---|
-| `--role` | a route in the policy (`implement` = opencode, `reason` = codex, `breadth` = agy, `muse` = Muse) |
+| `--role` | a route in the policy (`implement` = opencode, `reason` = codex, `breadth` = agy, `muse` = Muse, `cline-*` = Cline), or `auto`: the highest-AA eligible route in `developers.rotation.order` (ties by rotation order; unranked routes are never auto-picked; none eligible = refuse, nothing spawned) |
+| `--min-aa` | with `--role auto`: only routes whose AA Intelligence Index is at least this |
 | `--task` | groups runs into one card; `[A-Za-z0-9][A-Za-z0-9._-]*` |
 | `--prompt` | the brief; passed as one argv element, never through a shell |
 | `--phase` | the card phase this run belongs to (default: the role) |
 | `--title` | what the run is for (default: the prompt's first line) |
 | `--root` | the workspace the CLI works in (default: cwd) |
 | `--verify` | a shell command run after the CLI; its exit code becomes `score` 1/0 |
+| `--list-routes` | print every route ordered by its AA Intelligence Index (with eligibility); add `--json`; spawns nothing |
 | `--pick-reason` | optional route-choice explanation recorded in the tree; cleaned like a pane label, capped at 200 code points |
 | `--suffix` | per-run text appended last, so the shared prompt prefix stays cache-stable |
 | `--parent` | the record id of the run this one continues |
@@ -201,6 +203,7 @@ write anything your user can, use the network, and push with your git credential
 | `implement` | opencode | off: `--auto` approves everything | none | `ok` |
 | `muse` | Muse | off: `--disable-approval`, `--user-input-auto-resolve` | Muse's own, unless a wrapper injects `--yolo` | `ok` |
 | `breadth` | agy | off: `--dangerously-skip-permissions` | none, and not confined to `{root}` | `unverified` |
+| `cline-mimo`, `cline-qwen` | Cline (Cline Pass) | off: act mode auto-approve | none; `-c {root}` sets the workspace | `ok` |
 
 Run the unsandboxed routes only where that is acceptable: a disposable VM or container, or a
 dedicated user account without your credentials. `breadth` ships `unverified` for that reason; the

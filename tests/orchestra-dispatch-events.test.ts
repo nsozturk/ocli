@@ -109,7 +109,7 @@ it('event write errors are counted and do not alter the outcome', async () => {
 it('resolves variant and leaves prompt braces intact', async () => {
   await dispatch('--role','implement');
   const argv = mocks.spawn.mock.calls[0][1];
-  expect(argv[argv.indexOf('--variant') + 1]).toBe('high');
+  expect(argv[argv.indexOf('--variant') + 1]).toBe('max'); // AA-measured level
   // Measured 2026-10-11: without --dir opencode wrote a relative file into $HOME, not the
   // process cwd the dispatcher spawns it in. --dir {root} pins it to the worktree.
   expect(argv[argv.indexOf('--dir') + 1]).toBe(mocks.spawn.mock.calls[0][2].cwd);

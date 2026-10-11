@@ -89,6 +89,46 @@ function agyStep(raw, state = {}) {
   return s?.step_type === 'user_input' ? [step('user_input')] : [];
 }
 
+// source: cline 3.0.70 `--json`, captured 2026-10-11 (tests/fixtures/cline). Tool names map onto the
+// shared vocabulary so the witness sees cline's edits and test runs: run_commands is a shell tool,
+// editor an edit tool.
+const CLINE_TOOL = { run_commands: 'run_command', editor: 'edit' };
+// Object.hasOwn: a CLI-controlled name like `constructor` must not reach the prototype.
+const clineTool = name => (Object.hasOwn(CLINE_TOOL, name) ? CLINE_TOOL[name] : text(name)) || 'unknown';
+const clineDetail = input => {
+  if (Array.isArray(input?.commands)) return input.commands.map(c => typeof c === 'string' ? c : c?.command ?? text(c)).join('\n');
+  if (Array.isArray(input?.files)) return input.files.map(f => f?.path ?? text(f)).join(', ');
+  return typeof input?.path === 'string' ? input.path : text(input);
+};
+// content_end carries the output, not the input: the detail is remembered by toolCallId (bounded).
+const clineStart = (raw, state) => {
+  const e = raw.event;
+  if (e.contentType === 'text') return typeof e.text === 'string' ? [message(e.text)] : [];
+  // Thinking deltas are the model's scratchpad, not a result: handled, never shown.
+  if (e.contentType === 'reasoning') return IGNORED;
+  if (e.contentType !== 'tool') return [];
+  const fields = { tool: clineTool(e.toolName), detail: clineDetail(e.input) };
+  state.clineCalls ??= new Map();
+  if (state.clineCalls.size >= CAP) state.clineCalls.delete(state.clineCalls.keys().next().value);
+  state.clineCalls.set(e.toolCallId, fields.detail);
+  return [{ kind: 'tool.start', ...fields }];
+};
+const clineEnd = (raw, state) => {
+  const e = raw.event;
+  // content_end text is the complete assistant text the deltas already streamed.
+  if (e.contentType === 'text') return typeof e.text === 'string' ? [message(e.text)] : [];
+  if (e.contentType === 'reasoning') return IGNORED;
+  if (e.contentType !== 'tool') return [];
+  const outputs = [].concat(e.output ?? []);
+  const ok = outputs.length === 0 ? null : outputs.every(o => o?.success !== false);
+  const detail = state.clineCalls?.get(e.toolCallId) ?? '';
+  state.clineCalls?.delete(e.toolCallId);
+  return [{ kind: 'tool.end', tool: clineTool(e.toolName), detail, ok }];
+};
+// Handled on purpose and emitting nothing: this exact array is not counted as dropped.
+const IGNORED = Object.freeze([]);
+const ignore = () => IGNORED;
+
 // Captured CLI event names are data; unknown types are counted rather than guessed.
 const mappings = {
   codex: {
@@ -146,10 +186,25 @@ const mappings = {
     'run.output.delta': raw => [message(raw.payload?.text)],
     'run.terminal.completed': raw => [message(raw.payload?.text)],
   },
+  // Keyed `agent_event.<event.type>` for agent events, the top-level type otherwise.
+  cline: {
+    'agent_event.iteration_start': raw => [step(`iteration ${text(raw.event?.iteration)}`)],
+    'agent_event.content_start': clineStart,
+    'agent_event.content_end': clineEnd,
+    // Per model call, so the per-call fields sum to the run; done/run_result carry the same totals
+    // again and are not counted.
+    'agent_event.usage': raw => [usage(raw.event?.inputTokens, raw.event?.outputTokens, raw.event?.cacheReadTokens, null)],
+    'agent_event.error': (raw, state) => cliError(state, raw.event?.error?.message ?? raw.event?.error),
+    'agent_event.iteration_end': ignore,
+    'agent_event.done': ignore,
+    hook_event: ignore,
+    run_result: ignore,
+  },
 };
 // unverified: only run.terminal.completed was captured. payload.text is model text, so only the
 // terminal name and reason are taken.
 const museTerminal = (raw, state) => cliError(state, `${raw.payload_type}: ${text(raw.payload?.reason)}`);
+
 
 /** Pure projection. Envelope, sequence and receipt clock belong to the dispatcher. */
 export function normalize(cli, rawLine, state = {}) {
@@ -157,12 +212,13 @@ export function normalize(cli, rawLine, state = {}) {
   try {
     const raw = JSON.parse(rawLine);
     if (!Object.hasOwn(mappings, cli) || !raw || typeof raw !== 'object' || Array.isArray(raw)) return unparsed();
-    const type = cli === 'muse' ? raw.payload_type : cli === 'agy' ? raw.event : raw.type;
+    const type = cli === 'muse' ? raw.payload_type : cli === 'agy' ? raw.event
+      : cli === 'cline' && raw.type === 'agent_event' ? `agent_event.${text(raw.event?.type)}` : raw.type;
     const table = mappings[cli];
     const handler = Object.hasOwn(table, type) ? table[type]
       : cli === 'muse' && typeof type === 'string' && type.startsWith('run.terminal.') ? museTerminal : null;
     const events = handler ? handler(raw, state) : [];
-    if (events.length === 0) {
+    if (events.length === 0 && events !== IGNORED) {
       state.dropped ??= Object.create(null);
       let key = typeof type === 'string' ? type : 'unknown';
       // The keys are CLI-controlled: bound them.

@@ -11,6 +11,7 @@ export function providerForNode(node) {
   if (node?.cli === 'opencode' && String(node.model ?? '').startsWith('zai-coding-plan/')) return 'glm';
   if (node?.cli === 'claude' || node?.cli === 'claude-agent' || node?.cli === 'claude-code') return 'claude';
   if (node?.cli === 'agy') return 'gemini';
+  if (node?.cli === 'cline') return 'cline'; // Cline Pass: no BUDGET row, no readable counter yet
   return null;
 }
 
