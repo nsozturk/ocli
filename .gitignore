@@ -3,3 +3,7 @@ tmp/
 orchestra/
 dispatcher/policy.json
 .DS_Store
+
+# Written into a worktree by developer CLIs during a dispatch
+.orchestra-last.md
+.roundtable/
