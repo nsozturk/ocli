@@ -1,5 +1,5 @@
 // Where the standalone dispatcher reads its policy and writes its files.
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
@@ -7,15 +7,20 @@ const mocks = vi.hoisted(() => ({ spawn: vi.fn(), append: vi.fn(), live: vi.fn()
 vi.mock('node:child_process', () => ({ spawn: mocks.spawn }));
 vi.mock('node:fs', async original => ({ ...await original<Record<string, unknown>>(), appendFileSync: mocks.live, mkdirSync: vi.fn() }));
 vi.mock('node:fs/promises', async original => ({ ...await original<Record<string, unknown>>(), readFile: mocks.readFile, appendFile: mocks.append, mkdir: vi.fn() }));
-vi.mock('../dispatcher/usage.mjs', () => ({ readCodexUsage: vi.fn(async () => ({ status: 'unknown' })), readGlmUsage: vi.fn(async () => ({ status: 'unknown' })), claudeUsageFromLead: vi.fn(), usageDelta: vi.fn(), gateFor: vi.fn() }));
+vi.mock('../dispatcher/usage.mjs', async original => ({ ...await original<Record<string, unknown>>(), readCodexUsage: vi.fn(async () => ({ status: 'unknown' })), readGlmUsage: vi.fn(async () => ({ status: 'unknown' })), claudeUsageFromLead: vi.fn(), usageDelta: vi.fn(), gateFor: vi.fn() }));
 // @ts-expect-error plain ESM tooling
 import { main } from '../dispatcher/dispatch.mjs';
 const example = readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8');
 const enoent = () => Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
 const dispatch = () => main(['--role', 'reason', '--task', 'layout', '--prompt', 'p']);
-beforeEach(() => {
+let workspace: string;
+beforeEach(async () => {
+  const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+  fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+  workspace = fs.mkdtempSync(path.resolve('tmp', 'rs1-layout-'));
   vi.resetAllMocks();
   vi.unstubAllEnvs();
+  vi.spyOn(process, 'cwd').mockReturnValue(workspace);
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   mocks.spawn.mockImplementation(() => {
@@ -23,6 +28,12 @@ beforeEach(() => {
     queueMicrotask(() => child.emit('close', 0, null));
     return child;
   });
+});
+afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+  fs.rmSync(workspace, { recursive: true, force: true });
 });
 it('without ORCHESTRA_LIVE_DIR, live files go under <cwd>/orchestra/live/<task>/ (where the pane looks)', async () => {
   mocks.readFile.mockResolvedValue(example);

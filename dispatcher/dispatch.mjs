@@ -36,7 +36,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { paneLabel } from './pane-label.mjs';
-import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor } from './usage.mjs';
+import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor, BUDGET } from './usage.mjs';
+import { providerForNode, readNodes, latestReading } from './tree-read.mjs';
 
 /**
  * Which provider's usage counter backs each route. A role absent here has no readable counter, so a
@@ -191,6 +192,10 @@ export function runPhase(phase, role) {
 
 // ORCHESTRA_LIVE_DIR (read per call, so tests can point it at a temp dir) moves the live root.
 const liveRoot = () => (process.env.ORCHESTRA_LIVE_DIR ? path.resolve(process.env.ORCHESTRA_LIVE_DIR) : path.resolve('orchestra', 'live'));
+
+// Shared by candidate reads and node appends; preserve the package cwd-relative default.
+const treeRoot = () => process.env.ORCHESTRA_TREE_DIR
+  ? path.resolve(process.env.ORCHESTRA_TREE_DIR) : path.resolve('orchestra', 'tree');
 
 // --task becomes a path segment under orchestra/live/ and orchestra/tree/,
 // and a CLI argv value ({task} -> opencode --title). A leading alphanumeric rules out '.', '..' and
@@ -388,6 +393,89 @@ async function readRouteUsage(route) {
   }
 }
 
+// RS1: the candidate set at dispatch time. A node said "role: implement" and nothing about what
+// else could have taken the slice; replay cannot traverse choices nobody wrote down. Pure
+// recording: it never changes which route runs, and it spawns nothing — a gate is the chosen
+// route's own usageBefore reading, a recorded tree reading, or the absence of both.
+const NON_CANDIDATE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** One route's gate and where it came from. Precedence, first match wins: the provider has no
+ * budget row (or none at all) -> deliberately uncapped -> the chosen route's live usageBefore
+ * reading -> the newest recorded tree reading -> no reading anywhere, which is `unknown`, never
+ * assumed room (the rotation's skip rule refuses to spend blind on a capped route). */
+function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor }) {
+  const provider = providerForNode({ cli: route.cli, model: route.model });
+  let gate;
+  let gateSource;
+  let gateReadAt;
+  if (provider == null || BUDGET[provider] == null) {
+    gate = 'ok';
+    gateSource = 'no-budget';
+  } else if (BUDGET[provider].stopAtPercent === null) {
+    gate = 'ok';
+    gateSource = 'uncapped';
+  } else if (role === chosenRole && usageBefore?.status === 'ok') {
+    gate = gateFor(provider, usageBefore).state;
+    gateSource = 'live';
+  } else {
+    const reading = treeReadingFor(provider);
+    if (reading) {
+      gate = gateFor(provider, reading.report).state;
+      gateSource = 'tree';
+      gateReadAt = reading.recordedAt ?? null;
+    } else {
+      gate = 'unknown';
+      gateSource = 'none';
+    }
+  }
+  const status = route.status ?? null;
+  const eligible = status === 'ok' && gate === 'ok';
+  const excludedBy = eligible ? null : status !== 'ok' ? 'status' : gate === 'stop' ? 'budget-stop' : 'budget-unknown';
+  return {
+    role,
+    cli: route.cli ?? null,
+    model: route.model ?? null,
+    inRotation: inRotation.has(role),
+    status,
+    gate,
+    gateSource,
+    ...(gateSource === 'tree' ? { gateReadAt } : {}),
+    eligible,
+    excludedBy,
+  };
+}
+
+/** The full candidate set: every dispatchable route in policy key order, the rotation, the rule
+ * that picked (the lead's --role; the dispatcher applies no other), and an optional cleaned
+ * --pick-reason. The chosen route MAY be ineligible — that is recorded, never refused. */
+async function buildCandidates({ policy, chosenRole, reasonText, usageBefore }) {
+  const rotationSource = policy?.developers?.rotation?.order;
+  const rotation = Array.isArray(rotationSource) ? [...rotationSource] : [];
+  const inRotation = new Set(rotation);
+  const { nodes } = await readNodes(treeRoot());
+  // One tree scan shared by every capped route: provider -> newest recorded reading.
+  const readings = new Map();
+  const treeReadingFor = provider => {
+    if (!readings.has(provider)) readings.set(provider, latestReading(nodes, provider));
+    return readings.get(provider);
+  };
+  const routes = [];
+  for (const role of Object.keys(policy?.routes ?? {})) {
+    if (NON_CANDIDATE_KEYS.has(role)) continue;
+    const route = policy.routes[role];
+    if (!route?.argv) continue; // not dispatchable (architect): never a candidate
+    routes.push(candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor }));
+  }
+  return {
+    v: 1,
+    rule: 'lead-explicit-role',
+    chosen: chosenRole,
+    reason: paneLabel(reasonText, 200) || null,
+    rotation,
+    routes,
+  };
+}
+
 export async function main(argvInput = process.argv.slice(2)) {
   const args = parseArgs(argvInput);
   // `in`, not `!== undefined`: the flag last with no value parses to undefined and must still be
@@ -425,6 +513,13 @@ export async function main(argvInput = process.argv.slice(2)) {
   const argv = resolveArgv(route, Object.assign(Object.create(null), { model: route.model, effort: route.effort,
     variant: route.variant, task: args.task, root: workspace, prompt }));
   const usageBefore = await readRouteUsage(route);
+  // Recording is additive and must never prevent the selected route from running.
+  let candidates;
+  try {
+    candidates = await buildCandidates({ policy, chosenRole: args.role, reasonText: args['pick-reason'], usageBefore });
+  } catch (error) {
+    candidates = { v: 1, error: String(error?.message ?? error) };
+  }
   const live = createLive(args, route, workspace, prefixSha);
   process.stderr.write(`[dispatch] live: ${live.liveFile}\n`);
   // Ctrl-C or a kill: the finally below never runs, and the pane would show this run as running,
@@ -551,6 +646,7 @@ export async function main(argvInput = process.argv.slice(2)) {
       exitCode: result.code,
       signal: result.signal,
       ms: result.ms,
+      candidates,
       usageBefore,
       usageAfter,
       usageDelta: usageDelta(usageBefore, usageAfter, route.cli, result.ms),
@@ -570,7 +666,7 @@ export async function main(argvInput = process.argv.slice(2)) {
       recordedAt: new Date().toISOString(),
     };
 
-    const treeDir = path.resolve('orchestra', 'tree');
+    const treeDir = treeRoot();
     await mkdir(treeDir, { recursive: true });
     await appendFile(path.join(treeDir, `${args.task}.jsonl`), `${JSON.stringify(node)}\n`, 'utf8');
 

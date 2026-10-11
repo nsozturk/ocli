@@ -153,6 +153,7 @@ there is simply no card.
 | `--title` | what the run is for (default: the prompt's first line) |
 | `--root` | the workspace the CLI works in (default: cwd) |
 | `--verify` | a shell command run after the CLI; its exit code becomes `score` 1/0 |
+| `--pick-reason` | optional route-choice explanation recorded in the tree; cleaned like a pane label, capped at 200 code points |
 | `--suffix` | per-run text appended last, so the shared prompt prefix stays cache-stable |
 | `--parent` | the record id of the run this one continues |
 | `--brief` | what the person reads in the pane's open card (default: the prompt's first heading and first task paragraph, then the `--suffix` without its worktree path; at most 600 code points). The pane shows the opening of `--prompt` unless `--brief` is given: keep secrets out of it. |

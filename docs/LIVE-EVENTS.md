@@ -163,3 +163,29 @@ The normalizer is `dispatcher/events.mjs`; `tests/fixtures/orchestra-events/` ho
 capture per CLI. Codex `turn.failed`/`error` events, opencode `error` events, agy non-`SUCCESS`
 results and muse terminal events other than `run.terminal.completed` are mapped from the CLIs'
 source or binaries, not from captures: they are marked `unverified` in the code.
+
+## Tree node candidate snapshot
+
+Every newly appended dispatch node has an additive `candidates` field computed before spawn.
+Old nodes remain unchanged and may lack it. This is recording only: eligibility never changes
+dispatch behavior, even when the chosen route is ineligible. No new provider calls are made.
+
+- `v: 1`, `rule: "lead-explicit-role"`, `chosen`: the explicitly requested role.
+- `reason`: optional `--pick-reason`, cleaned like a pane label and capped at 200 Unicode code
+  points; absent or empty becomes `null`.
+- `rotation`: a copy of `developers.rotation.order`, or `[]` if absent.
+- `routes`: dispatchable policy routes (those with `argv`) in policy key order, skipping
+  `__proto__`, `constructor`, and `prototype`. Each records `role`, `cli`, `model`,
+  `inRotation`, policy `status`, `gate`, `gateSource`, `eligible`, and `excludedBy`.
+- Gate source precedence: `no-budget` → `uncapped` → `live` (chosen capped route with usable
+  `usageBefore`) → `tree` → `none`. Tree readings use the newest `recordedAt` across files
+  (later lines win ties; missing timestamps sort oldest), preferring usable `usageAfter`
+  over `usageBefore`. Only `tree` adds `gateReadAt`. No reading means `unknown`.
+- Eligibility requires status and gate both `ok`. The first exclusion wins: `status`,
+  `budget-stop`, then `budget-unknown`; eligible routes have `excludedBy: null`.
+
+A computation failure records `{ "v": 1, "error": "<message>" }` and dispatch continues.
+`ORCHESTRA_TREE_DIR` overrides both tree reads and appends; the default remains
+`orchestra/tree` under the process cwd. Readers reject symlinks and non-regular files, use
+nonblocking opens, and tolerate malformed lines and unreadable files. Corrections remain
+append-only `lead-correction` records with `correctedField: "candidates"`.

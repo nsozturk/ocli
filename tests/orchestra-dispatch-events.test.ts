@@ -9,7 +9,7 @@ vi.mock('node:fs', async original => ({ ...await original<Record<string, unknown
 vi.mock('node:fs/promises', async original => ({ ...await original<Record<string, unknown>>(), readFile: mocks.policy, appendFile: mocks.append, mkdir: vi.fn(), lstat: mocks.lstat }));
 // The real witness by default (beforeEach); one test makes it throw.
 vi.mock('../dispatcher/witness.mjs', async original => ({ ...await original<Record<string, unknown>>(), witness: mocks.witness }));
-vi.mock('../dispatcher/usage.mjs', () => ({ readCodexUsage: vi.fn(async () => ({status:'unknown'})), readGlmUsage: vi.fn(async () => ({status:'unknown'})), claudeUsageFromLead: vi.fn(), usageDelta: mocks.delta, gateFor: vi.fn() }));
+vi.mock('../dispatcher/usage.mjs', async original => ({ ...await original<Record<string, unknown>>(), readCodexUsage: vi.fn(async () => ({status:'unknown'})), readGlmUsage: vi.fn(async () => ({status:'unknown'})), claudeUsageFromLead: vi.fn(), usageDelta: mocks.delta, gateFor: vi.fn() }));
 // @ts-expect-error plain ESM tooling
 import { main, runBrief, runPhase, runTitle } from '../dispatcher/dispatch.mjs';
 const realWitness = (await vi.importActual<{ witness: (...args: unknown[]) => unknown }>('../dispatcher/witness.mjs')).witness;
@@ -20,7 +20,12 @@ const fixture = readFileSync(new URL('./fixtures/orchestra-events/codex.jsonl', 
 const dispatch = (...extra: string[]) => main(['--role', 'reason', '--task', 'mock-live', '--prompt', 'literal {unknown} {variant}', ...extra]);
 const events = () => mocks.live.mock.calls.filter(([file, body]) => body && !String(file).endsWith('.raw.jsonl')).map(([, body]) => JSON.parse(body));
 const raw = () => mocks.live.mock.calls.filter(([file, body]) => body && String(file).endsWith('.raw.jsonl')).map(([, body]) => JSON.parse(body));
-beforeEach(() => {
+let treeDir: string;
+beforeEach(async () => {
+  const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+  fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+  treeDir = fs.mkdtempSync(path.resolve('tmp', 'rs1-events-tree-'));
+  vi.stubEnv('ORCHESTRA_TREE_DIR', treeDir);
   vi.resetAllMocks();
   policy = structuredClone(originalPolicy);
   mocks.witness.mockImplementation(realWitness);
@@ -35,7 +40,12 @@ beforeEach(() => {
     return child;
   });
 });
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+  fs.rmSync(treeDir, { recursive: true, force: true });
+});
 it('writes contiguous events with dispatcher receipt time, raw lines and tree linkage', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2030-01-02T03:04:05.000Z'));
   try {
@@ -45,6 +55,7 @@ it('writes contiguous events with dispatcher receipt time, raw lines and tree li
     expect(all.at(-1)).toMatchObject({kind:'run.end',status:'completed',exitCode:0,score:null});
     expect(all.map(e => e.seq)).toEqual(all.map((_, i) => i));
     expect(all.every(e => e.at === '2030-01-02T03:04:05.000Z')).toBe(true);
+    expect(path.dirname(mocks.append.mock.calls[0][0])).toBe(treeDir);
     const node = JSON.parse(mocks.append.mock.calls[0][1]);
     expect(node).toMatchObject({runId:all[0].runId, finalText:'DONE', stdoutTail:fixture.slice(-4000)});
     expect(node.liveFile).toBe(`orchestra/live/mock-live/${node.runId}.jsonl`);
