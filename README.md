@@ -83,7 +83,7 @@ claude plugin install ocli-monitor@ocli
 ```
 
 or in one step: `claude plugin install ocli-monitor --marketplace "$PWD/ocli"`. Once the repository is
-on GitHub, `claude plugin install ocli-monitor --marketplace <owner>/ocli` does the same, and inside
+on GitHub, `claude plugin install ocli-monitor --marketplace nsozturk/ocli` does the same, and inside
 a terminal session `/plugin install ocli-monitor@ocli` works after the marketplace is added.
 
 **2. Make the dispatcher policy yours** (Node.js 22+, no dependencies; the dispatcher lives in the

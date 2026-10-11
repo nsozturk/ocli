@@ -23,7 +23,7 @@ claude plugin install ocli-monitor@ocli
 ```
 
 or `claude plugin install ocli-monitor --marketplace /path/to/ocli`. Once published:
-`claude plugin install ocli-monitor --marketplace <owner>/ocli`.
+`claude plugin install ocli-monitor --marketplace nsozturk/ocli`.
 
 For development, load it from a checkout instead:
 

@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ocli — Orchestrated CLI for headless coding CLIs in Claude Code</title>
 <meta name="description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.">
-<link rel="canonical" href="https://&lt;owner&gt;.github.io/ocli/">
+<link rel="canonical" href="https://nsozturk.github.io/ocli/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="ocli">
 <meta property="og:title" content="ocli — Orchestrated CLI">
 <meta property="og:description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.">
-<meta property="og:image" content="https://&lt;owner&gt;.github.io/ocli/assets/banner.png">
-<meta property="og:url" content="https://&lt;owner&gt;.github.io/ocli/">
+<meta property="og:image" content="https://nsozturk.github.io/ocli/assets/banner.png">
+<meta property="og:url" content="https://nsozturk.github.io/ocli/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="ocli — Orchestrated CLI">
 <meta name="twitter:description" content="Codex, opencode, agy and Muse runs as live Workflow-style cards in Claude Code.">
-<meta name="twitter:image" content="https://&lt;owner&gt;.github.io/ocli/assets/banner.png">
+<meta name="twitter:image" content="https://nsozturk.github.io/ocli/assets/banner.png">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -66,7 +66,7 @@ th{background:var(--card-bg)}
 <body>
 <nav class="nav">
   <span class="brand">ocli</span><span class="tag">v0.3.2</span><span class="tag">MIT</span>
-  <a class="gh" href="https://github.com/&lt;owner&gt;/ocli">GitHub</a>
+  <a class="gh" href="https://github.com/nsozturk/ocli">GitHub</a>
 </nav>
 <div class="wrap">
 <aside>
@@ -136,7 +136,7 @@ failed). Press a phase row to expand it into its runs. Ended runs raise one toas
 <pre><code>git clone &lt;this repository&gt; ocli
 claude plugin marketplace add "$PWD/ocli"
 claude plugin install ocli-monitor@ocli</code></pre>
-<p>Once published: <code>claude plugin install ocli-monitor --marketplace &lt;owner&gt;/ocli</code>.</p>
+<p>Once published: <code>claude plugin install ocli-monitor --marketplace nsozturk/ocli</code>.</p>
 <p>2. Make the dispatcher policy yours (Node.js 22+, no dependencies):</p>
 <pre><code>cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json</code></pre>
 <p>The example routes pin the models they were verified with. Set each route's <code>model</code> to
@@ -251,7 +251,7 @@ a <code>kind</code>: <code>run.start</code>, <code>step</code>, <code>message</c
 <code>unparsed</code>, <code>run.end</code>. <code>run.end.status</code> is <code>completed</code>,
 <code>failed</code>, <code>blocked</code>, <code>spawn-error</code> or <code>dispatch-error</code>.
 Any tool that writes this contract shows up in the pane. Full specification:
-<a href="https://github.com/&lt;owner&gt;/ocli/blob/main/docs/LIVE-EVENTS.md">docs/LIVE-EVENTS.md</a>.</p>
+<a href="https://github.com/nsozturk/ocli/blob/main/docs/LIVE-EVENTS.md">docs/LIVE-EVENTS.md</a>.</p>
 </section>
 
 <section id="limitations">
