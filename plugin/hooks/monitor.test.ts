@@ -99,7 +99,9 @@ test('pane draws a run line on terminal AND desktop, with subagents and footer',
     const texts = await paneText($, surface)
     const joined = texts.join('\n')
     expect(joined).toContain('glm-live')
-    expect(texts.some(t => /^▸ implement ● glm-5\.3 +1\/1$/.test(t))).toBe(true)
+    // GLM_LIVE is opencode: 3425600 cache reads on top of 119333 fresh input tokens (33 usage events)
+    // -> 3425600 / 3544933 = 96.6%. The literal cached/input would print 2871%.
+    expect(texts.filter(t => t.startsWith("▸ implement"))).toEqual([expect.stringMatching(/^▸ implement ● cache 97% glm-5\.3 +1\/1$/)])
     expect((await expanded($, surface, ['glm-live/implement'])).some(t => t.startsWith('  ✓ glm-5.3 (opencode) 15m54s 37t'))).toBe(true)
     expect(joined).toContain('Claude subagents')
     expect(joined).toContain('a1 Explore running scan the repo')

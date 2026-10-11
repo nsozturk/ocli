@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.2-8b5cf6" alt="Version 0.3.2">
+  <img src="https://img.shields.io/badge/version-0.3.3-8b5cf6" alt="Version 0.3.3">
   <img src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white" alt="Node.js 22+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/runtime%20deps-zero-0ea5e9" alt="Zero runtime dependencies">
@@ -61,6 +61,10 @@ What else it does:
 - **Heartbeat and loop warning.** A running run's live line leads with a 10-cell event-rate sparkline
   (30 s bins) and `xN` once one call repeats; eight identical calls with no success turn it
   warning-coloured and raise one "may be looping" toast. Nothing acts on the run.
+- **Cache ratio and prefix drift.** A phase row shows `cache N%`: cache reads over all input read, for
+  the runs that report both (unknown is never `0%`). Each dispatch records `prefixSha`, the first 12 hex
+  of sha256 of its `--prompt` (never the `--suffix`); `⚠prefix×K` marks a phase whose runs on one CLI
+  carry K > 1 distinct prefixes, so the cached prefix drifted.
 - **Resume card** (optional). In a project that keeps dated checkpoint files, the first card shows the
   newest one's phase table, next action and resume command, with a `Queue resume` button.
 

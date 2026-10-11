@@ -45,7 +45,7 @@ directory name. A line that names another run is ignored.
 
 | kind | fields | notes |
 |---|---|---|
-| `run.start` | `model`, `root`, `parentId`, `pid`, `title`, `phase` | the first line, `seq: 0` (unless that write failed). `pid` is `null` when spawn threw. `title`: `--title`, else the prompt's first non-empty line, at most 120 code points. `phase`: `--phase`, else the role, at most 40 code points. Both have ANSI escapes, control and bidi characters removed. `root` is the absolute workspace; the pane shows only its last segment. |
+| `run.start` | `model`, `root`, `parentId`, `pid`, `title`, `phase`, `prefixSha` | the first line, `seq: 0` (unless that write failed). `pid` is `null` when spawn threw. `title`: `--title`, else the prompt's first non-empty line, at most 120 code points. `phase`: `--phase`, else the role, at most 40 code points. Both have ANSI escapes, control and bidi characters removed. `root` is the absolute workspace; the pane shows only its last segment. `prefixSha`: the first 12 lowercase hex of sha256 of `--prompt` alone (the byte-stable cache prefix, never the `--suffix`), recorded only and never sent to the CLI; a reader drops any other shape. |
 | `step` | `label` | lifecycle marks: CLI-native ones (`thread.started`, `turn.started`, `init`, `step_start`, …) and the dispatcher's own: `cli.exit code=<n> signal=<s>`, `verify.start`, `verify.end code=<n>` |
 | `message` | `text` | assistant text. The last one is the run's final answer. |
 | `warn` | `text` | a warning or an error the **CLI itself** emitted (never model-authored text) |
@@ -116,7 +116,7 @@ symlink, and one naming no phase.
 
 `orchestra/tree/<task>.jsonl` gets one JSON object per finished run (not part of the live contract; the
 plugin never reads it). Besides the run's ids, CLI, model, exit code, `ms`, `score`, `verify`, usage and
-`blocked` evidence, it carries the run's `title` and `phase` (as on `run.start`) and `witness`:
+`blocked` evidence, it carries the run's `title`, `phase` and `prefixSha` (as on `run.start`) and `witness`:
 `{v: 1, claims: [...], findings: [{code, text}]}`, or `{v: 1, error}` when the witness threw.
 `node dispatcher/digest.mjs` summarizes the tree and the live `run.start`/`run.end`/`usage` lines of the
 last 12 hours (`--since <ISO>`, `--json 1`, `--root <dir holding tree/ and live/>`) without writing

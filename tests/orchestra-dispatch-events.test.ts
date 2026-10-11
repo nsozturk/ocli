@@ -749,3 +749,31 @@ it('without --verify a clean tree with a commit made since the CLI started is a 
     expect(runEnd().witness).toEqual({ findings });
   }
 });
+// Feature 7 (prefix-hash): a 12-hex sha of --prompt alone, the byte-stable cache prefix. The
+// per-dispatch --suffix must not move it, and the hash must never reach the CLI.
+const prefixRun = async (prompt: string, ...extra: string[]) => {
+  mocks.live.mockClear(); mocks.append.mockClear(); mocks.spawn.mockClear();
+  await main(['--role', 'reason', '--task', 'mock-live', '--prompt', prompt, ...extra]);
+  return { start: events()[0], node: JSON.parse(mocks.append.mock.calls[0][1]), argv: mocks.spawn.mock.calls[0][1] as string[] };
+};
+it('prefixSha is the sha256 of --prompt alone: a different --suffix keeps it, a different --prompt moves it', async () => {
+  const { createHash } = await import('node:crypto');
+  const a = await prefixRun('shared spec', '--suffix', 'workdir A');
+  const b = await prefixRun('shared spec', '--suffix', 'workdir B');
+  const c = await prefixRun('other spec', '--suffix', 'workdir A');
+  expect(a.start.prefixSha).toBe(createHash('sha256').update('shared spec', 'utf8').digest('hex').slice(0, 12));
+  expect(a.start.prefixSha).toMatch(/^[0-9a-f]{12}$/);
+  expect(b.start.prefixSha).toBe(a.start.prefixSha);
+  expect(c.start.prefixSha).not.toBe(a.start.prefixSha);
+  for (const run of [a, b, c]) expect(run.node.prefixSha).toBe(run.start.prefixSha);
+});
+it('the prefix hash never alters the prompt or argv the CLI is spawned with', async () => {
+  const withSuffix = await prefixRun('shared spec', '--suffix', 'workdir A');
+  const bare = await prefixRun('shared spec');
+  expect(withSuffix.argv.at(-1)).toBe('shared spec\n\nworkdir A');
+  expect(bare.argv.at(-1)).toBe('shared spec');
+  expect(withSuffix.argv.slice(0, -1)).toEqual(bare.argv.slice(0, -1));
+  expect(withSuffix.argv.some(arg => arg.includes(withSuffix.start.prefixSha))).toBe(false);
+  expect(withSuffix.node.prompt).toBe('shared spec');
+  expect(withSuffix.node.promptBytes).toBe(Buffer.byteLength('shared spec', 'utf8'));
+});

@@ -21,8 +21,12 @@ export type OcliRun = {
   lastSummary: string
   toolCount: number
   warnCount: number
-  /** Sums of `usage` events; null = unknown (never reported), never 0. */
-  tokens: { input: number | null; output: number | null }
+  /** Sums of `usage` events; null = unknown (never reported), never 0. `cached` (cache reads) is
+   * absent on a run folded by an older version. */
+  tokens: { input: number | null; output: number | null; cached?: number | null }
+  /** run.start.prefixSha: sha256 of the dispatch's --prompt (the cache prefix), 12 lowercase hex.
+   * Absent when the dispatcher did not send one or it was malformed, and on older folds. */
+  prefixSha?: string
   exitCode: number | null
   score: number | null
   ms: number | null

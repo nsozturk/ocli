@@ -182,7 +182,7 @@ async function declarePhases(args) {
   process.stderr.write(`[dispatch] declared ${names.length} phases for ${args.task}\n`);
 }
 
-function createLive(args, route, workspace) {
+function createLive(args, route, workspace, prefixSha) {
   const runId = randomUUID();
   // liveFile is the absolute path under an ORCHESTRA_LIVE_DIR override, otherwise the cwd-relative one.
   const override = process.env.ORCHESTRA_LIVE_DIR;
@@ -218,7 +218,7 @@ function createLive(args, route, workspace) {
     get events() { return events; },
     start(pid) {
       emit({ kind: 'run.start', model: route.model, root: workspace, parentId: args.parent ?? null, pid,
-        title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role) });
+        title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role), prefixSha });
     },
     line(stream, line) {
       const at = new Date().toISOString();
@@ -376,11 +376,14 @@ export async function main(argvInput = process.argv.slice(2)) {
   // Cache discipline: providers key their prompt cache on a byte-stable PREFIX, so the shared spec
   // (--prompt) goes first and any per-dispatch text (--suffix: workdir, parent node) goes LAST.
   const prompt = args.suffix ? `${args.prompt}\n\n${args.suffix}` : args.prompt;
+  // The cache prefix's fingerprint: --prompt ONLY, never the suffix, so runs sharing a spec share it
+  // and the pane can flag a phase whose prefix drifted. Recorded, never sent to the CLI.
+  const prefixSha = createHash('sha256').update(args.prompt, 'utf8').digest('hex').slice(0, 12);
   // Null prototype: {constructor} or {toString} must not find an inherited value.
   const argv = resolveArgv(route, Object.assign(Object.create(null), { model: route.model, effort: route.effort,
     variant: route.variant, task: args.task, root: workspace, prompt }));
   const usageBefore = await readRouteUsage(route);
-  const live = createLive(args, route, workspace);
+  const live = createLive(args, route, workspace, prefixSha);
   process.stderr.write(`[dispatch] live: ${live.liveFile}\n`);
   // Ctrl-C or a kill: the finally below never runs, and the pane would show this run as running,
   // then stale, for a day. Write run.end, pass the signal to the CLI, then die by the same signal.
@@ -501,6 +504,8 @@ export async function main(argvInput = process.argv.slice(2)) {
       model: route.model,
       promptBytes: Buffer.byteLength(args.prompt, 'utf8'),
       prompt: args.prompt,
+      // Additive: sha256(--prompt) first 12 hex, the run.start's prefixSha.
+      prefixSha,
       exitCode: result.code,
       signal: result.signal,
       ms: result.ms,

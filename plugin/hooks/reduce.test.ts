@@ -13,11 +13,11 @@ const ev = (seq: number, kind: string, fields: Record<string, unknown> = {}) =>
 
 describe('reduce over the four CLI fixtures (normalized by the real normalize at generation time)', () => {
   const cases = [
-    { name: 'codex', lines: CODEX, model: 'gpt-5.6-luna', tools: 1, warns: 3, input: 115922, output: 59 },
-    { name: 'opencode', lines: OPENCODE, model: 'zai-coding-plan/glm-5.3', tools: 1, warns: 0, input: 59747, output: 24 },
+    { name: 'codex', lines: CODEX, model: 'gpt-5.6-luna', tools: 1, warns: 3, input: 115922, output: 59, cached: 64768 },
+    { name: 'opencode', lines: OPENCODE, model: 'zai-coding-plan/glm-5.3', tools: 1, warns: 0, input: 59747, output: 24, cached: 59840 },
     // events.mjs no longer emits agy's result.usage when step usage was seen (it repeats their sum).
-    { name: 'agy', lines: AGY, model: 'gemini-3.8-flash-medium', tools: 2, warns: 0, input: 43768, output: 645 },
-    { name: 'muse', lines: MUSE, model: 'muse', tools: 2, warns: 0, input: null, output: null },
+    { name: 'agy', lines: AGY, model: 'gemini-3.8-flash-medium', tools: 2, warns: 0, input: 43768, output: 645, cached: 74142 },
+    { name: 'muse', lines: MUSE, model: 'muse', tools: 2, warns: 0, input: null, output: null, cached: undefined },
   ]
   for (const c of cases) {
     test(c.name, () => {
@@ -30,7 +30,8 @@ describe('reduce over the four CLI fixtures (normalized by the real normalize at
       expect(run.status).toBe('completed')
       expect(run.toolCount).toBe(c.tools)
       expect(run.warnCount).toBe(c.warns)
-      expect(run.tokens).toEqual({ input: c.input, output: c.output })
+      // muse reports no usage: its tokens carry no cached key at all.
+      expect(run.tokens).toEqual({ input: c.input, output: c.output, cached: c.cached })
       expect(run.lastSeq).toBe(c.lines.length - 1)
       expect(run.exitCode).toBe(0)
       expect(run.lastSummary).toBe('end completed exit 0')
@@ -78,7 +79,7 @@ test('token sums are null-aware: unknown stays null, never 0', () => {
     ev(2, 'usage', { input: 5, output: null }),
     ev(3, 'usage', { input: 7, output: null }),
   ])
-  expect(runs[0]!.tokens).toEqual({ input: 12, output: null })
+  expect(runs[0]!.tokens).toEqual({ input: 12, output: null, cached: null })
 })
 
 test('run.end.dropped with hostile keys is counted, never spread into state', () => {
@@ -770,4 +771,104 @@ test('×n stands only on the repeated call itself, and not once it succeeded', (
   expect(live([...five, tend(6, true)])).toMatch(/↳ tool\.end bash: npm test$/)
   // A different command whose detail starts with the repeated one's.
   expect(live([...five, tend(6, false, 'npm test --watch')])).not.toMatch(/×/)
+})
+
+// --- feature 7: prefix-hash (run.start.prefixSha) and per-phase cache ratio (usage.cached) ---------
+const SHA_A = '0123456789ab'
+const SHA_B = 'ba9876543210'
+
+test('run.start prefixSha is kept only when it is exactly 12 lowercase hex characters', () => {
+  const sha = (prefixSha: unknown) => fold([ev(0, 'run.start', { prefixSha })])[0]!.prefixSha
+  expect(sha(SHA_A)).toBe(SHA_A)
+  for (const bad of ['0123456789AB', `${SHA_A}c`, SHA_A.slice(1), ` ${SHA_A}`, '0123456789ag', 123456789012, null, undefined]) {
+    expect(sha(bad)).toBeUndefined()
+  }
+})
+
+test('usage cached is summed null-aware, and absent cached stays unknown', () => {
+  const runs = fold([
+    ev(0, 'run.start'),
+    ev(1, 'usage', { input: 10, output: 1, cached: null }),
+    ev(2, 'usage', { input: 10, output: 1, cached: 4 }),
+    ev(3, 'usage', { input: 10, output: 1, cached: 3 }),
+    ev(4, 'usage', { input: 10, output: 1 }),
+  ])
+  expect(runs[0]!.tokens).toEqual({ input: 40, output: 4, cached: 7 })
+  expect(fold([ev(0, 'run.start'), ev(1, 'usage', { input: 5, output: 1 })])[0]!.tokens.cached ?? null).toBeNull()
+})
+
+const phaseText = (runs: OcliRun[], columns = 80) => texts(card('t', runs, NOW_C, columns, () => false)).filter(line => line.startsWith('▸ '))
+const tok = (input: number | null, cached: number | null | undefined) =>
+  ({ input, output: 1, ...(cached === undefined ? {} : { cached }) }) as OcliRun['tokens']
+
+test('a phase row shows cache N%: codex cached is part of input, opencode and agy cached is on top of it', () => {
+  // codex: 600 of 1000 input tokens were cache reads.
+  expect(phaseText([mk('a', { cli: 'codex', status: 'completed', tokens: tok(1000, 600) })])[0]).toMatch(/ cache 60% /)
+  // opencode: 100 fresh input plus 300 cache reads -> 75% of the input it read.
+  expect(phaseText([mk('a', { cli: 'opencode', status: 'completed', tokens: tok(100, 300) })])[0]).toMatch(/ cache 75% /)
+  // Summed over the phase: (600 + 300) / (1000 + 400).
+  expect(phaseText([
+    mk('a', { cli: 'codex', status: 'completed', tokens: tok(1000, 600) }),
+    mk('b', { cli: 'agy', status: 'completed', tokens: tok(100, 300) }),
+  ])[0]).toMatch(/ cache 64% /)
+  // A known zero is an observation, printed as such.
+  expect(phaseText([mk('a', { cli: 'codex', status: 'completed', tokens: tok(1000, 0) })])[0]).toMatch(/ cache 0% /)
+})
+
+test('no cache counts, no cache text: never a 0% for unknown, and an old $.state run still draws', () => {
+  for (const tokens of [tok(1000, null), tok(1000, undefined), tok(null, 50), tok(0, 0)]) {
+    expect(phaseText([mk('a', { cli: 'codex', status: 'completed', tokens })])[0]).not.toMatch(/cache/)
+  }
+  // A run that reports cached counts next to one that does not: only the reporting run is the ratio.
+  expect(phaseText([
+    mk('a', { cli: 'codex', status: 'completed', tokens: tok(1000, 500) }),
+    mk('b', { cli: 'muse', status: 'completed', tokens: tok(9000, null) }),
+  ])[0]).toMatch(/ cache 50% /)
+  // A run folded before this feature: no prefixSha, no tokens.cached.
+  const old = { ...mk('o', { status: 'completed', tokens: { input: 10, output: 1 } }) } as Record<string, unknown>
+  delete old.prefixSha
+  const lines = phaseText([old as OcliRun])
+  expect(lines).toHaveLength(1)
+  expect(lines[0]).not.toMatch(/cache|prefix/)
+})
+
+test('⚠prefix×K: the phase runs on one cli carry K > 1 distinct prefixes; another cli or an unknown one is not a change', () => {
+  const run = (id: string, cli: string, prefixSha?: string) => mk(id, { cli, status: 'completed', ...(prefixSha ? { prefixSha } : {}) })
+  expect(phaseText([run('a', 'codex', SHA_A), run('b', 'codex', SHA_B)])[0]).toMatch(/ ⚠prefix×2/)
+  expect(phaseText([run('a', 'codex', SHA_A), run('b', 'codex', SHA_B), run('c', 'codex', '0000000000ff')])[0]).toMatch(/ ⚠prefix×3/)
+  expect(phaseText([run('a', 'codex', SHA_A), run('b', 'codex', SHA_A)])[0]).not.toMatch(/prefix/)
+  expect(phaseText([run('a', 'codex', SHA_A), run('b', 'opencode', SHA_B)])[0]).not.toMatch(/prefix/)
+  expect(phaseText([run('a', 'codex', SHA_A), run('b', 'codex')])[0]).not.toMatch(/prefix/)
+})
+
+test('a run folded before cached counts existed keeps cached unknown: a partial sum is never a ratio', () => {
+  // Folded by the old mod: input summed, no tokens.cached key.
+  const [old] = fold([ev(0, 'run.start'), ev(1, 'usage', { input: 1000, output: 1, cached: 900 })])
+  delete (old!.tokens as Record<string, unknown>).cached
+  // The new mod folds the rest: cached would cover one event while input covers both.
+  const [run] = reduce([old!], parseLines(file([ev(2, 'usage', { input: 1000, output: 1, cached: 900 }), ev(3, 'run.end', { status: 'completed' })])))
+  expect(run!.tokens.input).toBe(2000)
+  expect(run!.tokens.cached ?? null).toBeNull()
+  expect(phaseText([run!])[0]).not.toMatch(/cache/)
+  // A run with no usage folded yet starts its cached sum with the new mod.
+  const [fresh] = reduce(fold([ev(0, 'run.start')]), parseLines(file([ev(1, 'usage', { input: 1000, output: 1, cached: 900 })])))
+  expect(fresh!.tokens.cached).toBe(900)
+})
+
+test('a cache ratio is drawn whole or not at all, at every width', () => {
+  const runs = [mk('a', { cli: 'codex', status: 'completed', tokens: tok(1000, 600) })]
+  for (let columns = 12; columns <= 80; columns++) {
+    // The names after the ratio may be cut to `…`; the ratio itself never is (` cache 60…`).
+    for (const line of phaseText(runs, columns)) if (/cach/.test(line)) expect(line).toMatch(/ cache \d+%[ …]/)
+  }
+})
+
+test('cache and prefix text never widen a phase row past its columns', () => {
+  const runs = [
+    mk('a', { cli: 'codex', status: 'completed', prefixSha: SHA_A, tokens: tok(1000, 600) }),
+    mk('b', { cli: 'codex', status: 'completed', prefixSha: SHA_B, tokens: tok(1000, 600) }),
+  ]
+  for (const columns of [20, 24, 28, 32, 36, 40, 46, 60]) {
+    for (const line of texts(card('t', runs, NOW_C, columns, () => false))) expect(cellsOf(line)).toBeLessThanOrEqual(columns)
+  }
 })

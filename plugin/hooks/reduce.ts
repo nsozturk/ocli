@@ -18,6 +18,7 @@ export type OcliEvent = {
   title?: string
   root?: string
   phase?: string
+  prefixSha?: string
   label?: string
   tool?: string
   detail?: string
@@ -25,6 +26,7 @@ export type OcliEvent = {
   text?: string
   input?: number | null
   output?: number | null
+  cached?: number | null
   status?: OcliStatus
   exitCode?: number | null
   ms?: number | null
@@ -35,6 +37,7 @@ export type OcliEvent = {
 }
 
 const STALE_MS = 10 * 60_000
+const PREFIX_SHA = /^[0-9a-f]{12}$/
 const STATUSES: readonly OcliStatus[] = ['running', 'completed', 'failed', 'blocked', 'spawn-error', 'dispatch-error']
 
 // ESC/CSI sequences (7- and 8-bit), OSC strings, then two-byte ESC sequences; then any C0/C1/DEL left.
@@ -72,6 +75,8 @@ function toEvent(raw: unknown): OcliEvent | null {
   switch (event.kind) {
     case 'run.start':
       event.model = clean(r.model, 80); event.title = clean(r.title, 120); event.root = clean(r.root, 300); event.phase = clean(r.phase, 40)
+      // Exactly the dispatcher's shape or nothing: never cleaned into something that looks like one.
+      if (typeof r.prefixSha === 'string' && PREFIX_SHA.test(r.prefixSha)) event.prefixSha = r.prefixSha
       break
     case 'step': event.label = clean(r.label); break
     case 'tool.start':
@@ -79,7 +84,7 @@ function toEvent(raw: unknown): OcliEvent | null {
     case 'message':
     case 'warn': event.text = clean(r.text); break
     case 'unparsed': event.text = clean(r.line); break
-    case 'usage': event.input = num(r.input); event.output = num(r.output); break
+    case 'usage': event.input = num(r.input); event.output = num(r.output); event.cached = num(r.cached); break
     case 'run.end':
       event.status = status(r.status); event.exitCode = num(r.exitCode); event.ms = num(r.ms)
       event.score = num(r.score); event.dropped = droppedTotal(r.dropped)
@@ -185,6 +190,7 @@ export function reduce(runs: readonly OcliRun[], events: readonly OcliEvent[]): 
       run.title = e.title ?? ''
       run.where = (e.root ?? '').replace(/\/+$/, '').split('/').pop() ?? ''
       run.phase = e.phase ?? ''
+      if (e.prefixSha) run.prefixSha = e.prefixSha
       run.startedAt = e.at
     } else if (e.kind === 'tool.start') {
       run.streak = { ...repeat(prev.streak, sigOf(e)), open: true }
@@ -198,7 +204,12 @@ export function reduce(runs: readonly OcliRun[], events: readonly OcliEvent[]): 
         run.streak = { ...call, okSince: e.ok === true, open: false }
       } else if (prev.streak.sig === sig) run.streak = { ...prev.streak, okSince: e.ok === true, open: false }
     } else if (e.kind === 'warn') run.warnCount += 1
-    else if (e.kind === 'usage') run.tokens = { input: add(run.tokens.input, e.input), output: add(run.tokens.output, e.output) }
+    else if (e.kind === 'usage') {
+      // A run whose input was summed before cached counts were read keeps cached unknown: a sum over
+      // only the later events next to the whole input would draw a confidently wrong ratio.
+      const isOld = prev.tokens.input != null && prev.tokens.cached === undefined
+      run.tokens = { input: add(run.tokens.input, e.input), output: add(run.tokens.output, e.output), ...(isOld ? {} : { cached: add(run.tokens.cached ?? null, e.cached) }) }
+    }
     else if (e.kind === 'run.end') {
       Object.assign(run, { status: e.status, endedAt: e.at, exitCode: e.exitCode, ms: e.ms, score: e.score, dropped: e.dropped })
       if (e.witness) run.witness = e.witness
@@ -393,6 +404,32 @@ const width = cells
 const fill = (text: string, columns: number) => text + ' '.repeat(Math.max(0, columns - width(text)))
 
 /** A phase is done once it has a run and none of its runs is running or stale. */
+// ponytail: CLIs whose `cached` is part of `input` (codex's cached_input_tokens); opencode's cache.read
+// and agy's cache_read_tokens come on top of it. A new CLI with subset semantics belongs here.
+const CACHED_IN_INPUT = new Set(['codex'])
+
+/** ` cache N%`: cache reads over all input read, for the phase's runs that report both; '' when none
+ * does (unknown is never 0%). */
+function cacheNote(list: readonly OcliRun[]): string {
+  let cached: number | null = null
+  let read = 0
+  for (const run of list) {
+    const { input, cached: hit } = run.tokens
+    if (input == null || hit == null) continue
+    cached = add(cached, hit)
+    read += CACHED_IN_INPUT.has(run.cli) ? input : input + hit
+  }
+  return cached === null || read <= 0 ? '' : ` cache ${Math.round((cached / read) * 100)}%`
+}
+
+/** ` ⚠prefix×K`: K > 1 distinct --prompt fingerprints among the phase's runs on one cli. */
+function prefixNote(list: readonly OcliRun[]): string {
+  const byCli = new Map<string, Set<string>>()
+  for (const run of list) if (run.prefixSha) byCli.set(run.cli, (byCli.get(run.cli) ?? new Set()).add(run.prefixSha))
+  const k = Math.max(0, ...[...byCli.values()].map(set => set.size))
+  return k > 1 ? ` ⚠prefix×${k}` : ''
+}
+
 const isPhaseDone = (list: readonly OcliRun[], now: number): boolean =>
   list.length > 0 && list.every(run => !['running', 'stale'].includes(displayStatus(run, now)))
 
@@ -447,8 +484,14 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
     const unwitnessed = list.filter(run => run.witness?.length).length
     const warn = unwitnessed ? ` ⚠${unwitnessed}` : ''
     const dots = shown.slice(list.length - keep).map(colorOf)
-    const tailRoom = room - width(prefix) - dots.length - width(more) - width(warn)
-    const tail = fill(more + warn + (tailRoom > 1 ? fit(note, tailRoom) : ''), columns - width(right) - width(prefix) - dots.length)
+    // A prefix marker that does not fit whole is dropped, never cut into a misleading `⚠pre`.
+    const drift = prefixNote(list)
+    const marks = warn + (width(drift) <= room - width(prefix) - dots.length - width(more) - width(warn) ? drift : '')
+    // The cache ratio leads the LLM names and is cut with them; a ratio that does not fit whole is dropped.
+    const cache = cacheNote(list)
+    const tailRoom = room - width(prefix) - dots.length - width(more) - width(marks)
+    const names = width(cache) < tailRoom ? cache + note : note
+    const tail = fill(more + marks + (tailRoom > 1 ? fit(names, tailRoom) : ''), columns - width(right) - width(prefix) - dots.length)
     rows.push({ kind: 'phase', key: `phase:${open}`, open, isOpen: isOpenNow, prefix, dots, tail, right, ...(list.length ? {} : { isPending: true }) })
     list.forEach((run, i) => {
       if (isOpenNow) {
