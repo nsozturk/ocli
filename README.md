@@ -31,25 +31,28 @@ Workflow-style cards with phases, status dots, token counts and the latest tool 
 ## The card
 
 ```
-╭──────────────────────────────────────────────╮
-│ ▸ fix-parser                         4m12s × │   press ▸ to open it in place; × once it ended
-│ ocli · Completed                             │   Running > Blocked > Failed > Stale > Completed
-│ 4 runs · 131k tokens                         │   input + output, summed over runs
-│ Fix the tokenizer edge cases                 │   the newest run's --title
-│ Phases                                       │
-│   implement ●●● glm-5.3, gpt-6-astra     3/3 │   one dot per run, ended/total, the LLMs
-│   review ● muse-spark-1.3-contributor    1/1 │
-╰──────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────╮
+│ ▸ fix-parser                                       4m12s │   press ▸ to open it in place; × once every run ended
+│ ocli · Running                                           │   Running > Blocked > Failed > Stale > Completed
+│ 4 runs · 131k tokens                                     │   input + output, summed over runs
+│ Fix the tokenizer edge cases                             │   the newest run's --title
+│ Phases                                                   │
+│   implement  ●●●  glm-5.3, gpt-6-astra · 2/3 done        │   one dot per run, the LLMs, ended/total
+│     ▁▁▂▃▁▅▇█▃▂ ↳ tool.end bash: npm test                 │   a running run's sparkline and last action
+│   review  ●  muse-spark-1.3-contributor · 1/1 done       │
+╰──────────────────────────────────────────────────────────╯
 ```
 
-Press the card's head to open it in place: under each phase, one block per run says what the run
-was asked (its brief), where it works, its tools and tokens, what it is doing now (its live line and
-last tool calls), its latest message and warnings, and how it ended (exit, score, `--verify`). Press
-again to close it. Cards are spaced apart, and a finished card (completed, failed or blocked) gets an
-`×` that moves it to a **History** card at the bottom (closed by default; open it to restore one);
-`Move completed to history` moves them all at once. Nothing moves to History by itself, a running
-card is never moved, and History is kept across sessions. Ended runs raise one toast each; the
-status line reads `ocli: N running`.
+Under each phase, a running run keeps one line: its event-rate sparkline and its last action. Press
+the card's head to open it in place: under each phase, one block per run says what the run was asked
+(its brief: `--brief`, else the opening of `--prompt`), where it works, its tools and tokens, what
+it is doing now (its live line and last tool calls), its latest message and warnings, and how it
+ended (exit, score, `--verify`). Press again to close it. Cards are spaced apart, and a finished
+card (completed, failed or blocked) gets an `×` that moves it to a **History** card at the bottom
+(closed by default; open it to restore one); `Move completed to history` moves every Completed card
+at once. Nothing moves to History by itself, a card with a running or stale run is never moved, and
+History is kept per project across sessions. Ended runs raise one toast each; the status line reads
+`ocli: N running`.
 
 What else it does:
 
@@ -63,8 +66,8 @@ What else it does:
 - **Night digest.** `/ocli-digest` (or `node dispatcher/digest.mjs`) summarizes the last 12 hours per
   task and phase: runs by status, scored passes against unscored runs, tokens, witness findings, and
   what needs a decision.
-- **Heartbeat and loop warning.** In the open card, a running run's live line leads with a 10-cell
-  event-rate sparkline (30 s bins) and `xN` once one call repeats; eight identical calls with no
+- **Heartbeat and loop warning.** A running run's live line leads with a 10-cell event-rate
+  sparkline (30 s bins) and `xN` once one call repeats; eight identical calls with no
   success turn it warning-coloured, mark its phase row `⟳N`, and raise one "may be looping" toast.
   Nothing acts on the run.
 - **Cache ratio and prefix drift.** A phase row shows `cache N%`: cache reads over all input read, for
@@ -152,7 +155,7 @@ there is simply no card.
 | `--verify` | a shell command run after the CLI; its exit code becomes `score` 1/0 |
 | `--suffix` | per-run text appended last, so the shared prompt prefix stays cache-stable |
 | `--parent` | the record id of the run this one continues |
-| `--brief` | what the person reads in the pane's expanded card (default: the `--suffix`, the prompt's first heading and first paragraph, at most 600 code points) |
+| `--brief` | what the person reads in the pane's open card (default: the prompt's first heading and first task paragraph, then the `--suffix` without its worktree path; at most 600 code points). The pane shows the opening of `--prompt` unless `--brief` is given: keep secrets out of it. |
 | `--declare-phases` | with `--task` only: write the task's plan (comma-separated phase names) and exit |
 
 Exit codes: `0` the run was recorded (whatever the CLI's own exit code), `1` `--verify` failed,

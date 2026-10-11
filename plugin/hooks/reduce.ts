@@ -512,10 +512,10 @@ export type Detail = false | 'full' | 'compact'
 
 const DISMISSIBLE: readonly TaskStatus[] = ['Completed', 'Failed', 'Blocked']
 
-/** Only a card whose runs are all over may go to History: never a running or stale one, nor a plan
- * with no run yet. */
+/** Only a card whose runs are all over may go to History: never one with a running or stale run (a
+ * stale run may still be alive), nor a plan with no run yet. */
 export const isDismissible = (runs: readonly OcliRun[], now: number): boolean =>
-  runs.length > 0 && DISMISSIBLE.includes(taskStatus(runs, now))
+  runs.length > 0 && DISMISSIBLE.includes(taskStatus(runs, now)) && runs.every(run => !['running', 'stale'].includes(displayStatus(run, now)))
 
 /** A card's head row `columns` wide: the ▸/▾ toggle naming it, `right` at the edge, then ` ×` when
  * `dismiss` is its press key. */
@@ -558,32 +558,40 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
   rows.push({ kind: 'text', key: 'phases', text: 'Phases', isBold: true })
   for (const [phase, list] of phases) {
     const shown = list.map(run => displayStatus(run, now))
-    const right = `${list.filter(run => isEnded(run.status)).length}/${list.length}`
-    const room = columns - width(right) - 1
+    const right = `${list.filter(run => isEnded(run.status)).length}/${list.length} done`
+    const room = columns - width(right)
     // A declared phase with no run yet says so where the LLM names would be.
-    const note = list.length ? ` ${[...new Set(list.map(shortModel))].join(', ')}` : ' declared'
+    const names = list.length ? [...new Set(list.map(shortModel))].join(', ') : 'declared'
     // The name gives way to the dots and the LLM names, down to a third of the row.
-    const nameRoom = Math.max(Math.ceil(room / 3), room - list.length - width(note) - 1)
-    const prefix = `${fit(`  ${phase}`, Math.max(1, Math.min(room - 2, nameRoom)))} `
+    const nameRoom = Math.max(Math.ceil(room / 3), room - list.length - width(names) - 7)
+    const prefix = `${fit(`  ${phase}`, Math.max(1, Math.min(room - 4, nameRoom)))}  `
     // ponytail: a phase with more runs than room shows its newest dots and `+K` for the rest;
     // done/total still counts all.
-    const dotRoom = Math.max(0, room - width(prefix))
+    const dotRoom = Math.max(0, room - width(prefix) - 2)
     const keep = list.length <= dotRoom ? list.length : Math.max(0, dotRoom - 2 - String(list.length).length)
-    const more = keep < list.length ? ` +${list.length - keep}` : ''
-    const unwitnessed = list.filter(run => run.witness?.length).length
-    // A run that may be looping marks its phase (its live line is in the open card).
-    const looping = list.filter((run, i) => shown[i] === 'running' && isLooping(run)).length
-    const warn = (unwitnessed ? ` ⚠${unwitnessed}` : '') + (looping ? ` ⟳${looping}` : '')
     const dots = shown.slice(list.length - keep).map(colorOf)
-    // A prefix marker that does not fit whole is dropped, never cut into a misleading `⚠pre`.
-    const drift = prefixNote(list)
-    const marks = warn + (width(drift) <= room - width(prefix) - dots.length - width(more) - width(warn) ? drift : '')
-    // The cache ratio leads the LLM names and is cut with them; a ratio that does not fit whole is dropped.
-    const cache = cacheNote(list)
-    const tailRoom = room - width(prefix) - dots.length - width(more) - width(marks)
-    const names = width(cache) < tailRoom ? cache + note : note
-    const tail = fill(more + marks + (tailRoom > 1 ? fit(names, tailRoom) : ''), columns - width(right) - width(prefix) - dots.length)
+    const unwitnessed = list.filter(run => run.witness?.length).length
+    const looping = list.filter((run, i) => shown[i] === 'running' && isLooping(run)).length
+    // Parts joined with " · ", the done count last: the marks (never cut), the LLM names (cut to fit),
+    // then the cache ratio and the prefix-drift marker, each drawn whole or dropped.
+    const marks = [keep < list.length ? `+${list.length - keep}` : '', unwitnessed ? `⚠${unwitnessed}` : '', looping ? `⟳${looping}` : ''].filter(Boolean)
+    const optional = [cacheNote(list).trim(), prefixNote(list).trim()].filter(Boolean)
+    const tailRoom = room - width(prefix) - dots.length
+    const lead = dots.length ? '  ' : ''
+    const joined = (parts: string[]) => `${lead}${parts.join(' · ')} · `
+    let extra = optional
+    while (extra.length && width(joined([...marks, names, ...extra])) > tailRoom) extra = extra.slice(0, -1)
+    const nameFit = tailRoom - width(joined([...marks, '', ...extra]))
+    // ponytail: past the marks no room is left on a very narrow pane: the tail is cut, never the done count.
+    const tail = tailRoom > 0 ? fit(joined([...marks, ...(nameFit > 1 ? [fit(names, nameFit)] : []), ...extra]), tailRoom) : ''
     rows.push({ kind: 'phase', key: `phase:${task}/${phase}`, prefix, dots, tail, right, ...(list.length ? {} : { isPending: true }), ...(looping ? { isWarn: true } : {}) })
+    // Closed, a running run keeps one glanceable line under its phase: its sparkline and last action.
+    if (!isOpen) {
+      list.forEach((run, i) => {
+        if (shown[i] !== 'running' || !run.lastSummary) return
+        rows.push({ kind: 'text', key: `live:${runKey(run)}`, text: `  ${liveLine(run, now, columns - 2)}`, ...(isLooping(run) ? { color: 'warning' } : {}) })
+      })
+    }
     if (!isOpen) continue
     for (const run of list) {
       runDetail(run, now, columns - 2, open === 'compact').forEach((line, j) => rows.push({
@@ -607,9 +615,10 @@ const MAX_HISTORY = 100
 const MAX_HISTORY_ROWS = 20
 const HISTORY_STATUSES: readonly OcliHistory['status'][] = ['Completed', 'Failed', 'Blocked']
 
-/** A dismissible task's snapshot as of `now`: what its History row draws after its runs age out. */
-export function historyEntry(task: string, runs: readonly OcliRun[], now: number): OcliHistory {
-  return { task, status: taskStatus(runs, now) as OcliHistory['status'], runs: runs.length, tokens: tokensOf(runs), span: taskSpan(runs, now), lastAt: latestAt(runs), dismissedAt: now }
+/** A dismissible task's snapshot as of `now`, in `scope` (the dirs the pane watches): what its
+ * History row draws after its runs age out. */
+export function historyEntry(scope: string, task: string, runs: readonly OcliRun[], now: number): OcliHistory {
+  return { scope, task, status: taskStatus(runs, now) as OcliHistory['status'], runs: runs.length, tokens: tokensOf(runs), span: taskSpan(runs, now), lastAt: latestAt(runs), dismissedAt: now }
 }
 
 /** A dismissed card stays out of the list until one of its runs has an event newer than the
@@ -617,32 +626,43 @@ export function historyEntry(task: string, runs: readonly OcliRun[], now: number
 export const isDismissed = (entry: OcliHistory | undefined, runs: readonly OcliRun[]): boolean =>
   !!entry && latestAt(runs) <= entry.lastAt
 
-/** `list` with `entries` added: one entry per task (the new one replaces the old), the newest 100. */
+const sameEntry = (a: OcliHistory, b: OcliHistory) => a.scope === b.scope && a.task === b.task
+
+/** `list` with `entries` added: one entry per (scope, task), the new one replacing the old; the newest 100. */
 export function addHistory(list: readonly OcliHistory[], entries: readonly OcliHistory[]): OcliHistory[] {
-  const tasks = new Set(entries.map(entry => entry.task))
-  return [...list.filter(entry => !tasks.has(entry.task)), ...entries].slice(-MAX_HISTORY)
+  return [...list.filter(entry => !entries.some(added => sameEntry(entry, added))), ...entries].slice(-MAX_HISTORY)
 }
 
 const numOrNull = (value: unknown): number | null | undefined => (value === null ? null : num(value) ?? undefined)
+// What a Date can hold: past it, toISOString throws and a clock reads NaN.
+const MAX_TIME = 8.64e15
+const timeOf = (value: unknown): number | null => {
+  const n = num(value)
+  return n !== null && Math.abs(n) <= MAX_TIME ? n : null
+}
 
 /** History as read back from $.store (a file under the user's config): every entry checked and its
- * task cleaned; anything else dropped. */
+ * strings cleaned; an entry with no scope (written before scopes) or out of range is dropped; one
+ * per (scope, task), the last kept; the newest 100. */
 export function foldHistory(raw: unknown): OcliHistory[] {
   if (!Array.isArray(raw)) return []
-  const out: OcliHistory[] = []
+  let out: OcliHistory[] = []
   for (const item of raw) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue
     const r = item as Record<string, unknown>
-    const task = clean(r.task, 120)
-    const tokens = numOrNull(r.tokens)
-    const span = numOrNull(r.span)
-    const [runs, lastAt, dismissedAt] = [num(r.runs), num(r.lastAt), num(r.dismissedAt)]
-    if (!task || !HISTORY_STATUSES.includes(r.status as OcliHistory['status']) || tokens === undefined || span === undefined
+    const [scope, task] = [clean(r.scope, 4000), clean(r.task, 120)]
+    const [tokens, span] = [numOrNull(r.tokens), numOrNull(r.span)]
+    const [lastAt, dismissedAt] = [timeOf(r.lastAt), timeOf(r.dismissedAt)]
+    const runs = Number.isInteger(r.runs) && (r.runs as number) >= 0 ? (r.runs as number) : null
+    if (!scope || !task || !HISTORY_STATUSES.includes(r.status as OcliHistory['status']) || tokens === undefined || span === undefined
       || runs === null || lastAt === null || dismissedAt === null) continue
-    out.push({ task, status: r.status as OcliHistory['status'], runs, tokens, span, lastAt, dismissedAt })
+    out = addHistory(out, [{ scope, task, status: r.status as OcliHistory['status'], runs, tokens, span, lastAt, dismissedAt }])
   }
-  return out.slice(-MAX_HISTORY)
+  return out
 }
+
+/** Local hours and minutes, as the person's clock reads them. */
+const clockOf = (ms: number): string => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
 
 /** The History card, `columns` wide: closed, its ▸ head and the count; open, also a row per entry,
  * newest first (at most 20, the rest counted), each with a restore Button. */
@@ -651,7 +671,7 @@ function historyCard(entries: readonly OcliHistory[], isOpen: boolean, columns: 
   if (isOpen) {
     const newest = [...entries].sort((a, b) => b.dismissedAt - a.dismissedAt)
     for (const entry of newest.slice(0, MAX_HISTORY_ROWS)) {
-      const at = new Date(entry.dismissedAt).toISOString().slice(11, 16)
+      const at = clockOf(entry.dismissedAt)
       const text = ` ${entry.task} · ${entry.status} · ${plural(entry.runs, 'run')} · ${count(entry.tokens)} tokens · ${duration(entry.span)} · dismissed ${at}`
       rows.push({ kind: 'press', key: `entry:${entry.task}`, press: `restore:${entry.task}`, label: 'restore', text: fit(text, columns - width('restore')), color: TASK_COLOR[entry.status] })
     }

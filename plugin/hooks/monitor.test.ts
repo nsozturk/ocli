@@ -103,7 +103,7 @@ test('pane draws a run line on terminal AND desktop, with subagents and footer',
     expect(joined).toContain('glm-live')
     // GLM_LIVE is opencode: 3425600 cache reads on top of 119333 fresh input tokens (33 usage events)
     // -> 3425600 / 3544933 = 96.6%. The literal cached/input would print 2871%.
-    expect(texts.filter(t => t.startsWith('  implement'))).toEqual([expect.stringMatching(/^ {2}implement ● cache 97% glm-5\.3 +1\/1$/)])
+    expect(texts.filter(t => t.startsWith('  implement'))).toEqual(['  implement  ●  glm-5.3 · cache 97% · 1/1 done'])
     const open = await expanded($, surface, ['glm-live'])
     expect(open.some(t => t.startsWith('  ✓ completed · glm-5.3 (opencode) · implement · 15m54s'))).toBe(true)
     expect(open.some(t => t.startsWith('    37 tools · '))).toBe(true)
@@ -219,7 +219,7 @@ test('control characters and ANSI escapes from a live file never reach the drawi
     for (const text of texts) expect(text).not.toMatch(CONTROL)
     expect(texts.join('\n')).toContain('task-x')
     expect(texts.some(t => t.includes('evilmodel'))).toBe(true)
-    expect(texts.some(t => t.startsWith('  phase 1 ●'))).toBe(true)
+    expect(texts.some(t => t.startsWith('  phase 1  ●'))).toBe(true)
     const open = await expanded($, surface, ['task-x'])
     for (const text of open) expect(text).not.toMatch(CONTROL)
     expect(open.some(t => t.includes('evilmodel (codex)'))).toBe(true)
@@ -480,7 +480,7 @@ function cardTask(h: ReturnType<typeof harness>) {
   h.put(`${ROOT}/task-p/d.jsonl`, runLines('d', [{ kind: 'run.start', model: 'gpt-5.6-luna' }, end('failed')], NOW - 80_000, { ...at, role: 'reason' }))
 }
 
-test('a task is one round card with a blank row under it: the ▸ toggle and span, status, runs and tokens, title, one row per phase with dots, done/total and LLMs', OPTIONS, async ($, on) => {
+test('a task is one round card with a blank row under it: the ▸ toggle and span, status, runs and tokens, title, one row per phase with dots, LLMs and done count, and the running run\'s live line', OPTIONS, async ($, on) => {
   const h = harness(on)
   cardTask(h)
   await h.start($)
@@ -498,12 +498,13 @@ test('a task is one round card with a blank row under it: the ▸ toggle and spa
     const rows = cardsOf(tree).get('task:task-p')!.map(r => r.trimEnd())
     expect(rows[1]).toMatch(/^▸ task-p +2m06s$/)
     expect(rows.slice(2, 6)).toEqual(['ocli · Running', '4 runs · 1k tokens', 'Slice 046 cards', 'Phases'])
-    expect(rows[6]).toMatch(/^ {2}implement ●● gpt-6-astra, glm-5\.3 +1\/2$/)
-    expect(rows[7]).toMatch(/^ {2}review ● glm-5\.3 +1\/1$/)
-    expect(rows[8]).toMatch(/^ {2}reason ● gpt-5\.6-luna +1\/1$/)
-    // Closed, the card has no per-run line; under its border, the blank row that parts it from the next.
-    expect(rows.slice(9)).toEqual(['╰', ''])
-    expect((await paneText($, surface)).filter(t => t.includes('↳'))).toEqual([])
+    expect(rows[6]).toBe('  implement  ●●  gpt-6-astra, glm-5.3 · 1/2 done')
+    // The running run's glanceable line: both events (NOW - 60 s, NOW - 59 s) in the third-newest 30 s cell at NOW + 6 s.
+    expect(rows[7]).toBe(`    ${' '.repeat(7)}█   ↳ tool.end bash: npm test`)
+    expect(rows[8]).toBe('  review  ●  glm-5.3 · 1/1 done')
+    expect(rows[9]).toBe('  reason  ●  gpt-5.6-luna · 1/1 done')
+    // Under its border, the blank row that parts it from the next card.
+    expect(rows.slice(10)).toEqual(['╰', ''])
   }
 })
 
@@ -557,7 +558,7 @@ test('runs kept in $.state by 0.1.x (no phase) still draw, grouped by role', OPT
   await h.tick()
   for (const surface of SURFACES) {
     const rows = await paneText($, surface)
-    expect(rows.some(t => /^ {2}implement ● gpt-5\.6-luna +1\/1$/.test(t))).toBe(true)
+    expect(rows.some(t => t === '  implement  ●  gpt-5.6-luna · 1/1 done')).toBe(true)
   }
 })
 
@@ -648,13 +649,13 @@ test('a plan beside a run file: declared phases drawn first, a pending one dim w
     expect(rows).toContain('2 runs · ? tokens · 1/4 phases')
     const phases = rows.filter(r => /^ {2}\S/.test(r))
     expect(phases.map(r => r.split(/\s+/)[1])).toEqual(['implement', 'review', 'merge', 'hotfix'])
-    expect(phases[1]).toMatch(/^ {2}review +declared +0\/0$/)
-    expect(phases[0]).toMatch(/1\/1$/)
+    expect(phases[1]).toBe('  review  declared · 0/0 done')
+    expect(phases[0]).toMatch(/1\/1 done$/)
     // The pending row is one dim Text, its name included: no Button (phase rows open nothing).
     const all = (n: El | string | undefined): El[] => (!n || typeof n === 'string' ? [] : [n, ...(n.children ?? []).flatMap(all)])
     const named = all(tree).filter(n => /^ {2}review\b/.test(flat(n)) && n.type !== 'Box')
     expect(named.map(n => [n.type, n.props?.dimColor])).toEqual([['Text', true]])
-    expect(flat(named[0]!).trimEnd()).toMatch(/^ {2}review +declared +0\/0$/)
+    expect(flat(named[0]!).trimEnd()).toBe('  review  declared · 0/0 done')
     const ran = byKey(tree, 'row:phase:task-a/implement')!
     expect((ran.children ?? []).some(c => typeof c !== 'string' && c.type === 'Text' && !c.props?.dimColor)).toBe(true)
   }
@@ -676,7 +677,7 @@ test('a plan with no runs yet is a card of its own, ordered by the plan mtime', 
     await ui.unmount()
     const cards = cardsOf(tree)
     expect([...cards.keys()]).toEqual(['task:task-new', 'task:task-a', 'task:task-old', 'agents'])
-    expect(cards.get('task:task-new')!.map(r => r.trimEnd())).toEqual(expect.arrayContaining(['ocli · Declared', '0 runs · ? tokens · 0/1 phases', expect.stringMatching(/^ {2}x +declared +0\/0$/)]))
+    expect(cards.get('task:task-new')!.map(r => r.trimEnd())).toEqual(expect.arrayContaining(['ocli · Declared', '0 runs · ? tokens · 0/1 phases', '  x  declared · 0/0 done']))
   }
 })
 
@@ -691,13 +692,13 @@ test('a malformed plan costs one footer error, once; the pane still draws; a fix
   for (const surface of SURFACES) {
     const joined = (await paneText($, surface)).join('\n')
     expect(joined).toMatch(/errors 1/)
-    expect(joined).toMatch(/^ {2}implement ● glm-5\.3 +0\/1$/m)
+    expect(joined).toMatch(/^ {2}implement {2}● {2}glm-5\.3 · 0\/1 done$/m)
     expect(joined).not.toContain('phases ·')
     expect(joined).toMatch(/^1 run · \? tokens$/m)
   }
   h.put(`${ROOT}/task-a/plan.json`, planText('implement', 'review'), { mtimeMs: NOW + 5000 })
   await h.tick()
-  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^ {2}review +declared +0\/0$/m)
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^ {2}review {2}declared · 0\/0 done$/m)
   h.fs.delete(`${ROOT}/task-a/plan.json`)
   await h.tick()
   const joined = (await paneText($, 'desktop')).join('\n')
@@ -883,7 +884,7 @@ test('a run whose claims its trace does not back: ⚠1 on its phase row, a warni
   const warnings = (node: El | string): El[] => typeof node === 'string' ? []
     : [...(node.type === 'Text' && flat(node).includes('unwitnessed') ? [node] : []), ...(node.children ?? []).flatMap(warnings)]
   for (const surface of SURFACES) {
-    expect((await paneText($, surface)).find(t => t.startsWith('  implement'))).toMatch(/^ {2}implement ●● ⚠1 /)
+    expect((await paneText($, surface)).find(t => t.startsWith('  implement'))).toBe('  implement  ●●  ⚠1 · gpt-5.6-luna · 2/2 done')
     expect((await expanded($, surface, ['task-w'])).filter(t => t.includes('unwitnessed')).map(t => t.trim()))
       .toEqual(['⚠ unwitnessed: claimedTestsButNone, staleGreen'])
     const ui = await mount($, surface)
@@ -1356,7 +1357,8 @@ test('the live row: a sparkline, ×n and the warning colour while looping in the
     const closed = await mount($, surface)
     const tree = await closed.drawn()
     await closed.unmount()
-    expect(liveTexts(tree)).toEqual([])
+    // Closed: the running runs keep their live line; only the looping one is warning-coloured.
+    expect(liveTexts(tree).filter(n => n.props?.color === 'warning').map(flat)).toEqual([expect.stringMatching(/^ {4}[ ▁-█]{10} ↳ tool\.end bash: npm test \(failed\) ×8$/)])
     const mark = byKey(tree, 'row:phase:task-a/implement')!.children!.find(c => typeof c !== 'string' && flat(c).includes('⟳1')) as El
     expect(mark.props?.color).toBe('warning')
     const ui = await mount($, surface, 60)
@@ -1418,6 +1420,12 @@ const keysOf = async ($: unknown, surface: (typeof SURFACES)[number], bodyRows =
   await ui.unmount()
   return keys
 }
+/** Local hours and minutes, as History draws them: computed here, so tests hold in every timezone. */
+const hhmm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+/** A History entry as $.store keeps it; scope is the watched dir (OPTIONS: ROOT). */
+const stored = (task: string, over: Record<string, unknown> = {}) =>
+  ({ scope: ROOT, task, status: 'Completed', runs: 1, tokens: null, span: 1000, lastAt: NOW - 89_000, dismissedAt: NOW - 1000, ...over })
+const BULK = 'Move completed to history'
 
 test('× moves an ended card to a closed History at the bottom; never by itself; opening it lists the card, restore brings it back; on both surfaces', OPTIONS, async ($, on) => {
   const h = harness(on)
@@ -1439,7 +1447,7 @@ test('× moves an ended card to a closed History at the bottom; never by itself;
     if (cards.get('history')![1]!.startsWith('▸')) await ui.press({ key: 'history:toggle' })
     const open = cardsOf(await ui.drawn()).get('history')!
     expect(open[1]).toMatch(/^▾ History +1$/)
-    expect(open[2]).toMatch(/^restore task-done · Completed · 1 run · \? tokens · 1s · dismissed 12:30$/)
+    expect(open[2]).toBe(`restore task-done · Completed · 1 run · ? tokens · 1s · dismissed ${hhmm(h.clock.now())}`)
     await ui.press({ key: 'restore:task-done' })
     // Restored, History is empty: no card for it at all.
     expect([...cardsOf(await ui.drawn()).keys()]).toEqual(['task:task-live', 'task:task-bad', 'task:task-done', 'agents'])
@@ -1447,44 +1455,144 @@ test('× moves an ended card to a closed History at the bottom; never by itself;
   }
 })
 
-test('"Move completed to history" moves every completed, failed or blocked card, never a running one; with none left it is not drawn', OPTIONS, async ($, on) => {
+test('"Move completed to history" moves Completed cards only: Failed and Blocked keep their own ×, a running one is never moved; with none left it is not drawn', OPTIONS, async ($, on) => {
   const h = harness(on)
   historyTasks(h)
   await h.start($)
   await h.tick()
   const ui = await mount($, 'terminal', 60)
-  expect(rowsOf(await ui.drawn())[0]).toBe('Move completed to history')
+  expect(rowsOf(await ui.drawn())[0]).toBe(BULK)
   await ui.press({ key: 'history:all' })
   const rows = rowsOf(await ui.drawn())
+  expect([...cardsOf(await ui.drawn()).keys()]).toEqual(['task:task-live', 'task:task-bad', 'agents', 'history'])
+  expect(rows).not.toContain(BULK)
+  // The failed card keeps its own ×, which still works.
+  await ui.press({ key: 'dismiss:task-bad' })
+  expect([...cardsOf(await ui.drawn()).keys()]).toEqual(['task:task-live', 'agents', 'history'])
   await ui.unmount()
-  expect([...cardsOf(await (await mount($, 'desktop', 60)).drawn()).keys()]).toEqual(['task:task-live', 'agents', 'history'])
-  expect(rows).not.toContain('Move completed to history')
   // Persisted for the next session.
   expect(h.stored.at(-1)!.key).toBe('history')
-  expect(h.stored.at(-1)!.value).toEqual(expect.arrayContaining([expect.objectContaining({ task: 'task-bad', status: 'Failed' }), expect.objectContaining({ task: 'task-done', status: 'Completed' })]))
-  expect(h.stored.at(-1)!.value).toHaveLength(2)
-  // The running one ends: the button is back, for it alone.
+  expect(h.stored.at(-1)!.value).toEqual([expect.objectContaining({ scope: ROOT, task: 'task-done' }), expect.objectContaining({ scope: ROOT, task: 'task-bad', status: 'Failed' })])
+  // The running one ends blocked: no bulk button for it, only its ×.
   h.put(`${ROOT}/task-live/l.jsonl`, runLines('l', [START, end('blocked')], NOW - 10_000, { task: 'task-live' }))
   await h.tick()
   const again = await mount($, 'terminal', 60)
-  expect(rowsOf(await again.drawn())).toContain('Move completed to history')
-  await again.press({ key: 'history:all' })
+  const drawn = rowsOf(await again.drawn())
+  expect(drawn).not.toContain(BULK)
+  await again.press({ key: 'dismiss:task-live' })
   expect([...cardsOf(await again.drawn()).keys()]).toEqual(['agents', 'history'])
   await again.unmount()
 })
 
-test('a dismissed task comes back when one of its runs moves again; History outlives the session through $.store', OPTIONS, async ($, on) => {
-  const entry = { task: 'task-done', status: 'Completed', runs: 1, tokens: null, span: 1000, lastAt: NOW - 89_000, dismissedAt: NOW - 1000 }
-  // A previous session's History, and junk beside it that is dropped.
-  const h = harness(on, { store: { history: [entry, { task: 'evil', status: 'constructor' }] } })
+test('a completed card beside a stale run has no ×, and the bulk button neither draws for it nor moves it', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-mix/a.jsonl`, runLines('a', [START, end('completed')], NOW - 90_000, { task: 'task-mix' }))
+  h.put(`${ROOT}/task-mix/s.jsonl`, runLines('s', [START], NOW - 11 * 60_000, { task: 'task-mix' }))
+  await h.start($)
+  await h.tick()
+  const ui = await mount($, 'terminal', 60)
+  expect(rowsOf(await ui.drawn())).not.toContain(BULK)
+  expect(rowsOf(await ui.drawn()).some(t => t.trimEnd() === 'ocli · Completed')).toBe(true)
+  await expect(ui.press({ key: 'dismiss:task-mix' })).rejects.toThrow()
+  await ui.unmount()
+})
+
+test('bulk moved twice: an entry already in History keeps its first dismissedAt', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  historyTasks(h)
+  await h.start($)
+  await h.tick()
+  const ui = await mount($, 'terminal', 60)
+  await ui.press({ key: 'history:all' })
+  const first = h.clock.now()
+  await h.clock.advance(120_000)
+  // Another task completes: the button is back, and pressing it adds only that one.
+  h.put(`${ROOT}/task-new/n.jsonl`, runLines('n', [START, end('completed')], NOW, { task: 'task-new' }))
+  await h.tick()
+  await ui.press({ key: 'history:all' })
+  await ui.unmount()
+  const list = h.stored.at(-1)!.value as { task: string; dismissedAt: number }[]
+  expect(list.map(e => e.task)).toEqual(['task-done', 'task-new'])
+  expect(list[0]!.dismissedAt).toBe(first)
+  expect(list[1]!.dismissedAt).toBeGreaterThan(first)
+})
+
+test('History is per project: only the watched scope\'s entries hide cards and draw; restore acts in this scope only', OPTIONS, async ($, on) => {
+  // The same task dismissed in another project (scope /other), and task-bad dismissed only there.
+  const h = harness(on, { store: { history: [stored('task-done'), stored('task-done', { scope: '/other' }), stored('task-bad', { scope: '/other' })] } })
   historyTasks(h)
   await h.start($)
   await h.tick()
   expect(await keysOf($, 'terminal')).toEqual(['task:task-live', 'task:task-bad', 'agents', 'history'])
-  // A new run in the dismissed task: its card is back in the list, and out of History.
+  const ui = await mount($, 'terminal', 60)
+  await ui.press({ key: 'history:toggle' })
+  const open = cardsOf(await ui.drawn()).get('history')!
+  expect(open[1]).toMatch(/^▾ History +1$/)
+  await ui.press({ key: 'restore:task-done' })
+  await ui.unmount()
+  // The other project's entries, task-done among them, are untouched.
+  expect(h.stored.at(-1)!.value).toEqual([stored('task-done', { scope: '/other' }), stored('task-bad', { scope: '/other' })])
+})
+
+test('History outlives the session through $.store: merged with $.state on load, never replacing it; a dismissed task comes back when its runs move', OPTIONS, async ($, on) => {
+  // A reload: $.state still holds one entry, $.store another (and junk, dropped on load).
+  const kept: Record<string, unknown> = { history: [stored('task-bad', { status: 'Failed', lastAt: NOW - 79_000 })] }
+  on('state.get', async ($, e, next) => {
+    const got = await next(e)
+    const key = (e as { key: string }).key
+    return (got as { value: { version: number } }).value.version === 0 && key in kept ? { value: { value: kept[key], version: 0 } } : got
+  })
+  const h = harness(on, { store: { history: [stored('task-done'), { task: 'legacy', status: 'Completed' }, stored('evil', { dismissedAt: 1e20 })] } })
+  historyTasks(h)
+  await h.start($)
+  await h.tick()
+  expect(await keysOf($, 'terminal')).toEqual(['task:task-live', 'agents', 'history'])
+  // A new run in a dismissed task: its card is back in the list, and out of History.
   h.put(`${ROOT}/task-done/n.jsonl`, runLines('n', [START], NOW, { task: 'task-done' }))
   await h.tick()
-  expect(await keysOf($, 'terminal')).toEqual(['task:task-done', 'task:task-live', 'task:task-bad', 'agents'])
+  expect(await keysOf($, 'terminal')).toEqual(['task:task-done', 'task:task-live', 'agents', 'history'])
+})
+
+test('a stored entry with a dismissedAt past Date\'s range is dropped: History still opens and draws', OPTIONS, async ($, on) => {
+  const h = harness(on, { store: { history: [stored('task-done'), stored('task-gone', { dismissedAt: 1e20 })] } })
+  historyTasks(h)
+  await h.start($)
+  await h.tick()
+  const ui = await mount($, 'terminal', 60)
+  await ui.press({ key: 'history:toggle' })
+  const open = cardsOf(await ui.drawn()).get('history')!
+  await ui.unmount()
+  expect(open.slice(1, 3)).toEqual([expect.stringMatching(/^▾ History +1$/), expect.stringMatching(/^restore task-done · Completed/)])
+})
+
+test('a $.store read that fails is retried next tick, and nothing is persisted before a read succeeded', OPTIONS, async ($, on) => {
+  const h = harness(on, { store: { history: [stored('task-done')] } })
+  h.storeFails.get = 1
+  historyTasks(h)
+  await h.start($)
+  await h.tick()
+  // Not loaded yet: the bulk press changes $.state, but nothing reaches $.store.
+  const ui = await mount($, 'terminal', 60)
+  await ui.press({ key: 'dismiss:task-bad' })
+  expect(h.stored).toEqual([])
+  await h.tick()
+  // Loaded now, merged with what $.state holds.
+  expect([...cardsOf(await ui.drawn()).keys()]).toEqual(['task:task-live', 'agents', 'history'])
+  await ui.unmount()
+})
+
+test('the pane fits its rows with the bulk button drawn above the cards', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  historyTasks(h)
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    for (let rows = 4; rows <= 40; rows++) {
+      const all = await paneText($, surface, rows)
+      expect(all[0]).toBe(BULK)
+      expect(all.length, `${surface} ${rows}`).toBeLessThanOrEqual(rows)
+    }
+  }
 })
 
 test('the open card says what each run was asked: run.start.brief, else the title; and where it works', OPTIONS, async ($, on) => {

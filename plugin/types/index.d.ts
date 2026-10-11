@@ -63,8 +63,10 @@ export type OcliRun = {
 }
 
 /** A task card the person moved to History: a snapshot, so it still draws after its runs age out.
- * The card stays hidden while no event of its runs is newer than `lastAt`. */
+ * The card stays hidden, in its scope, while no event of its runs is newer than `lastAt`. */
 export type OcliHistory = {
+  /** The dirs the pane watched when the card was moved (the project): History is per scope. */
+  scope: string
   task: string
   status: 'Completed' | 'Failed' | 'Blocked'
   runs: number

@@ -246,13 +246,14 @@ test('a card: header, status, runs and tokens, description, phases with dots, do
   expect(lines[2]!.trimEnd()).toBe('4 runs · 2k tokens')
   expect(lines[3]!.trimEnd()).toBe('Slice 046 cards')
   expect(lines[4]!.trimEnd()).toBe('Phases')
-  expect(lines[5]).toMatch(/^ {2}implement ●●● gpt-6-astra, glm-5.3 +2\/3$/)
+  expect(lines[5]).toBe('  implement  ●●●  gpt-6-astra, glm-5.3 · 2/3 done')
   const impl = c.rows[5]!
   if (impl.kind !== 'phase') throw new Error('not a phase row')
   expect(impl.dots).toEqual(['success', 'suggestion', 'error'])
-  // Closed: one row per phase, no live line under it (the open card has it, runDetail).
-  expect(lines[6]).toMatch(/^ {2}review ● glm-5.3 +1\/1$/)
-  expect(lines.length).toBe(7)
+  // The running run's glanceable line (BASE's run.start at T0, 60 s before NOW_C, is in the third-newest cell).
+  expect(lines[6]!.trimEnd()).toBe(`    ${' '.repeat(7)}█   ↳ tool.end bash: npm test`)
+  expect(lines[7]).toBe('  review  ●  glm-5.3 · 1/1 done')
+  expect(lines.length).toBe(8)
 })
 
 test('an open card lists each run as its runDetail block under its phase row, one live line each', () => {
@@ -323,7 +324,7 @@ test('a long phase name gives way to the dots and the LLM names; dropped dots ar
   const hidden = Number(/\+(\d+)/.exec(sixty.tail)?.[1])
   expect(sixty.dots.length + hidden).toBe(60)
   expect(sixty.dots.length).toBeGreaterThan(10)
-  expect(sixty.right).toBe('60/60')
+  expect(sixty.right).toBe('60/60 done')
 })
 
 // A spread of the runs overflows the stack at ~200k arguments under Node and between 500k and 1M in
@@ -384,11 +385,11 @@ test('a declared phase with no runs draws as a pending row: no dots, "declared",
   expect(rows.map(r => r.kind === 'phase' && r.prefix.trim())).toEqual(['implement', 'review', 'merge', 'extra'])
   const review = rows[1]!
   if (review.kind !== 'phase') throw new Error('not a phase row')
-  expect(review).toMatchObject({ dots: [], right: '0/0', isPending: true })
-  expect(review.tail.trim()).toBe('declared')
+  expect(review).toMatchObject({ dots: [], right: '0/0 done', isPending: true })
+  expect(review.tail.trim()).toBe('declared ·')
   expect(rows[0]!.kind === 'phase' && rows[0]!.isPending).toBeFalsy()
   for (const line of lines) expect([...line].length).toBeLessThanOrEqual(60)
-  expect(lines.find(line => line.startsWith('  review'))).toMatch(/^ {2}review +declared +0\/0$/)
+  expect(lines.find(line => line.startsWith('  review'))).toBe('  review  declared · 0/0 done')
   // The header form counts the declared phases too.
   const header = texts(card('t', runs, NOW_C, 60, false, true, ['implement', 'review', 'merge']))
   expect(header[2]!.trimEnd()).toBe('2 runs · ? tokens · 2/4 phases')
@@ -454,7 +455,7 @@ test('a plan with no runs yet is a card of pending rows: neutral status, no bord
   const lines = texts(c).map(line => line.trimEnd())
   expect(c.color).toBeUndefined()
   expect(lines.slice(1, 3)).toEqual(['ocli · Declared', '0 runs · ? tokens · 0/3 phases'])
-  expect(lines.slice(3)).toEqual(['Phases', expect.stringMatching(/^ {2}a +declared +0\/0$/), expect.stringMatching(/^ {2}b +declared/), expect.stringMatching(/^ {2}c +declared/)])
+  expect(lines.slice(3)).toEqual(['Phases', '  a  declared · 0/0 done', '  b  declared · 0/0 done', '  c  declared · 0/0 done'])
   const variants = cardVariants('t', [], NOW_C, 46, ['t'], ['a', 'b', 'c'])
   expect(variants.slice(0, -1).every(v => v.rows.filter(r => r.kind === 'phase').length === 3)).toBe(true)
   expect(texts(variants.at(-1)!).map(line => line.trimEnd()).slice(2)).toEqual(['0 runs · ? tokens · 0/3 phases', '3 phases · pane too short to list them'])
@@ -498,7 +499,7 @@ test('the card colours the unwitnessed line warning, not dim, and the phase row 
   expect(warned).toHaveLength(2)
   for (const row of warned) expect(row).toMatchObject({ color: 'warning', isDim: false, text: '    ⚠ unwitnessed: staleGreen' })
   const lines = texts(c)
-  expect(lines.find(line => line.startsWith('  implement'))).toMatch(/^ {2}implement ●●● ⚠2 \S.* 3\/3$/)
+  expect(lines.find(line => line.startsWith('  implement'))).toBe('  implement  ●●●  ⚠2 · ? · 3/3 done')
   expect(lines.find(line => line.startsWith('  review'))).not.toContain('⚠')
   for (const line of lines) expect([...line].length).toBeLessThanOrEqual(60)
 })
@@ -914,7 +915,7 @@ const RK1 = mk('rk1', {
 })
 const MUSE_DONE = mk('m1', { phase: 'build', cli: 'muse', model: 'muse-spark', status: 'completed', startedAt: T0, endedAt: T0 + 30_000, ms: 30_000, exitCode: 0, score: 1, verifyCode: 0, title: 'RK2', where: 'wt-rk2' })
 
-test('collapsed card: the head is the ▸ toggle, one row per phase, and no per-run line under it', () => {
+test('collapsed card: the head is the ▸ toggle, one row per phase (parts joined with " · ", done counted), and a running run keeps its live line under it', () => {
   const c = card('t', [RK1, MUSE_DONE, mk('r', { phase: 'review', status: 'completed', endedAt: T0 + 5000 })], NOW_D, 60, false)
   const head = c.rows[0]!
   expect(head).toMatchObject({ kind: 'head', key: 'head:t', press: 'card:t', isOpen: false, label: '▸ t', right: '1m30s' })
@@ -922,14 +923,21 @@ test('collapsed card: the head is the ▸ toggle, one row per phase, and no per-
   const lines = c.rows.map(rowText)
   expect(lines.map(line => line.trimEnd())).toEqual([
     expect.stringMatching(/^▸ t +1m30s$/), 'ocli · Running', '3 runs · 13k tokens', 'RK1 catalogue adapter', 'Phases',
-    expect.stringMatching(/^ {2}build ●● cache 43% glm-5.3, muse-spark +1\/2$/), expect.stringMatching(/^ {2}review ● .* +1\/1$/),
+    '  build  ●●  glm-5.3, muse-spark · cache 43% · 1/2 done',
+    // The running run's one glanceable line, as in 0.3; the ended one has none.
+    `    ${' '.repeat(9)}█ ↳ tool.start bash: npm test`,
+    '  review  ●  ? · 1/1 done',
   ])
+  expect(c.rows.find(r => r.key === 'live:t/rk1')).toMatchObject({ kind: 'text' })
   for (const line of lines) expect(cells(line)).toBeLessThanOrEqual(60)
-  // A looping run marks its phase row, in warning colour: the live line is no longer under it.
+  // A looping run marks its phase row ⟳ and turns its live line warning.
   const loops = card('t', [{ ...RK1, streak: { sig: 'bash: npm test', n: 9, okSince: false } }], NOW_D, 60, false)
   const row = loops.rows.find(r => r.kind === 'phase')!
   expect(row).toMatchObject({ isWarn: true })
-  expect(rowText(row)).toContain('⟳')
+  expect(rowText(row)).toBe('  build  ●  ⟳1 · glm-5.3 · cache 43% · 0/1 done')
+  expect(loops.rows.find(r => r.key === 'live:t/rk1')).toMatchObject({ color: 'warning' })
+  // Open, the live line is in the run's block, not doubled under the phase row.
+  expect(card('t', [RK1], NOW_D, 60, 'full').rows.some(r => r.key.startsWith('live:'))).toBe(false)
 })
 
 test('expanded card: grouped by phase, one block per run saying what it was asked, where, how far, and how it ended', () => {
@@ -978,7 +986,7 @@ test('the end line names a failed verify and an unknown score; the compact form 
   expect(runDetail(old as OcliRun, NOW_D, 40).length).toBeGreaterThan(1)
 })
 
-test('the × sits on Completed, Failed and Blocked cards only: never Running, Stale or a plan-only card', () => {
+test('the × sits on Completed, Failed and Blocked cards only: never Running, Stale, a mix with a running or stale run, or a plan-only card', () => {
   const dismissOf = (runs: OcliRun[], now = NOW_D, declared: string[] = []) => {
     const head = card('t', runs, now, 50, false, false, declared).rows[0]!
     return head.kind === 'head' ? head.dismiss : 'not a head'
@@ -987,7 +995,13 @@ test('the × sits on Completed, Failed and Blocked cards only: never Running, St
   expect(dismissOf([mk('f', { status: 'failed', endedAt: T0 })])).toBe('dismiss:t')
   expect(dismissOf([mk('b', { status: 'blocked', endedAt: T0 })])).toBe('dismiss:t')
   expect(dismissOf([RK1, MUSE_DONE])).toBeUndefined()
-  expect(dismissOf([mk('s', { status: 'running', lastAt: T0 })], T0 + 11 * 60_000)).toBeUndefined()
+  const STALE = T0 + 11 * 60_000
+  expect(dismissOf([mk('s', { status: 'running', lastAt: T0 })], STALE)).toBeUndefined()
+  // Completed beside a stale run: the card reads Completed, yet a run may still be alive.
+  const mixed = [{ ...MUSE_DONE, lastAt: STALE }, mk('s', { status: 'running', lastAt: T0 })]
+  expect(taskStatus(mixed, STALE)).toBe('Completed')
+  expect(dismissOf(mixed, STALE)).toBeUndefined()
+  expect(isDismissible(mixed, STALE)).toBe(false)
   expect(dismissOf([], NOW_D, ['a'])).toBeUndefined()
   expect(isDismissible([MUSE_DONE], NOW_D)).toBe(true)
   expect(isDismissible([], NOW_D)).toBe(false)
@@ -1005,23 +1019,43 @@ test('cardVariants: an open card is drawn full, then compact, then closed, then 
   expect(open.at(-1)!.height).toBe(HEADER_HEIGHT)
 })
 
-test('history: a snapshot per task; the card hides until a newer event; one entry per task, capped; malformed store data dropped', () => {
-  const entry = historyEntry('t', [MUSE_DONE], NOW_D)
-  expect(entry).toEqual({ task: 't', status: 'Completed', runs: 1, tokens: null, span: 30_000, lastAt: T0, dismissedAt: NOW_D })
+test('history: a snapshot per project and task; the card hides until a newer event; one entry per (scope, task), capped', () => {
+  const entry = historyEntry('/live', 't', [MUSE_DONE], NOW_D)
+  expect(entry).toEqual({ scope: '/live', task: 't', status: 'Completed', runs: 1, tokens: null, span: 30_000, lastAt: T0, dismissedAt: NOW_D })
   expect(isDismissed(entry, [MUSE_DONE])).toBe(true)
   expect(isDismissed(entry, [MUSE_DONE, mk('new', { lastAt: T0 + 1 })])).toBe(false)
   expect(isDismissed(undefined, [MUSE_DONE])).toBe(false)
   const later = { ...entry, dismissedAt: NOW_D + 1 }
-  expect(addHistory([entry, { ...entry, task: 'u' }], [later])).toEqual([{ ...entry, task: 'u' }, later])
+  const elsewhere = { ...entry, scope: '/other' }
+  expect(addHistory([entry, { ...entry, task: 'u' }, elsewhere], [later])).toEqual([{ ...entry, task: 'u' }, elsewhere, later])
   expect(addHistory([], Array.from({ length: 150 }, (_, i) => ({ ...entry, task: `t${i}` })))).toHaveLength(100)
-  expect(foldHistory([entry, { ...entry, task: '\u001b[2Jx\u0007' }, { ...entry, status: 'Running' }, { task: 'y' }, 'z', null, { ...entry, task: '' }])).toEqual([entry, { ...entry, task: 'x' }])
+})
+
+test('foldHistory: checked, cleaned, legacy (no scope) dropped, times within Date range, runs a count, deduped by (scope, task) keeping the last, capped at 100', () => {
+  const entry = historyEntry('/live', 't', [MUSE_DONE], NOW_D)
+  const { scope: _, ...legacy } = entry
+  expect(foldHistory([entry, { ...entry, task: '\u001b[2Jx\u0007' }, { ...entry, status: 'Running' }, { task: 'y' }, 'z', null, { ...entry, task: '' }, legacy, { ...entry, scope: '' }]))
+    .toEqual([entry, { ...entry, task: 'x' }])
+  for (const bad of [{ dismissedAt: 1e20 }, { lastAt: -8.64e15 - 1 }, { dismissedAt: Infinity }, { runs: 1.5 }, { runs: -1 }, { tokens: 'x' }, { span: undefined }]) {
+    expect(foldHistory([{ ...entry, ...bad }]), JSON.stringify(bad)).toEqual([])
+  }
+  expect(foldHistory([{ ...entry, dismissedAt: 8.64e15, lastAt: -8.64e15 }])).toHaveLength(1)
+  // A duplicate keeps the last; 101 distinct entries keep the newest 100.
+  const many = [...Array.from({ length: 101 }, (_, i) => ({ ...entry, task: `t${i}` })), { ...entry, task: 't100', dismissedAt: NOW_D + 5 }]
+  const folded = foldHistory(many)
+  expect(folded).toHaveLength(100)
+  expect(folded[0]!.task).toBe('t1')
+  expect(folded.filter(e => e.task === 't100')).toEqual([{ ...entry, task: 't100', dismissedAt: NOW_D + 5 }])
+  expect(foldHistory([entry, { ...entry, scope: '/other' }])).toHaveLength(2)
   expect(foldHistory({ not: 'a list' })).toEqual([])
   expect(foldHistory(undefined)).toEqual([])
 })
 
 test('the History card: closed is one ▸ row with the count; open lists newest first, a restore button on each, older ones counted', () => {
   const at = (task: string, dismissedAt: number, status: 'Completed' | 'Failed' | 'Blocked' = 'Completed') =>
-    ({ task, status, runs: 2, tokens: 3000, span: 65_000, lastAt: T0, dismissedAt })
+    ({ scope: '/live', task, status, runs: 2, tokens: 3000, span: 65_000, lastAt: T0, dismissedAt })
+  // Local time, as the person's clock reads it: computed here, so the test holds in every timezone.
+  const hhmm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
   const list = [at('a', T0), at('b', T0 + 60_000, 'Failed'), at('c', T0 + 120_000, 'Blocked')]
   const [closed] = historyVariants(list, false, 60)
   expect(historyVariants(list, false, 60)).toHaveLength(1)
@@ -1031,9 +1065,9 @@ test('the History card: closed is one ▸ row with the count; open lists newest 
   const [open, fallback] = historyVariants(list, true, 70)
   expect(fallback).toEqual(historyVariants(list, false, 70)[0])
   expect(open!.rows.slice(1)).toEqual([
-    { kind: 'press', key: 'entry:c', press: 'restore:c', label: 'restore', text: ' c · Blocked · 2 runs · 3k tokens · 1m05s · dismissed 12:02', color: 'warning' },
-    { kind: 'press', key: 'entry:b', press: 'restore:b', label: 'restore', text: ' b · Failed · 2 runs · 3k tokens · 1m05s · dismissed 12:01', color: 'error' },
-    { kind: 'press', key: 'entry:a', press: 'restore:a', label: 'restore', text: ' a · Completed · 2 runs · 3k tokens · 1m05s · dismissed 12:00', color: 'success' },
+    { kind: 'press', key: 'entry:c', press: 'restore:c', label: 'restore', text: ` c · Blocked · 2 runs · 3k tokens · 1m05s · dismissed ${hhmm(T0 + 120_000)}`, color: 'warning' },
+    { kind: 'press', key: 'entry:b', press: 'restore:b', label: 'restore', text: ` b · Failed · 2 runs · 3k tokens · 1m05s · dismissed ${hhmm(T0 + 60_000)}`, color: 'error' },
+    { kind: 'press', key: 'entry:a', press: 'restore:a', label: 'restore', text: ` a · Completed · 2 runs · 3k tokens · 1m05s · dismissed ${hhmm(T0)}`, color: 'success' },
   ])
   // Task names that look like the card's own rows never share a key with them.
   const keys = historyVariants([at('head', T0), at('more', T0 + 1), at('toggle', T0 + 2)], true, 70)[0]!.rows.flatMap(r => r.kind === 'head' || r.kind === 'press' ? [r.key, r.press] : [r.key])

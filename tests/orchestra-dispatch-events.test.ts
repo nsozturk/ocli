@@ -779,9 +779,10 @@ it('the prefix hash never alters the prompt or argv the CLI is spawned with', as
 });
 
 // run.start.brief: what the person reads in the pane's expanded card, never the whole prompt.
-const SPEC = '\n# Slice RK1 \u2014 catalogue adapter\n\nWrite the catalogue adapter for\nthe GLM route.\n\n## Details\nSECRET-LATER-PARAGRAPH\n';
-it('runBrief: the --suffix, the first heading and the first paragraph, folded, joined with " · "', () => {
-  expect(runBrief(undefined, SPEC, 'slice RK1 · worktree ../wt-rk1')).toBe('slice RK1 · worktree ../wt-rk1 · Slice RK1 \u2014 catalogue adapter · Write the catalogue adapter for the GLM route.');
+const SPEC = '\n# Slice RK1 — catalogue adapter\n\nWrite the catalogue adapter for\nthe GLM route.\n\n## Details\nSECRET-LATER-PARAGRAPH\n';
+const WORKTREE = 'Your worktree (work ONLY here): /x/senatus-rk1-fix';
+it('runBrief: the first heading, the first task paragraph, then the --suffix, folded, joined with " · "', () => {
+  expect(runBrief(undefined, SPEC, `slice RK1\n${WORKTREE}`)).toBe('Slice RK1 — catalogue adapter · Write the catalogue adapter for the GLM route. · slice RK1');
   // No suffix, no heading: the first paragraph alone; it never reaches past the first blank line.
   expect(runBrief(undefined, 'line one\nline two\n\nlater', undefined)).toBe('line one line two');
   // A paragraph ends at a heading too, and a prompt of headings only gives the first heading.
@@ -789,18 +790,48 @@ it('runBrief: the --suffix, the first heading and the first paragraph, folded, j
   expect(runBrief(undefined, '## Only\n### Headings', '')).toBe('Only');
   expect(runBrief(undefined, SPEC, undefined)).not.toContain('SECRET-LATER-PARAGRAPH');
 });
+it('runBrief: a paragraph that opens in emphasis is a constraint, not the task; markdown markers are stripped', () => {
+  expect(runBrief(undefined, '# T\n\n**RUN ONLY your tests.** Never the suite:\n`npx vitest run x`\n\n__Also loud__\n\n- Port the `adapter` and **keep** it small.\n', '')).toBe('T · Port the adapter and keep it small.');
+  // All paragraphs emphatic: the first one, markers stripped.
+  expect(runBrief(undefined, '**Only this.**\n\n__And this.__', '')).toBe('Only this.');
+  // From the suffix only the worktree clause goes (the pane draws the root on its own row).
+  expect(runBrief(undefined, 'p', `SLICE: RK1 only (catalogue)\n${WORKTREE}`)).toBe('p · SLICE: RK1 only (catalogue)');
+  expect(runBrief(undefined, 'p', `SLICE: RK1. ${WORKTREE}`)).toBe('p · SLICE: RK1.');
+  expect(runBrief(undefined, 'p', WORKTREE)).toBe('p');
+});
+it('runBrief on a realistic prompt (a constraint paragraph first) with a worktree suffix: it opens with the task, and no path', () => {
+  const prompt = [
+    '# RK1 fix round — apply the lead review to the catalogue adapter',
+    '',
+    '**RUN ONLY THE TEST FILES YOU TOUCH. NEVER the full suite, never anything in the background.** The only test command you may run is:',
+    '`npx vitest run tests/catalogue.test.ts`',
+    '',
+    'You are a developer on this repo. Fix the two review findings in the catalogue adapter: the cache key',
+    'ignores the locale, and an empty page throws instead of returning no rows.',
+    '',
+    '### RK1-B1 (blocker)',
+    'Details that never reach the brief.',
+  ].join('\n');
+  const brief = runBrief(undefined, prompt, WORKTREE);
+  const head = [...brief].slice(0, 72).join('');
+  expect(head).toBe('RK1 fix round — apply the lead review to the catalogue adapter · You are');
+  expect(head).not.toMatch(/\//);
+  expect(brief).not.toContain('/x/');
+  expect(brief).not.toMatch(/RUN ONLY|npx vitest|Details/);
+  expect(brief).toContain('Fix the two review findings in the catalogue adapter');
+});
 it('runBrief: --brief wins (an empty one falls back); escapes, controls and bidi stripped; at most 600 code points, never a split pair', () => {
   expect(runBrief('  Port the\n adapter  ', SPEC, 'suffix')).toBe('Port the adapter');
-  expect(runBrief('', 'p', 's')).toBe('s · p');
-  expect(runBrief(undefined, 'a\u001b[31mb\u001b]8;;https://x\u0007c\u0007d \u202eе\u2066x\u2069 \u200by', undefined)).toBe('abcd еx y');
+  expect(runBrief('', 'p', 's')).toBe('p · s');
+  expect(runBrief(undefined, 'a\u001b[31mb\u001b]8;;https://x\u0007c\u0007d ‮е⁦x⁩ ​y', undefined)).toBe('abcd еx y');
   const long = runBrief(undefined, 'a'.repeat(599) + '\u{1F600}' + 'z'.repeat(5000), undefined);
   expect([...long]).toHaveLength(600);
   expect(long.endsWith('\u{1F600}')).toBe(true);
   expect([...runBrief('b'.repeat(900), '', '')]).toHaveLength(600);
 });
-it('run.start carries the brief: derived from --suffix and the prompt, or --brief as given', async () => {
-  await main(['--role', 'reason', '--task', 'mock-live', '--prompt', SPEC, '--suffix', 'slice RK1']);
-  expect(events()[0]).toMatchObject({ kind: 'run.start', brief: 'slice RK1 · Slice RK1 \u2014 catalogue adapter · Write the catalogue adapter for the GLM route.' });
+it('run.start carries the brief: derived from the prompt and --suffix, or --brief as given', async () => {
+  await main(['--role', 'reason', '--task', 'mock-live', '--prompt', SPEC, '--suffix', `slice RK1\n${WORKTREE}`]);
+  expect(events()[0]).toMatchObject({ kind: 'run.start', brief: 'Slice RK1 — catalogue adapter · Write the catalogue adapter for the GLM route. · slice RK1' });
   vi.resetAllMocks();
   mocks.policy.mockImplementation(async () => JSON.stringify(policy));
   mocks.spawn.mockImplementation(() => {

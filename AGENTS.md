@@ -30,6 +30,8 @@ node dispatcher/digest.mjs [--since <ISO>] [--json 1]                           
 - Run it from the project root: live files go to `<cwd>/orchestra/live/<task>/<runId>.jsonl`
   (override: `ORCHESTRA_LIVE_DIR`), tree records to `<cwd>/orchestra/tree/<task>.jsonl`. Both hold
   full prompts and transcripts: the project must gitignore `orchestra/` and `.orchestra-last.md`.
+- The pane shows the opening of `--prompt` (its first heading and task paragraph) unless `--brief` is
+  given: keep secrets out of it.
 - The policy is `dispatcher/policy.json` if present, else `dispatcher/policy.example.json`.
 - Non-interactive by construction: stdin is closed, argv is an array (no shell), and every route's
   argv carries the CLI's own headless/auto-approve flags.

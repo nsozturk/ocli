@@ -107,17 +107,18 @@ plugin</strong> that draws those runs as Workflow-style cards with phases, live.
 
 <section id="card">
 <h2>The card</h2>
-<pre><code>╭──────────────────────────────────────────────╮
-│ ▸ fix-parser                         4m12s × │
-│ ocli · Completed                             │
-│ 4 runs · 131k tokens                         │
-│ Fix the tokenizer edge cases                 │
-│ Phases                                       │
-│   implement ●●● glm-5.3, gpt-6-astra     3/3 │
-│   review ● muse-spark-1.3-contributor    1/1 │
-╰──────────────────────────────────────────────╯</code></pre>
+<pre><code>╭──────────────────────────────────────────────────────────╮
+│ ▸ fix-parser                                       4m12s │
+│ ocli · Running                                           │
+│ 4 runs · 131k tokens                                     │
+│ Fix the tokenizer edge cases                             │
+│ Phases                                                   │
+│   implement  ●●●  glm-5.3, gpt-6-astra · 2/3 done        │
+│     ▁▁▂▃▁▅▇█▃▂ ↳ tool.end bash: npm test                 │
+│   review  ●  muse-spark-1.3-contributor · 1/1 done       │
+╰──────────────────────────────────────────────────────────╯</code></pre>
 <p>One card per task, newest activity first. One dot per run (running, completed, blocked or stale,
-failed). Press the card's head to open it in place: one block per run says what it was asked, where
+failed). A running run keeps one line: its sparkline and last action. Press the card's head to open it in place: one block per run says what it was asked, where
 it works, what it is doing and how it ended. Finished cards get an <code>×</code> that moves them to a
 History card at the bottom, by hand only. Ended runs raise one toast each.</p>
 </section>

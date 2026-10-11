@@ -12,9 +12,10 @@ live dir, and never spawns or owns a CLI process.
 
 - **0.4.0** — The card's head is the toggle: it opens the card in place, with one block per run
   saying what the run was asked (`run.start.brief`, new and optional in the live contract), where it
-  works, what it is doing and how it ended; the closed card keeps one line per phase. Cards are
-  spaced apart. Finished cards get an `×` and a `Move completed to history` button that move them to
-  a History card (never automatically), kept across sessions. Phase rows are no longer pressable.
+  works, what it is doing and how it ended; the closed card keeps one line per phase (parts joined
+  with ` · `, `N/M done`) and each running run's live line. Cards are spaced apart. Finished cards
+  get an `×`, and Completed ones a `Move completed to history` button, that move them to a History
+  card (never automatically), kept per project across sessions. Phase rows are no longer pressable.
 
 ## Requirements
 
@@ -76,22 +77,24 @@ One card per task (`orchestra/live/<task>/`), the task with the most recent acti
 modelled on Claude Code's Workflow progress card:
 
 ```
-╭──────────────────────────────────────────────╮
-│ ▸ fix-parser                         4m12s × │   ▸/▾ opens it in place; total time; × once ended
-│ ocli · Completed                             │   Running > Blocked > Failed > Stale > Completed
-│ 4 runs · 131k tokens                         │   input + output summed; ? while none reported
-│ Fix the tokenizer edge cases                 │   the newest run's title
-│ Phases                                       │
-│   implement ●●● glm-5.3, gpt-6-astra     3/3 │   one dot per run, ended/total, the LLMs
-│   review ● muse-spark-1.3-contributor    1/1 │
-╰──────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────╮
+│ ▸ fix-parser                                       4m12s │   ▸/▾ opens it in place; total time; × once ended
+│ ocli · Running                                           │   Running > Blocked > Failed > Stale > Completed
+│ 4 runs · 131k tokens                                     │   input + output summed; ? while none reported
+│ Fix the tokenizer edge cases                             │   the newest run's title
+│ Phases                                                   │
+│   implement  ●●●  glm-5.3, gpt-6-astra · 2/3 done        │   one dot per run, the LLMs, ended/total
+│     ▁▁▂▃▁▅▇█▃▂ ↳ tool.end bash: npm test                 │   a running run's sparkline and last action
+│   review  ●  muse-spark-1.3-contributor · 1/1 done       │
+╰──────────────────────────────────────────────────────────╯
 ```
 
 The border and the status word take the task's colour; each dot its run's: running `suggestion`,
 completed `success`, blocked or stale `warning`, failed / spawn-error / dispatch-error / any unknown
-status `error`. Each card has a blank row under it. A phase row is one line: its runs' dots, the
-cache ratio and LLM names, ended/total, `⚠N` for runs whose claims are unwitnessed and `⟳N` (in
-`warning`) for runs that may be looping. A phase with more runs than the row has room for shows its
+status `error`. Each card has a blank row under it. A phase row is one line, its parts joined with
+` · `: its runs' dots, `⚠N` for runs whose claims are unwitnessed and `⟳N` (in `warning`) for runs
+that may be looping, the LLM names, the cache ratio, `N/M done`. Under it, each running run keeps one
+glanceable line: its sparkline and last action (ended runs have none in the closed card). A phase with more runs than the row has room for shows its
 newest dots and `+K` for the rest; a long phase name is cut before the dots and the LLM names are.
 
 Pressing the card's head (`▸ <task>`, a click or Enter under the focus) opens the card in place
@@ -103,16 +106,16 @@ Pressing the card's head (`▸ <task>`, a click or Enter under the focus) opens 
 │ ocli · Running                                           │
 │ 2 runs · 131k tokens                                     │
 │ Phases                                                   │
-│   implement ●● gpt-6-astra, glm-5.3                  1/2 │
+│   implement  ●●  gpt-6-astra, glm-5.3 · 1/2 done         │
 │   ✓ completed · gpt-6-astra (codex) · reason · 1m02s     │   one block per run, under its phase
-│     Slice RK0 · Tokenizer tests · Add the missing edge…  │   the brief: what the run was asked
+│     RK0 tokenizer tests · Add the missing edge cases…    │   the brief: what the run was asked
 │     end: completed · exit 0 · score 1 · verify passed    │   how it ended
 │   ● running · glm-5.3 (opencode) · implement · 2m10s     │
-│     slice RK1 · worktree ../wt-rk1 · Catalogue adapter · │   --brief, else --suffix + heading + paragraph
-│     Write the catalogue adapter for the GLM route.       │
+│     RK1 catalogue adapter · Write the catalogue adapter  │   --brief, else heading · task paragraph · --suffix
+│     for the GLM route and its tests. · SLICE: RK1 only   │
 │     in /work/wt-rk1 · parent 3f2a9c                      │   where it works, what it continues
 │     12 tools · tokens in 120k · out 4k · cached 98k      │
-│     ▁▂▃▅█ ↳ tool.start bash: npm test                    │   what it is doing now
+│     ▁▁▂▃▁▅▇█▃▂ ↳ tool.start bash: npm test               │   what it is doing now
 │     ✓ edit: src/adapter.ts                               │   its last tool calls (✓ ok, ✗ failed)
 │     says: Writing the adapter now.                       │   its latest message
 ╰──────────────────────────────────────────────────────────╯
@@ -120,8 +123,8 @@ Pressing the card's head (`▸ <task>`, a click or Enter under the focus) opens 
 
 Each block: the status glyph and word (`●` running, `◌` stale, `✓` completed, `⊘` blocked, `✗`
 failed-like), the LLM and CLI, the role and elapsed time; the brief (`run.start.brief`: `--brief`,
-else derived from the `--suffix` and the prompt's first heading and paragraph; the title for an older
-dispatcher), up to three lines; the whole workspace path and the parent node; tools, warnings and
+else the prompt's first heading, its first task paragraph and the `--suffix` without its worktree
+path; the title for an older dispatcher), up to three lines; the whole workspace path and the parent node; tools, warnings and
 tokens; while running, the live line; the last five tool calls; the latest message, up to two lines;
 the last three warnings; unwitnessed claims; once ended, exit code, score and the `--verify` verdict.
 Every field is cleaned at ingest and cut to the pane's width. What is open is kept in `$.state`, so
@@ -151,17 +154,23 @@ are watched, the last tick time and the error count.
 
 ### History
 
-A card whose runs have all ended (`Completed`, `Failed` or `Blocked`) has an `×` on its head;
-pressing it moves the card to the **History** card at the bottom of the pane, closed by default
-(`▸ History  N`). Open, it lists the moved cards newest first (task, status, runs, tokens, span and
-when it was moved), each with a `restore` button that puts it back. `Move completed to history`, at
-the top of the pane while any card qualifies, moves every such card at once. Nothing is ever moved
-automatically: a finished card stays until you press. A running or stale card has no `×`, and the
-runs are read again at the press, so a card whose task started running meanwhile is not moved. A
-moved card comes back on its own when one of its runs has a newer event (a new run of the task).
-History is a snapshot per task in `$.state`, mirrored to `$.store` (the plugin's own JSON file under
-the Claude Code configuration dir), so it outlives the session; at most 100 entries, each checked
-and cleaned when read back.
+A card whose runs have all ended (`Completed`, `Failed` or `Blocked`, and no run running or stale)
+has an `×` on its head; pressing it moves the card to the **History** card at the bottom of the
+pane, closed by default (`▸ History  N`). Open, it lists the moved cards newest first (task, status,
+runs, tokens, span and when it was moved, in local time), each with a `restore` button that puts it
+back. `Move completed to history`, at the top of the pane while any Completed card qualifies, moves
+every Completed card at once; Failed and Blocked cards keep their own `×`. Nothing is ever moved
+automatically: a finished card stays until you press. The runs are read again at the press, so a
+card whose task started running meanwhile is not moved. A moved card comes back on its own when one
+of its runs has a newer event (a new run of the task).
+
+History is per project: each entry carries its scope, the dirs the pane watches, and only the
+current scope's entries hide cards, draw or are restored. It is a snapshot per (scope, task) in
+`$.state`, mirrored to `$.store` (the plugin's own JSON file under the Claude Code configuration
+dir), so it outlives the session. On load the stored list is merged under what `$.state` holds; a
+read that fails is retried the next tick, and nothing is written to `$.store` before a read
+succeeded. Read back, every entry is checked and cleaned (times within a Date's range, `runs` a
+count, entries without a scope dropped), one per (scope, task), at most 100.
 
 ### Phases: `--phase`
 

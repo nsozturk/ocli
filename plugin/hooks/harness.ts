@@ -42,7 +42,15 @@ export function harness(on: On, { store }: { store?: Record<string, unknown> } =
   const kept = new Map(Object.entries(store ?? {}))
   /** Every $.store.set, in order. */
   const stored: { key: string; value: unknown }[] = []
-  on('store.get', ($, e) => ({ value: kept.get(e.key) }))
+  /** How many of the next store.get calls fail (a store that cannot be read yet). */
+  const storeFails = { get: 0 }
+  on('store.get', ($, e) => {
+    if (storeFails.get > 0) {
+      storeFails.get -= 1
+      throw new Error('EIO store')
+    }
+    return { value: kept.get(e.key) }
+  })
   on('store.set', ($, e) => {
     const value = JSON.parse(JSON.stringify(e.value)) as unknown
     kept.set(e.key, value)
@@ -129,6 +137,7 @@ export function harness(on: On, { store }: { store?: Record<string, unknown> } =
     proc,
     clock,
     stored,
+    storeFails,
     put,
     start: ($: { session: { start: (e: { cwd: string; surface: 'terminal'; isInteractive: boolean }) => Promise<unknown> } }) =>
       $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true }),

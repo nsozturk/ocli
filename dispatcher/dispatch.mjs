@@ -145,24 +145,42 @@ export function runTitle(title, prompt) {
 
 const BRIEF_MAX = 600;
 const isHeading = line => /^\s*#{1,6}\s/.test(line);
+// Markdown that reads as noise in the pane: emphasis, code ticks, heading marks and bullets.
+const unmark = line => line.replace(/\*\*|__|`/g, '').replace(/^\s*#+\s*/, '').replace(/^\s*[-*]\s+/, '');
+// "Your worktree (…): <path>": the pane draws the run's root on its own row.
+const WORKTREE_CLAUSE = /(?:\byour\s+)?\bworktree\b[^:\n]*:\s*\S+/gi;
+
+/** The prompt's paragraphs: runs of non-blank, non-heading lines. */
+function paragraphs(lines) {
+  const out = [];
+  let current = [];
+  for (const line of [...lines, '']) {
+    if (line.trim() && !isHeading(line)) current.push(line);
+    else if (current.length) {
+      out.push(current);
+      current = [];
+    }
+  }
+  return out;
+}
 
 /** What the run was asked to do, for the person reading the pane's expanded card: --brief, else the
- * --suffix (the slice line and worktree), the prompt's first markdown heading and its first
- * non-heading paragraph, joined with " · ". Each part is whitespace-folded first (paneLabel strips a
- * newline rather than folding it), then cleaned like the title; at most 600 code points. Never the
- * whole prompt. */
+ * prompt's first markdown heading, its first task paragraph (the first one that does not open in
+ * emphasis: those are constraints, "**RUN ONLY …**"; else the first) and the --suffix less its
+ * worktree clause, joined with " · ". Markdown markers are stripped, each part whitespace-folded
+ * (paneLabel strips a newline rather than folding it), then cleaned like the title; at most 600 code
+ * points. Never the whole prompt: the pane shows the opening of --prompt, so keep secrets out of it. */
 export function runBrief(brief, prompt, suffix) {
   const label = text => paneLabel(String(text ?? '').replace(/\s+/g, ' '), BRIEF_MAX);
   // || not ??: an empty (or all-control) --brief falls back to the derived one, as --title does.
   const own = label(brief);
   if (own) return own;
   const lines = String(prompt ?? '').split('\n');
-  const heading = (lines.find(isHeading) ?? '').replace(/^\s*#+\s*/, '');
-  const paragraph = [];
-  for (let i = lines.findIndex(line => line.trim() && !isHeading(line)); i >= 0 && i < lines.length && lines[i].trim() && !isHeading(lines[i]); i++) {
-    paragraph.push(lines[i]);
-  }
-  return label([suffix, heading, paragraph.join(' ')].map(label).filter(Boolean).join(' · '));
+  const heading = unmark(lines.find(isHeading) ?? '');
+  const found = paragraphs(lines);
+  const task = found.find(para => !/^\s*(\*\*|__)/.test(para[0])) ?? found[0] ?? [];
+  const rest = String(suffix ?? '').split('\n').map(line => unmark(line.replace(WORKTREE_CLAUSE, '')));
+  return label([heading, task.map(unmark).join(' '), rest.join(' ')].map(label).filter(Boolean).join(' · '));
 }
 
 /** Which phase of the task a run belongs to, for the pane's card: --phase, cleaned like the title

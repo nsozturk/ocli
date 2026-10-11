@@ -4,7 +4,7 @@ import type { AgentInfo, EngineInterface, FsEntry, Register } from 'claude-code'
 import type { Checkpoint, OcliDir, OcliHistory, OcliMeta, OcliPlan, OcliRun } from '../types'
 
 type OcliCheckpoint = Checkpoint & { mtimeMs: number; root: string }
-import { addHistory, CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldHistory, foldPlan, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isEnded, isLooping, latestAt, parseCheckpoint, parseLines, phaseOf, reduce, resumePrompt, runKey } from './reduce'
+import { addHistory, CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldHistory, foldPlan, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isEnded, isLooping, latestAt, parseCheckpoint, parseLines, phaseOf, reduce, resumePrompt, runKey, taskStatus } from './reduce'
 import type { Card, OcliEvent, Row } from './reduce'
 
 const PANE = 'ocli'
@@ -100,25 +100,29 @@ let lastStatus: string | undefined | null = null
 // refused file costs one error per change, not one a minute.
 let checkpointRoot: string | null | undefined
 let checkpointSeen: string | null = null
-// Whether this module load has read History back from $.store (once, on the first tick).
+// Whether this module load has read History back from $.store: set only once a read succeeded, so a
+// failed read is tried again next tick and nothing is written over a store not yet read.
 let historyLoaded = false
+
+/** History's scope: the dirs the pane watches, as the last tick resolved them (the project). */
+const scopeOf = (meta: OcliMeta): string => meta.dirs.map(dir => dir.path).join(',')
 
 /** History into $.store, so a new session finds it. A runtime without $.store keeps it for the session. */
 function persistHistory($: $, list: OcliHistory[]) {
+  if (!historyLoaded) return
   try {
     void $.store.set(HISTORY_KEY, list).catch(() => undefined)
   } catch {}
 }
 
-/** The first tick of a module load: an empty History in $.state (a new session) is read back from
- * $.store. A reload keeps $.state, so a list there is never overwritten. */
+/** Each tick until it succeeds: $.store's History merged under what $.state holds (a reload keeps
+ * $.state; its entries win over stored ones for the same scope and task). */
 async function loadHistory($: $) {
   if (historyLoaded) return
-  historyLoaded = true
   try {
-    if ((await read($, historyAtom)).length) return
     const stored = foldHistory(await $.store.get(HISTORY_KEY))
-    if (stored.length) await update($, historyAtom, () => stored)
+    await update($, historyAtom, list => addHistory(stored, list))
+    historyLoaded = true
   } catch {}
 }
 
@@ -495,10 +499,15 @@ export const register: Register = (on, options) => {
     // A declared plan with no run yet is a card of its own, placed by the plan's mtime.
     for (const task of plans.keys()) if (!tasks.has(task)) tasks.set(task, [])
     // A card the person moved to History stays out of the list until its runs move again.
-    const dismissed = new Map(history.map(entry => [entry.task, entry] as const))
+    // Only this project's History counts here: the same task name elsewhere is another card.
+    const scope = scopeOf(meta)
+    const here = history.filter(entry => entry.scope === scope)
+    const dismissed = new Map(here.map(entry => [entry.task, entry] as const))
     for (const [task, list] of tasks) if (isDismissed(dismissed.get(task), list)) tasks.delete(task)
-    const shownHistory = history.filter(entry => !tasks.has(entry.task))
-    const canMoveAll = [...tasks.values()].some(list => isDismissible(list, now))
+    const shownHistory = here.filter(entry => !tasks.has(entry.task))
+    // The bulk button moves Completed cards only; Failed and Blocked keep their own ×.
+    const isBulk = (list: readonly OcliRun[], at: number) => isDismissible(list, at) && taskStatus(list, at) === 'Completed'
+    const canMoveAll = [...tasks.values()].some(list => isBulk(list, now))
 
     // What a card costs is its rows, its border and the blank row under it.
     const spaced = (list: Card[]): Card[] => list.map(c => ({ ...c, height: c.height + GAP }))
@@ -568,20 +577,24 @@ export const register: Register = (on, options) => {
       const rest = list.filter(k => k !== key)
       return isDrawnOpen ? rest : [...rest, key].slice(-MAX_EXPANDED)
     })
-    // Moves cards to History, by hand only. The runs are read again at the press: a card whose task
-    // started running since it was drawn is never moved.
+    // Moves cards to History, by hand only: one task (its ×) or, `null`, every Completed one. The runs
+    // and the scope are read again at the press: a card whose task started running since it was drawn
+    // is never moved.
     const dismiss = async (only: string | null) => {
       const at = await $.clock.now()
+      const scope = scopeOf(await read($, metaAtom))
       const byTask = runsByTask(await read($, runsAtom))
-      const kept = new Map((await read($, historyAtom)).map(entry => [entry.task, entry] as const))
+      const kept = new Map((await read($, historyAtom)).filter(entry => entry.scope === scope).map(entry => [entry.task, entry] as const))
       const entries = [...byTask]
-        .filter(([task, list]) => (only === null || task === only) && !isDismissed(kept.get(task), list) && isDismissible(list, at))
-        .map(([task, list]) => historyEntry(task, list, at))
+        .filter(([task, list]) => (only === null ? isBulk(list, at) : task === only && isDismissible(list, at)) && !isDismissed(kept.get(task), list))
+        .map(([task, list]) => historyEntry(scope, task, list, at))
       if (!entries.length) return
       persistHistory($, await update($, historyAtom, list => addHistory(list, entries)))
     }
+    // Within this scope only: another project's entry for the same task name is left alone.
     const restore = async (task: string) => {
-      persistHistory($, await update($, historyAtom, list => list.filter(entry => entry.task !== task)))
+      const scope = scopeOf(await read($, metaAtom))
+      persistHistory($, await update($, historyAtom, list => list.filter(entry => entry.scope !== scope || entry.task !== task)))
     }
     const press = (key: string, isDrawnOpen = false) => {
       if (key === 'history:toggle') return void update($, historyOpenAtom, () => !isDrawnOpen)
