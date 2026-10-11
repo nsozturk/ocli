@@ -213,6 +213,15 @@ policy.</p>
 
 <section id="how">
 <h2>How it works</h2>
+<p><img src="assets/how-it-works.svg" alt="How ocli works: lead, dispatch.mjs, developer CLI, live event files, tree and digest, ocli-monitor pane" style="width:100%;height:auto;border-radius:12px"></p>
+<ol>
+<li><strong>The lead hands out a slice</strong> with <code>dispatch.mjs --role … --task … --phase … --title …</code>; <code>--declare-phases</code> shows the whole plan first.</li>
+<li><strong>The dispatcher starts the CLI</strong> (codex, opencode/GLM, agy or Muse) in its JSON event mode, argument arrays, stdin closed, workspace pinned.</li>
+<li><strong>Every event streams into a file</strong>: normalized to the shared contract in <code>orchestra/live/&lt;task&gt;/&lt;runId&gt;.jsonl</code>, raw lines beside it, both 0600 and out of git.</li>
+<li><strong>The result is judged, not trusted</strong>: an untouched or failed run is never scored as passed, the witness checks closing claims against the trace, quota stops are labelled by what confirmed them, and a killed run still closes.</li>
+<li><strong>The pane draws it</strong>: one Workflow-style card per task with LLMs, phase dots, the live latest event, loop and claim warnings, and a resume card.</li>
+<li><strong>The digest sums it up</strong> per task and phase; unscored runs are never counted as failures.</li>
+</ol>
 <pre><code> dispatch.mjs ── argv, stdin closed ──▶ codex exec / opencode run / agy / muse
       ▲                                         │ JSON lines on stdout
       └──────── events.mjs normalize() ◀────────┘

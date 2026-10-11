@@ -225,6 +225,39 @@ Bash tool's `PATH`.
 
 ## How it works
 
+<p align="center">
+  <img src="assets/how-it-works.svg" alt="How ocli works: lead, dispatch.mjs, developer CLI, live event files, tree and digest, ocli-monitor pane" width="100%">
+</p>
+
+The path of one dispatch:
+
+1. **The lead hands out a slice.** You, or Claude Code acting as lead, run
+   `node dispatcher/dispatch.mjs --role implement --task slice-052 --phase Develop --title "…" --root ../worktree --prompt "…"`.
+   Optionally `--declare-phases spec,develop,review,merge` first, so the card shows the whole plan
+   (`0/4 phases`) before anything runs.
+2. **The dispatcher starts the CLI.** It picks the route from `policy.json` (codex, opencode/GLM,
+   agy or Muse), starts the CLI in its own JSON event mode with argument arrays and stdin closed,
+   and pins its workspace (`--dir` for opencode, `--add-dir` for agy).
+3. **Every event streams into a file as it happens.** Each line the CLI prints is normalized into the
+   shared contract (start, tool start/end, message, tokens, warning, end) and appended to
+   `orchestra/live/<task>/<runId>.jsonl`; the raw line goes beside it in `.raw.jsonl`. Both are
+   owner-only (0600) and stay out of git.
+4. **When the CLI exits, the result is judged, not trusted.** The verifier runs, and the
+   finished-run record goes to `orchestra/tree/`:
+   - a CLI that failed, never started, or left the tree untouched is never scored as passed (`null`, not `1`);
+   - the witness checks the CLI's closing claims ("tests pass", "committed …") against its own trace;
+   - a quota stop is labelled by what actually confirmed it;
+   - Ctrl-C, a kill or a closed terminal still closes the run with `run.end`.
+5. **The pane draws it.** The `ocli-monitor` plugin reads the live dir every 2 s and draws one
+   Workflow-style card per task: status, the LLMs that have the work, coloured phase dots, the live
+   latest event, a loop warning, unwitnessed-claim warnings and a resume card from your newest
+   checkpoint. Untrusted CLI text is stripped of ANSI, control and bidi characters before it is drawn.
+6. **The digest sums it up.** `/ocli-digest` (or `node dispatcher/digest.mjs`) summarises the last
+   12 hours per task and phase, with unscored runs listed apart and never counted as failures.
+
+<details>
+<summary>The same data flow, in text</summary>
+
 ```
  Claude Code (lead)                                  Claude Code (pane)
         │                                                    ▲
@@ -241,6 +274,8 @@ Bash tool's `PATH`.
         ├──▶ orchestra/live/<task>/<runId>.raw.jsonl             every raw line, for evidence
         └──▶ orchestra/tree/<task>.jsonl                         one record per finished run
 ```
+
+</details>
 
 - **One file per run.** Concurrent runs of the same task never share a file; `seq` is contiguous
   and `run.end` is written exactly once, also on Ctrl-C, `SIGTERM` or a closed terminal.
