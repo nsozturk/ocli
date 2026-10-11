@@ -1,7 +1,9 @@
 // Pure: live-file text -> events -> runs. No `$`. Every string from a live file is untrusted CLI
 // output, so it is cleaned here, at ingest: nothing downstream (pane, toast, notify, status) can
 // carry a terminal escape.
-import type { OcliRun, OcliStatus } from '../types'
+import type { Checkpoint, OcliRun, OcliStatus } from '../types'
+
+export type { Checkpoint } from '../types'
 
 /** One contract line, known fields only, strings cleaned. */
 export type OcliEvent = {
@@ -28,6 +30,8 @@ export type OcliEvent = {
   ms?: number | null
   score?: number | null
   dropped?: number
+  /** run.end's witness finding codes (`witness.findings`), cleaned; absent when it carried none. */
+  witness?: string[]
 }
 
 const STALE_MS = 10 * 60_000
@@ -79,6 +83,12 @@ function toEvent(raw: unknown): OcliEvent | null {
     case 'run.end':
       event.status = status(r.status); event.exitCode = num(r.exitCode); event.ms = num(r.ms)
       event.score = num(r.score); event.dropped = droppedTotal(r.dropped)
+      {
+        const findings = r.witness && typeof r.witness === 'object' ? (r.witness as { findings?: unknown }).findings : undefined
+        if (Array.isArray(findings)) {
+          event.witness = findings.filter((x): x is string => typeof x === 'string').map(x => clean(x, 40)).filter(Boolean).slice(0, 10)
+        }
+      }
       break
   }
   return event
@@ -99,6 +109,26 @@ export function parseLines(text: string): OcliEvent[] {
     if (event) events.push(event)
   }
   return events
+}
+
+const MAX_PHASES = 50
+
+/** A task's declared phases from its plan.json, as `dispatch.mjs --declare-phases` writes it. null
+ * unless it is `{v: 1, phases: [...]}` naming at least one phase (dispatch refuses an empty plan);
+ * names cleaned like a run's phase, emptied ones dropped. */
+export function foldPlan(text: string): string[] | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  if (r.v !== 1 || !Array.isArray(r.phases)) return null
+  const names = r.phases.map(p => (p && typeof p === 'object' ? clean((p as { name?: unknown }).name, 40) : ''))
+  const phases = [...new Set(names.filter(Boolean))].slice(0, MAX_PHASES)
+  return phases.length ? phases : null
 }
 
 export const add = (a: number | null, b: number | null | undefined): number | null => (b == null ? a : a == null ? b : a + b)
@@ -146,6 +176,7 @@ export function reduce(runs: readonly OcliRun[], events: readonly OcliEvent[]): 
     else if (e.kind === 'usage') run.tokens = { input: add(run.tokens.input, e.input), output: add(run.tokens.output, e.output) }
     else if (e.kind === 'run.end') {
       Object.assign(run, { status: e.status, endedAt: e.at, exitCode: e.exitCode, ms: e.ms, score: e.score, dropped: e.dropped })
+      if (e.witness) run.witness = e.witness
     }
     byId.set(runKey(e), run)
   }
@@ -219,6 +250,8 @@ export function runLines(run: OcliRun, now: number, columns: number): string[] {
   const what = [run.title ?? '', run.where ?? ''].filter(Boolean).join(' · ')
   if (what) lines.push(fit(`  ${what}`, columns))
   if (run.lastSummary) lines.push(fit(`  ↳ ${run.lastSummary}`, columns))
+  // Last, so the card can colour it: claims its own trace does not back (orchestra/witness.mjs).
+  if (run.witness?.length) lines.push(fit(`  ⚠ unwitnessed: ${run.witness.join(', ')}`, columns))
   return lines
 }
 
@@ -253,9 +286,10 @@ export function taskStatus(runs: readonly OcliRun[], now: number): TaskStatus {
 const startOf = (run: OcliRun): number | null => run.startedAt ?? run.lastAt
 const byStart = (a: OcliRun, b: OcliRun) => (startOf(a) ?? Infinity) - (startOf(b) ?? Infinity) || 0
 
-/** Runs grouped by phase, phases in first-seen order, runs by start within each. */
-export function phasesOf(runs: readonly OcliRun[]): [string, OcliRun[]][] {
-  const phases = new Map<string, OcliRun[]>()
+/** Runs grouped by phase: the declared phases first, in declared order (with no runs, an empty
+ * list), then the rest in first-seen order; runs by start within each. */
+export function phasesOf(runs: readonly OcliRun[], declared: readonly string[] = []): [string, OcliRun[]][] {
+  const phases = new Map<string, OcliRun[]>(declared.map(name => [name, []]))
   for (const run of [...runs].sort(byStart)) {
     const list = phases.get(phaseOf(run))
     if (list) list.push(run)
@@ -291,30 +325,48 @@ export type Row =
   /** Left filled with spaces to the width, so `right` sits at the right edge on every surface. */
   | { kind: 'split'; key: string; left: string; right: string; isBold?: boolean }
   /** A phase: `prefix` (chevron, name), one dot colour per run, `tail` (LLMs, fill), `right` (done/total). */
-  | { kind: 'phase'; key: string; open: string; isOpen: boolean; prefix: string; dots: string[]; tail: string; right: string }
+  /** A pressable: the pane's render hook knows what its key does. */
+  | { kind: 'button'; key: string; label: string }
+  | { kind: 'phase'; key: string; open: string; isOpen: boolean; prefix: string; dots: string[]; tail: string; right: string; isPending?: boolean }
 /** `height` is what the card costs in rows: its rows and the two of its border. */
 export type Card = { key: string; color?: string; rows: Row[]; height: number }
 
 const width = cells
 const fill = (text: string, columns: number) => text + ' '.repeat(Math.max(0, columns - width(text)))
 
+/** A phase is done once it has a run and none of its runs is running or stale. */
+const isPhaseDone = (list: readonly OcliRun[], now: number): boolean =>
+  list.length > 0 && list.every(run => !['running', 'stale'].includes(displayStatus(run, now)))
+
+/** Rows a task card takes in its header form, its shortest: the other forms add a Phases row and a
+ * row per phase (a card has a phase: it exists for a run or a non-empty plan). */
+export const HEADER_HEIGHT = 6
+
 /** One task's card, `columns` wide inside its border. `isOpen` says which `<task>/<phase>` rows are
- * expanded; `isHeader` draws the header form, for a card too tall even with every phase closed. */
-export function card(task: string, runs: readonly OcliRun[], now: number, columns: number, isOpen: (key: string) => boolean, isHeader = false): Card {
-  const status = taskStatus(runs, now)
+ * expanded; `isHeader` draws the header form, for a card too tall even with every phase closed.
+ * `declared` is the task's plan: those phases are drawn first, a pending row for any not yet run. */
+export function card(task: string, runs: readonly OcliRun[], now: number, columns: number, isOpen: (key: string) => boolean, isHeader = false, declared: readonly string[] = []): Card {
+  // A plan with no run yet is not "Completed" (what taskStatus says of no runs): it is neutral.
+  const status = runs.length ? taskStatus(runs, now) : 'Declared'
+  const color = runs.length ? TASK_COLOR[status as TaskStatus] : undefined
   const span = duration(taskSpan(runs, now))
   const tokens = tokensOf(runs)
   const recent = [...runs].filter(run => run.title).sort((a, b) => (b.lastAt ?? startOf(b) ?? 0) - (a.lastAt ?? startOf(a) ?? 0))[0]
+  const phases = phasesOf(runs, declared)
+  const done = `${phases.filter(([, list]) => isPhaseDone(list, now)).length}/${phases.length} phases`
+  const tally = `${runs.length} run${runs.length === 1 ? '' : 's'} · ${count(tokens)} tokens`
+  // The progress is why a plan exists: when the whole row does not fit, it leads, so it is never the part cut.
+  const countRow = !declared.length ? tally : cells(`${tally} · ${done}`) <= columns ? `${tally} · ${done}` : `${done} · ${tally}`
   const rows: Row[] = [
     { kind: 'split', key: `head:${task}`, left: fill(fit(task, columns - width(span) - 1), columns - width(span)), right: span, isBold: true },
-    { kind: 'text', key: 'status', text: `ocli · ${status}`, color: TASK_COLOR[status] },
-    { kind: 'text', key: 'count', text: fit(`${runs.length} run${runs.length === 1 ? '' : 's'} · ${count(tokens)} tokens`, columns), isDim: true },
+    { kind: 'text', key: 'status', text: `ocli · ${status}`, color, isDim: !runs.length },
+    { kind: 'text', key: 'count', text: fit(countRow, columns), isDim: true },
   ]
-  const phases = phasesOf(runs)
   if (isHeader) {
+    // HEADER_HEIGHT counts these four rows and the border.
     const note = `${phases.length} phase${phases.length === 1 ? '' : 's'} · pane too short to list them`
     rows.push({ kind: 'text', key: 'short', text: fit(note, columns), isDim: true })
-    return { key: `task:${task}`, color: TASK_COLOR[status], rows, height: rows.length + 2 }
+    return { key: `task:${task}`, color, rows, height: rows.length + 2 }
   }
   if (recent) rows.push({ kind: 'text', key: 'what', text: fit(recent.title, columns), isDim: true })
   rows.push({ kind: 'text', key: 'phases', text: 'Phases', isBold: true })
@@ -324,53 +376,61 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
     const shown = list.map(run => displayStatus(run, now))
     const right = `${list.filter(run => isEnded(run.status)).length}/${list.length}`
     const room = columns - width(right) - 1
-    const llms = [...new Set(list.map(shortModel))].join(', ')
+    // A declared phase with no run yet says so where the LLM names would be.
+    const note = list.length ? ` ${[...new Set(list.map(shortModel))].join(', ')}` : ' declared'
     // The name gives way to the dots and the LLM names, down to a third of the row.
-    const nameRoom = Math.max(Math.ceil(room / 3), room - list.length - width(` ${llms}`) - 1)
+    const nameRoom = Math.max(Math.ceil(room / 3), room - list.length - width(note) - 1)
     const prefix = `${fit(`${isOpenNow ? '▾' : '▸'} ${phase}`, Math.max(1, Math.min(room - 2, nameRoom)))} `
     // ponytail: a phase with more runs than room shows its newest dots and `+K` for the rest;
     // done/total still counts all.
     const dotRoom = Math.max(0, room - width(prefix))
     const keep = list.length <= dotRoom ? list.length : Math.max(0, dotRoom - 2 - String(list.length).length)
     const more = keep < list.length ? ` +${list.length - keep}` : ''
+    const unwitnessed = list.filter(run => run.witness?.length).length
+    const warn = unwitnessed ? ` ⚠${unwitnessed}` : ''
     const dots = shown.slice(list.length - keep).map(colorOf)
-    const tailRoom = room - width(prefix) - dots.length - width(more)
-    const tail = fill(more + (tailRoom > 1 ? fit(` ${llms}`, tailRoom) : ''), columns - width(right) - width(prefix) - dots.length)
-    rows.push({ kind: 'phase', key: `phase:${open}`, open, isOpen: isOpenNow, prefix, dots, tail, right })
+    const tailRoom = room - width(prefix) - dots.length - width(more) - width(warn)
+    const tail = fill(more + warn + (tailRoom > 1 ? fit(note, tailRoom) : ''), columns - width(right) - width(prefix) - dots.length)
+    rows.push({ kind: 'phase', key: `phase:${open}`, open, isOpen: isOpenNow, prefix, dots, tail, right, ...(list.length ? {} : { isPending: true }) })
     list.forEach((run, i) => {
       if (isOpenNow) {
-        runLines(run, now, columns - 2).forEach((text, j) => rows.push({
-          kind: 'text', key: `run:${runKey(run)}:${j}`, text: `  ${text}`, color: j === 0 ? colorOf(shown[i]!) : undefined, isDim: j > 0 || isEnded(run.status),
-        }))
+        const lines = runLines(run, now, columns - 2)
+        const warnAt = run.witness?.length ? lines.length - 1 : -1
+        lines.forEach((text, j) => rows.push(j === warnAt
+          ? { kind: 'text', key: `run:${runKey(run)}:${j}`, text: `  ${text}`, color: 'warning', isDim: false }
+          : { kind: 'text', key: `run:${runKey(run)}:${j}`, text: `  ${text}`, color: j === 0 ? colorOf(shown[i]!) : undefined, isDim: j > 0 || isEnded(run.status) }))
       } else if (shown[i] === 'running' && run.lastSummary) {
         rows.push({ kind: 'text', key: `live:${runKey(run)}`, text: fit(`  ↳ ${run.lastSummary}`, columns) })
       }
     })
   }
-  return { key: `task:${task}`, color: TASK_COLOR[status], rows, height: rows.length + 2 }
+  return { key: `task:${task}`, color, rows, height: rows.length + 2 }
 }
 
 /** A task's card in every form, most detailed first: the phases `expanded` lists open, then closing
  * the earliest-expanded one at a time (the newest press survives), then all closed, then the header. */
-export function cardVariants(task: string, runs: readonly OcliRun[], now: number, columns: number, expanded: readonly string[]): Card[] {
+export function cardVariants(task: string, runs: readonly OcliRun[], now: number, columns: number, expanded: readonly string[], declared: readonly string[] = []): Card[] {
   const mine = expanded.filter(key => key.startsWith(`${task}/`))
   const variants = mine.map((_, i) => {
     const open = new Set(mine.slice(i))
-    return card(task, runs, now, columns, key => open.has(key))
+    return card(task, runs, now, columns, key => open.has(key), false, declared)
   })
-  variants.push(card(task, runs, now, columns, () => false), card(task, runs, now, columns, () => false, true))
+  variants.push(card(task, runs, now, columns, () => false, false, declared), card(task, runs, now, columns, () => false, true, declared))
   return variants
 }
 
 /** Cards in order, each a list of variants (most detailed first): a card is drawn whole in the first
  * variant that fits, keeping a row for the "more" line while cards follow or any was cut; a card
- * that fits in none is cut (its index listed) and the cards after it still get their turn. */
-export function fitCards<C extends { height: number }>(cards: readonly (readonly C[])[], room: number): { shown: C[]; cut: number[] } {
+ * that fits in none is cut (its index listed) and the cards after it still get their turn. A card
+ * given as a function, none of whose variants is shorter than `min`, is built only if `min` fits:
+ * a pane of hundreds of planned tasks builds the few it can draw. */
+export function fitCards<C extends { height: number }>(cards: readonly (readonly C[] | (() => readonly C[]))[], room: number, min = 0): { shown: C[]; cut: number[] } {
   const shown: C[] = []
   const cut: number[] = []
   let used = 0
-  for (const [i, variants] of cards.entries()) {
+  for (const [i, card] of cards.entries()) {
     const reserve = cut.length > 0 || i < cards.length - 1 ? 1 : 0
+    const variants = typeof card !== 'function' ? card : used + min + reserve <= room ? card() : []
     const pick = variants.find(c => used + c.height + reserve <= room)
     if (pick) {
       shown.push(pick)
@@ -378,4 +438,95 @@ export function fitCards<C extends { height: number }>(cards: readonly (readonly
     } else cut.push(i)
   }
   return { shown, cut }
+}
+
+// --- the checkpoint card: the newest <root>/checkpoints/*.md, so a reset lead resumes in the right place
+
+const MAX_CP_ROWS = 50
+const DRIFT_MS = 30 * 60_000
+const cells_ = (line: string): string[] => line.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim())
+
+/** A checkpoint's phase table, Next action paragraph and Resume backtick span. The table is the first
+ * whose header has Phase and Status cells; `n` is its `#` cell, else the row's ordinal. Next action
+ * and Resume are `##` or `###` sections, the last of each (checkpoints append, so the last is the
+ * live one; a heading marked superseded never counts). null when there is neither a table nor a next
+ * action. */
+export function parseCheckpoint(name: string, md: string): Checkpoint | null {
+  const lines = md.split('\n')
+  const isRow = (line: string | undefined) => line !== undefined && line.trim().startsWith('|')
+  let rows: Checkpoint['rows'] | null = null
+  for (let i = 0; i < lines.length && rows === null; i++) {
+    if (!isRow(lines[i]) || isRow(lines[i - 1])) continue
+    const head = cells_(lines[i]!).map(cell => cell.toLowerCase())
+    const at = { n: head.indexOf('#'), phase: head.indexOf('phase'), status: head.indexOf('status') }
+    if (at.phase < 0 || at.status < 0) continue
+    rows = []
+    for (let j = i + 1; isRow(lines[j]) && rows.length < MAX_CP_ROWS; j++) {
+      const cells = cells_(lines[j]!)
+      if (cells.every(cell => /^:?-+:?$/.test(cell))) continue
+      rows.push({ n: at.n < 0 ? String(rows.length + 1) : clean(cells[at.n], 80), phase: clean(cells[at.phase], 80), status: clean(cells[at.status], 80) })
+    }
+  }
+  /** The lines under the last `##`/`###` heading matching `title`, up to the next heading of its level or above. */
+  const section = (title: RegExp): string[] => {
+    const start = lines.findLastIndex(line => title.test(line) && !/superseded/i.test(line))
+    if (start < 0) return []
+    const above = new RegExp(`^#{1,${/^#+/.exec(lines[start]!)![0].length}}\\s`)
+    const end = lines.findIndex((line, i) => i > start && above.test(line))
+    return lines.slice(start + 1, end < 0 ? undefined : end)
+  }
+  const paragraph: string[] = []
+  for (const line of section(/^#{2,3}\s+next\s+(exact\s+)?actions?\b/i)) {
+    if (line.trim()) paragraph.push(line)
+    else if (paragraph.length) break
+  }
+  const next = clean(paragraph.join(' '), 300)
+  const resume = clean(/`([^`\n]+)`/.exec(section(/^#{2,3}\s+resume\b/i).join('\n'))?.[1], 400)
+  if (rows === null && !next) return null
+  return { name: clean(name, 120), rows: rows ?? [], next, resume }
+}
+
+const is = (status: string, word: string) => status.toLowerCase() === word
+
+/** A warning when the checkpoint says a phase is running while nothing moved for 30 minutes:
+ * `newestEventAt` is the newest live event or checkpoint write the caller knows of. */
+export function checkpointDrift(cp: Checkpoint, newestEventAt: number | null, now: number): string | null {
+  if (!cp.rows.some(row => is(row.status, 'running'))) return null
+  if (newestEventAt === null) return 'checkpoint says running, no live event seen'
+  const idle = now - newestEventAt
+  return idle > DRIFT_MS ? `checkpoint says running, no live event or checkpoint write for ${Math.floor(idle / 60_000)}m` : null
+}
+
+/** Only a plain file name reaches the prompt: no path, space, newline or backtick. */
+export const CHECKPOINT_NAME = /^[A-Za-z0-9._-]+\.md$/
+
+/** The fixed resume prompt: the root and the file name, never any checkpoint text. null for a name
+ * that is not plain, or a root clean() would change (the prompt would name another path). */
+export function resumePrompt(root: string, name: string): string | null {
+  const file = clean(name, 120)
+  return CHECKPOINT_NAME.test(file) && file === name && clean(root, 400) === root
+    ? `Read ${root}/checkpoints/${file} first, then git status, then continue from the first phase that is not done.`
+    : null
+}
+
+// A Map, not an object literal: a status cell reading `constructor` or `__proto__` must not reach a
+// prototype (measured: the inherited function or object as <Text color> made the engine refuse the pane).
+const CP_COLOR = new Map([['done', 'success'], ['running', 'suggestion'], ['blocked', 'warning']])
+
+/** The checkpoint as a card `columns` wide: name and done/total, a row per phase (none when
+ * `isCompact`, for a pane too short for them), next, resume, the drift warning, and a Queue resume
+ * button when there is a resume command. */
+export function checkpointCard(cp: Checkpoint, drift: string | null, columns: number, isCompact = false): Card {
+  const right = `${cp.rows.filter(row => is(row.status, 'done')).length}/${cp.rows.length}`
+  const rows: Row[] = [
+    { kind: 'split', key: 'cp:head', left: fill(fit(cp.name, columns - width(right) - 1), columns - width(right)), right, isBold: true },
+    ...(isCompact ? [] : cp.rows).map((row, i): Row => ({
+      kind: 'text', key: `cp:row:${i}`, text: fit(`#${row.n} ${row.phase} · ${row.status}`, columns), color: CP_COLOR.get(row.status.toLowerCase()), isDim: true,
+    })),
+  ]
+  if (cp.next) rows.push({ kind: 'text', key: 'cp:next', text: fit(`next: ${cp.next}`, columns) })
+  if (cp.resume) rows.push({ kind: 'text', key: 'cp:resume', text: fit(`resume: ${cp.resume}`, columns), isDim: true })
+  if (drift) rows.push({ kind: 'text', key: 'cp:drift', text: fit(drift, columns), color: 'warning' })
+  if (cp.resume && CHECKPOINT_NAME.test(cp.name)) rows.push({ kind: 'button', key: 'checkpoint:resume', label: 'Queue resume' })
+  return { key: 'checkpoint', rows, height: rows.length + 2 }
 }

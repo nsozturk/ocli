@@ -2,6 +2,7 @@ import { test, expect } from 'claude-code/testing'
 
 import { GLM_LIVE } from './fixtures'
 import { harness, NOW, OPTIONS, PANE_PROPS, ROOT, runLines } from './harness'
+import { digestScript } from './register'
 import { parseLines, reduce } from './reduce'
 
 const START = { kind: 'run.start', model: 'gpt-5.6-luna' }
@@ -591,4 +592,657 @@ test('a press acts on what is drawn: when two open phases do not fit, the newest
     expect(rowsOf(await ui.drawn()).some(t => t.startsWith('▾'))).toBe(false)
     await ui.unmount()
   }
+})
+
+// --- declared phases (plan.json beside the run files) -------------------------------------------
+
+const planText = (...names: string[]) => [JSON.stringify({ v: 1, phases: names.map(name => ({ name })), declaredAt: new Date(NOW).toISOString() })]
+const PHASED = (phase: string) => ({ kind: 'run.start', model: 'zai-coding-plan/glm-5.3', phase })
+/** The drawn element with this key (`props.key`). */
+function byKey(node: El | string, key: string): El | undefined {
+  if (typeof node === 'string') return undefined
+  if (node.props?.key === key) return node
+  for (const child of node.children ?? []) {
+    const found = byKey(child, key)
+    if (found) return found
+  }
+  return undefined
+}
+
+test('a plan beside a run file: declared phases drawn first, a pending one dim with 0/0, the count row D/M phases', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [PHASED('implement'), end('completed')], NOW - 60_000))
+  h.put(`${ROOT}/task-a/r2.jsonl`, runLines('r2', [PHASED('hotfix')], NOW - 30_000))
+  h.put(`${ROOT}/task-a/plan.json`, planText('implement', 'review', 'merge'))
+  await h.start($)
+  await h.tick()
+  await h.tick()
+  // Read once: an unchanged plan is not read again.
+  expect(h.calls.read.filter(p => p.endsWith('plan.json'))).toEqual([`${ROOT}/task-a/plan.json`])
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const tree = await ui.drawn()
+    await ui.unmount()
+    const rows = cardsOf(tree).get('task:task-a')!.map(r => r.trimEnd())
+    expect(rows).toContain('2 runs · ? tokens · 1/4 phases')
+    const phases = rows.filter(r => /^[▸▾] /.test(r))
+    expect(phases.map(r => r.split(/\s+/)[1])).toEqual(['implement', 'review', 'merge', 'hotfix'])
+    expect(phases[1]).toMatch(/^▸ review +declared +0\/0$/)
+    expect(phases[0]).toMatch(/1\/1$/)
+    // The pending row is one dim Text, its name included: no Button (it has nothing to open).
+    const all = (n: El | string | undefined): El[] => (!n || typeof n === 'string' ? [] : [n, ...(n.children ?? []).flatMap(all)])
+    const named = all(tree).filter(n => /^▸ review\b/.test(flat(n)) && n.type !== 'Box')
+    expect(named.map(n => [n.type, n.props?.dimColor])).toEqual([['Text', true]])
+    expect(flat(named[0]!).trimEnd()).toMatch(/^▸ review +declared +0\/0$/)
+    const ran = byKey(tree, 'row:phase:task-a/implement')!
+    expect((ran.children ?? []).some(c => typeof c !== 'string' && c.type === 'Text' && !c.props?.dimColor)).toBe(true)
+  }
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/errors 0/)
+})
+
+test('a plan with no runs yet is a card of its own, ordered by the plan mtime', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [PHASED('implement')], NOW - 60_000))
+  h.put(`${ROOT}/task-old/plan.json`, planText('a', 'b'), { mtimeMs: NOW - 120_000 })
+  h.put(`${ROOT}/task-new/plan.json`, planText('x'), { mtimeMs: NOW - 1000 })
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const tree = await ui.drawn()
+    const box = (await ui.findAll({ type: 'Box' })).find(b => b.props.key === 'task:task-new')!
+    expect(box.props.borderColor).toBeUndefined()
+    await ui.unmount()
+    const cards = cardsOf(tree)
+    expect([...cards.keys()]).toEqual(['task:task-new', 'task:task-a', 'task:task-old', 'agents'])
+    expect(cards.get('task:task-new')!.map(r => r.trimEnd())).toEqual(expect.arrayContaining(['ocli · Declared', '0 runs · ? tokens · 0/1 phases', expect.stringMatching(/^▸ x +declared +0\/0$/)]))
+  }
+})
+
+test('a malformed plan costs one footer error, once; the pane still draws; a fixed plan draws, a deleted one goes', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [PHASED('implement')]))
+  h.put(`${ROOT}/task-a/plan.json`, ['{"v":1,"phases":['])
+  await h.start($)
+  await h.tick()
+  await h.tick()
+  await h.tick()
+  for (const surface of SURFACES) {
+    const joined = (await paneText($, surface)).join('\n')
+    expect(joined).toMatch(/errors 1/)
+    expect(joined).toMatch(/^▸ implement ● glm-5\.3 +0\/1$/m)
+    expect(joined).not.toContain('phases ·')
+    expect(joined).toMatch(/^1 run · \? tokens$/m)
+  }
+  h.put(`${ROOT}/task-a/plan.json`, planText('implement', 'review'), { mtimeMs: NOW + 5000 })
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ review +declared +0\/0$/m)
+  h.fs.delete(`${ROOT}/task-a/plan.json`)
+  await h.tick()
+  const joined = (await paneText($, 'desktop')).join('\n')
+  expect(joined).not.toContain('declared')
+  expect(joined).toMatch(/errors 1/)
+})
+
+test('a plan that is a link, resolves outside, is over 64 KiB or is older than a day is not used', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-l/plan.json`, planText('linked'), { isLink: true, realPath: '/etc/plan.json' })
+  h.put(`${ROOT}/task-o/plan.json`, planText('outside'), { realPath: '/elsewhere/plan.json' })
+  h.put(`${ROOT}/task-b/plan.json`, planText('big'), { size: 64 * 1024 + 1 })
+  h.put(`${ROOT}/task-d/plan.json`, planText('old'), { mtimeMs: NOW - 25 * 3_600_000 })
+  h.put(`${ROOT}/task-k/plan.json`, planText('kept'), { size: 64 * 1024 })
+  await h.start($)
+  await h.tick()
+  expect(h.calls.read).toEqual([`${ROOT}/task-k/plan.json`])
+  const joined = (await paneText($, 'terminal')).join('\n')
+  for (const name of ['linked', 'outside', 'big', 'old']) expect(joined).not.toContain(name)
+  expect(joined).toMatch(/^▸ kept +declared/m)
+})
+
+test('a swapped plan (check, then a link at read time) is dropped, and a __proto__ task reaches no prototype', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  const path = `${ROOT}/task-a/plan.json`
+  h.put(path, planText('fine'))
+  h.put(`${ROOT}/__proto__/plan.json`, planText('proto'))
+  let isSwapped = false
+  h.hooks.afterStat = (p, resolve) => {
+    if (p !== path || !resolve || isSwapped) return
+    isSwapped = true
+    h.put(path, planText('outside-secret'), { realPath: '/elsewhere/plan.json' })
+  }
+  await h.start($)
+  await h.tick()
+  expect(isSwapped).toBe(true)
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).not.toContain('outside-secret')
+  expect(joined).toMatch(/^▸ proto +declared/m)
+  expect(({} as Record<string, unknown>).phases).toBeUndefined()
+})
+
+test('when the session moves to another project, its plans leave the pane too', { options: { liveDirs: '' } }, async ($, on) => {
+  const h = harness(on)
+  let root = '/a'
+  on('session.root', () => ({ value: root }))
+  h.put('/a/orchestra/live/task-a/plan.json', planText('alpha'))
+  await h.start($)
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).toContain('alpha')
+  root = '/b'
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).not.toContain('alpha')
+})
+
+test('a plan past the per-tick file cap keeps what was drawn, as runs do', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-z/plan.json`, planText('capped'))
+  await h.start($)
+  await h.tick()
+  // Listed before task-z, these fill the cap: task-z's plan is past it from now on.
+  const files = new Map([...h.fs].filter(([path]) => !path.startsWith(`${ROOT}/task-z`)))
+  for (let i = 0; i < 500; i++) files.set(`${ROOT}/task-a/r${i}.jsonl`, { kind: 'file', text: runLines(`r${i}`, [START]).join('\n') + '\n', mtimeMs: NOW })
+  files.set(`${ROOT}/task-a`, { kind: 'dir' })
+  for (const [path, node] of h.fs) if (path.startsWith(`${ROOT}/task-z`)) files.set(path, node)
+  h.fs.clear()
+  for (const [path, node] of files) h.fs.set(path, node)
+  await h.tick()
+  const joined = (await paneText($, 'terminal', 200)).join('\n')
+  expect(joined).toContain('too many live files: 1 skipped')
+  expect(joined).toMatch(/^▸ capped +declared/m)
+})
+
+test('a task dir that cannot be listed for one tick does not lose its unchanged plan', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/plan.json`, planText('survives'))
+  await h.start($)
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ survives +declared/m)
+  h.failList.add(`${ROOT}/task-a`)
+  await h.tick()
+  // Not even for the tick whose listing failed: the plan last read is drawn.
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ survives +declared/m)
+  h.failList.clear()
+  await h.tick()
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toMatch(/^▸ survives +declared/m)
+  expect(joined).toMatch(/errors 1/)
+  expect(h.calls.read.filter(p => p.endsWith('plan.json')).length).toBe(1)
+})
+
+test('a plan whose re-read throws keeps the last plan read, and costs an error', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/plan.json`, planText('last-good'))
+  await h.start($)
+  await h.tick()
+  h.fs.set(`${ROOT}/task-a/plan.json`, { kind: 'file', size: 10, mtimeMs: NOW + 5000 }) // changed; fs.read throws
+  await h.tick()
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toMatch(/^▸ last-good +declared/m)
+  expect(joined).toMatch(/errors 1/)
+})
+
+test('a live dir that cannot be listed for one tick keeps its plans drawn, as it keeps its runs', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/plan.json`, planText('kept'))
+  h.put(`${ROOT}/task-b/r1.jsonl`, runLines('r1', [PHASED('implement')], NOW, { task: 'task-b' }))
+  await h.start($)
+  await h.tick()
+  h.failList.add(ROOT)
+  await h.tick()
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toMatch(/^▸ kept +declared/m)
+  expect(joined).toMatch(/^▸ implement /m)
+  expect(joined).toMatch(/errors 1/)
+})
+
+test('a plan that left the listing is forgotten: one that comes back unchanged is read again', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  const path = `${ROOT}/task-a/plan.json`
+  h.put(path, planText('back'), { mtimeMs: NOW - 1000 })
+  await h.start($)
+  await h.tick()
+  const node = h.fs.get(path)!
+  h.fs.delete(path)
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).not.toContain('back')
+  h.fs.set(path, node)
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ back +declared/m)
+  expect(h.calls.read.filter(p => p === path).length).toBe(2)
+})
+
+test('a plan dated in the future: past a day ahead it is not drawn; within it, it sorts as read now, below a newer run', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-far/plan.json`, planText('far'), { mtimeMs: NOW + 2 * 24 * 3_600_000 })
+  h.put(`${ROOT}/task-soon/plan.json`, planText('soon'), { mtimeMs: NOW + 3_600_000 })
+  await h.start($)
+  await h.tick()
+  // A run whose last event is after the plan was read (but long before the plan's mtime) sorts above it.
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [PHASED('implement')], NOW + 3000))
+  await h.tick()
+  const ui = await mount($, 'terminal')
+  const tree = await ui.drawn()
+  await ui.unmount()
+  expect([...cardsOf(tree).keys()]).toEqual(['task:task-a', 'task:task-soon', 'agents'])
+})
+
+test('a plan carried over a failed listing still ages out after a day', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/plan.json`, planText('ageing'), { mtimeMs: NOW - 24 * 3_600_000 + 3000 })
+  await h.start($)
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ ageing +declared/m)
+  h.failList.add(`${ROOT}/task-a`)
+  await h.tick()
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).not.toContain('ageing')
+})
+
+test('a plan whose re-read threw is read again next tick, and its new phases drawn', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  const path = `${ROOT}/task-a/plan.json`
+  h.put(path, planText('first'))
+  await h.start($)
+  await h.tick()
+  const text = planText('second')[0]! + '\n'
+  h.fs.set(path, { kind: 'file', size: text.length, mtimeMs: NOW + 5000 }) // changed; fs.read throws
+  await h.tick()
+  h.fs.set(path, { kind: 'file', text, mtimeMs: NOW + 5000 }) // same size:mtime, now readable
+  await h.tick()
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toMatch(/^▸ second +declared/m)
+  expect(joined).not.toContain('first')
+})
+
+test('a run whose claims its trace does not back: ⚠1 on its phase row, a warning line under it, on terminal AND desktop', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-w/r1.jsonl`, runLines('r1', [{ ...START, phase: 'implement' }, { ...end('completed'), witness: { findings: ['claimedTestsButNone', '\u001b[2JstaleGreen'] } }], NOW, { task: 'task-w' }))
+  h.put(`${ROOT}/task-w/r2.jsonl`, runLines('r2', [{ ...START, phase: 'implement' }, { ...end('completed'), witness: { findings: [] } }], NOW, { task: 'task-w' }))
+  await h.start($)
+  await h.tick()
+  const warnings = (node: El | string): El[] => typeof node === 'string' ? []
+    : [...(node.type === 'Text' && flat(node).includes('unwitnessed') ? [node] : []), ...(node.children ?? []).flatMap(warnings)]
+  for (const surface of SURFACES) {
+    expect((await paneText($, surface)).find(t => t.startsWith('▸ implement'))).toMatch(/^▸ implement ●● ⚠1 /)
+    expect((await expanded($, surface, ['task-w/implement'])).filter(t => t.includes('unwitnessed')).map(t => t.trim()))
+      .toEqual(['⚠ unwitnessed: claimedTestsButNone, staleGreen'])
+    const ui = await mount($, surface)
+    await ui.press({ key: 'phase:task-w/implement' })
+    const found = warnings(await ui.drawn())
+    await ui.press({ key: 'phase:task-w/implement' })
+    await ui.unmount()
+    expect(found.map(n => n.props?.color)).toEqual(['warning'])
+    for (const n of found) expect(flat(n)).not.toMatch(CONTROL)
+  }
+})
+
+// --- the checkpoint card ---------------------------------------------------------------------------
+
+const CHECKPOINT = [
+  '# night', '', '## Phases', '| # | Phase | Status | Evidence |', '|---|---|---|---|',
+  '| 0 | Cards merged | done | b0ccaca |', '| 1 | Build features | running | wf_x |', '| 2 | Report | pending | |', '',
+  '## Next action', 'SENTINEL-NEXT-TEXT pick the build set', '', '## Resume', '`cd /work && git log`', '',
+]
+const PROMPT = 'Read /work/checkpoints/2026-10-11_x.md first, then git status, then continue from the first phase that is not done.'
+
+/** /work/checkpoints with the newest (by date prefix) and an older file touched later, a link and a non-md. */
+function checkpoints(h: ReturnType<typeof harness>, on: Parameters<typeof harness>[0]) {
+  on('session.root', () => ({ value: '/work' }))
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT)
+  h.put('/work/checkpoints/2026-10-09_old.md', ['## Next action', 'OLD-NEXT'], { mtimeMs: NOW + 60_000 })
+  h.put('/work/checkpoints/2026-10-12_link.md', ['## Next action', 'LINK-NEXT'], { isLink: true, realPath: '/etc/x.md' })
+  h.put('/work/checkpoints/2026-10-12_notes.txt', ['## Next action', 'TXT-NEXT'])
+}
+
+test('the newest checkpoint is the first card: done/total, phase rows, next and resume, on terminal AND desktop', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [START]))
+  await h.start($)
+  await h.tick()
+  expect(h.calls.read).toContain('/work/checkpoints/2026-10-11_x.md')
+  expect(h.calls.read.filter(p => p.startsWith('/work/'))).toEqual(['/work/checkpoints/2026-10-11_x.md'])
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const tree = await ui.drawn()
+    await ui.unmount()
+    const cards = cardsOf(tree)
+    expect([...cards.keys()][0]).toBe('checkpoint')
+    const drawn = cards.get('checkpoint')!
+    expect(drawn[1]).toMatch(/^2026-10-11_x\.md +1\/3$/)
+    expect(drawn.slice(2, 5)).toEqual(['#0 Cards merged · done', '#1 Build features · running', '#2 Report · pending'])
+    expect(drawn).toContain('next: SENTINEL-NEXT-TEXT pick the build set')
+    expect(drawn).toContain('resume: cd /work && git log')
+    expect(drawn).toContain('Queue resume')
+    // A live event 0 s ago: no drift.
+    expect(drawn.join('\n')).not.toContain('no live event')
+    expect(rowsOf(tree).join('\n')).toMatch(/errors 0/)
+  }
+})
+
+test('a pane too short for the phase rows draws the checkpoint compact; shorter still, it says checkpoint hidden', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT, { mtimeMs: NOW - 50 * 60_000 })
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    // 10 rows: a head line, the footer, a row for the "more" line, 7 for the card (the full one takes 10).
+    const ui = await mount($, surface, 10)
+    const tree = await ui.drawn()
+    await ui.unmount()
+    expect(cardsOf(tree).get('checkpoint')).toEqual(['╭', expect.stringMatching(/^2026-10-11_x\.md +1\/3$/), 'next: SENTINEL-NEXT-TEXT pick the build set', 'resume: cd /work && git log', 'checkpoint says running, no live event or checkpoint write for 50m', 'Queue resume', '╰'])
+    const short = (await paneText($, surface, 5)).join('\n')
+    expect(short).toContain('checkpoint hidden')
+    expect(short).not.toContain('more task')
+  }
+})
+
+test('Queue resume submits only the fixed prompt with the file name; a throwing submit toasts it instead; both surfaces', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  const submitted: unknown[] = []
+  let isBroken = false
+  on('prompt.submit', ($, e) => {
+    if (isBroken) throw new Error('prompt.submit is not available')
+    submitted.push(e)
+    return { text: e.text }
+  })
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    isBroken = false
+    submitted.length = 0
+    h.calls.toast.length = 0
+    const ui = await mount($, surface)
+    await ui.press({ key: 'checkpoint:resume' })
+    expect(submitted.map(e => (e as { text: string }).text)).toEqual([PROMPT])
+    expect(JSON.stringify(submitted)).not.toContain('SENTINEL')
+    expect(h.calls.toast).toEqual([])
+    isBroken = true
+    await ui.press({ key: 'checkpoint:resume' })
+    await ui.unmount()
+    expect(h.calls.toast).toEqual([`ocli: copy this to resume: ${PROMPT}`])
+  }
+})
+
+test('a checkpoint that says running while no live event came for over 30 minutes draws a warning line', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT, { mtimeMs: NOW - 50 * 60_000 })
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [START], NOW - 40 * 60_000))
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const drawn = cardsOf(await ui.drawn()).get('checkpoint')!
+    await ui.unmount()
+    expect(drawn).toContain('checkpoint says running, no live event or checkpoint write for 40m')
+  }
+})
+
+test('a checkpoint written 20 minutes ago is a sign of life: no drift line, whatever the live dir says', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT, { mtimeMs: NOW - 20 * 60_000 })
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [START], NOW - 119 * 60_000))
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const drawn = cardsOf(await (async () => { const ui = await mount($, surface); const t = await ui.drawn(); await ui.unmount(); return t })()).get('checkpoint')!
+    expect(drawn.join('\n')).not.toContain('checkpoint says running')
+  }
+})
+
+test('the card is the newest checkpoint with a resume command: a newer notes file and a newer feature checkpoint are passed over, at no error', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  // Not a checkpoint at all (no table, no Next action), and dated later.
+  h.put('/work/checkpoints/2026-10-12_notes.md', ['# notes', '', 'prose only'])
+  // A feature checkpoint git touched after the lead's (a merge): a table, no Resume.
+  h.put('/work/checkpoints/2026-10-11_feature.md', ['| Phase | Status |', '|---|---|', '| FEATURE-ROW | done |', '', '## Next action', 'FEATURE-NEXT'], { mtimeMs: NOW + 60_000 })
+  await h.start($)
+  for (let i = 0; i < 61; i++) await h.tick()
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toContain('SENTINEL-NEXT-TEXT')
+  expect(joined).not.toContain('FEATURE')
+  expect(joined).toMatch(/errors 0/)
+  // Nothing changed in the listing: the files are not read again every minute.
+  expect(h.calls.read.filter(p => p.startsWith('/work/')).length).toBeLessThanOrEqual(3)
+})
+
+test('no checkpoint with a resume command: the newest that parses is drawn; none that parses is no card, at no error', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  on('session.root', () => ({ value: '/work' }))
+  h.put('/work/checkpoints/2026-10-12_notes.md', ['# notes'])
+  h.put('/work/checkpoints/2026-10-11_feature.md', ['## Next action', 'FEATURE-NEXT'])
+  await h.start($)
+  await h.tick()
+  let joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toContain('FEATURE-NEXT')
+  expect(joined).not.toContain('Queue resume')
+  h.fs.delete('/work/checkpoints/2026-10-11_feature.md')
+  for (let i = 0; i < 30; i++) await h.tick()
+  joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).not.toContain('FEATURE-NEXT')
+  expect(joined).toMatch(/errors 0/)
+})
+
+test('a checkpoints dir that cannot be statted (not missing) keeps the card and costs an error', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  await h.start($)
+  await h.tick()
+  h.hooks.afterStat = path => {
+    if (path === '/work/checkpoints') throw new Error('EACCES /work/checkpoints')
+  }
+  for (let i = 0; i < 30; i++) await h.tick()
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toContain('SENTINEL-NEXT-TEXT')
+  expect(joined).toMatch(/errors 1/)
+})
+
+test('a checkpoints dir that resolves outside the project is not read: no card', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  on('session.root', () => ({ value: '/work' }))
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT, { realPath: '/home/secret/2026-10-11_x.md' })
+  h.fs.set('/work/checkpoints', { kind: 'dir', realPath: '/home/secret' })
+  await h.start($)
+  await h.tick()
+  expect(h.calls.read.filter(p => p.startsWith('/work/'))).toEqual([])
+  expect((await paneText($, 'terminal')).join('\n')).not.toContain('Queue resume')
+})
+
+test('the session moves to another project: its checkpoint is drawn on the next tick, and Queue resume names it; no root is no card', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  let root: string | null = '/work'
+  on('session.root', () => {
+    if (root === null) throw new Error('no root')
+    return { value: root }
+  })
+  on('session.cwd', () => {
+    if (root === null) throw new Error('no cwd')
+    return { value: root }
+  })
+  const submitted: string[] = []
+  on('prompt.submit', ($, e) => {
+    submitted.push(e.text)
+    return { text: e.text }
+  })
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT)
+  h.put('/other/checkpoints/2026-10-11_y.md', ['## Next action', 'OTHER-NEXT', '', '## Resume', '`cd /other`'])
+  await h.start($)
+  await h.tick()
+  root = '/other'
+  await h.tick()
+  const ui = await mount($, 'terminal')
+  expect(rowsOf(await ui.drawn()).join('\n')).toContain('OTHER-NEXT')
+  await ui.press({ key: 'checkpoint:resume' })
+  await ui.unmount()
+  expect(submitted).toEqual(['Read /other/checkpoints/2026-10-11_y.md first, then git status, then continue from the first phase that is not done.'])
+  root = null
+  await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).not.toContain('OTHER-NEXT')
+})
+
+test('a project root that clean() would change is never put in the prompt: the press toasts instead', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  on('session.root', () => ({ value: '/my  work' }))
+  const submitted: string[] = []
+  on('prompt.submit', ($, e) => {
+    submitted.push(e.text)
+    return { text: e.text }
+  })
+  h.put('/my  work/checkpoints/2026-10-11_x.md', CHECKPOINT)
+  await h.start($)
+  await h.tick()
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'checkpoint:resume' })
+  await ui.unmount()
+  expect(submitted).toEqual([])
+  expect(h.calls.toast).toEqual(['ocli: the project path is not plain; resume from its checkpoints dir by hand'])
+})
+
+test('no session.root: the checkpoint is found under session.cwd; no checkpoints dir is no card and no error', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  on('session.cwd', () => ({ value: '/work' }))
+  await h.start($)
+  await h.tick()
+  let joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).not.toContain('Queue resume')
+  expect(joined).toMatch(/errors 0/)
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT)
+  for (let i = 0; i < 29; i++) await h.tick()
+  expect((await paneText($, 'terminal')).join('\n')).not.toContain('Queue resume')
+  await h.tick()
+  joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toContain('Queue resume')
+  expect(joined).toMatch(/errors 0/)
+})
+
+test('an unreadable checkpoint keeps the card drawn and costs an error', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  await h.start($)
+  await h.tick()
+  h.fs.set('/work/checkpoints/2026-10-11_x.md', { kind: 'file', size: 10, mtimeMs: NOW + 1 })
+  for (let i = 0; i < 30; i++) await h.tick()
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).toContain('Queue resume')
+  expect(joined).toMatch(/errors 1/)
+})
+
+test('a checkpoint that resolves outside the checkpoints dir is not read, and costs an error', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  on('session.root', () => ({ value: '/work' }))
+  h.put('/work/checkpoints/2026-10-11_x.md', CHECKPOINT, { realPath: '/elsewhere/2026-10-11_x.md' })
+  await h.start($)
+  await h.tick()
+  expect(h.calls.read.filter(p => p.startsWith('/work/'))).toEqual([])
+  const joined = (await paneText($, 'terminal')).join('\n')
+  expect(joined).not.toContain('Queue resume')
+  expect(joined).toMatch(/errors 1/)
+})
+
+test('a checkpoint over 256 KiB is passed over for the next newest', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put('/work/checkpoints/2026-10-12_big.md', ['## Next action', 'BIG-NEXT'], { size: 256 * 1024 + 1 })
+  await h.start($)
+  await h.tick()
+  expect(h.calls.read.filter(p => p.startsWith('/work/'))).toEqual(['/work/checkpoints/2026-10-11_x.md'])
+  expect((await paneText($, 'terminal')).join('\n')).not.toContain('BIG-NEXT')
+})
+
+const mountDigest = ($: unknown, surface: (typeof SURFACES)[number]) => ($ as Mountable).ui.mount({
+  plugin: 'ocli-monitor', surface, component: 'Pane', requestId: 'ocli-digest',
+  props: { ...PANE_PROPS, title: 'ocli digest' }, viewport: { columns: 100, rows: 30 },
+} as never)
+const runDigest = ($: { command: { run: (e: never) => Promise<{ text?: string }> } }) =>
+  $.command.run({ command: 'ocli-digest', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as never)
+const DIGEST = '# ocli digest since 2026-10-10T18:30:00.000Z\n\n## t1 · 1/2 phases\n\n- implement: 1 run \u001b[31m(completed 1)\u0007 · pass 1/1 scored · 0 unscored\n'
+
+test('/ocli-digest runs the digest script and draws its markdown, cleaned per line, with a Copy button', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  // The 2.1.294 runtime has no session.root: the project root is session.cwd.
+  on('session.cwd', () => ({ value: '/work' }))
+  h.proc.result = { exitCode: 0, stdout: DIGEST, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+  await h.start($)
+  // Its own name, so /ocli keeps its args free.
+  expect(h.calls.register).toEqual(['ocli', 'ocli-digest'])
+  const ran = await runDigest($ as never)
+  expect(ran.text).toBe('ocli digest opened.')
+  // The plugin's own script, never the project's; the project's orchestra dir is only the data it reads.
+  expect(h.calls.process).toHaveLength(1)
+  expect(h.calls.process[0]![1]).toMatch(/\/plugin\/\.\.\/dispatcher\/digest\.mjs$/)
+  expect(h.calls.process[0]!.slice(2)).toEqual(['--root', '/work/orchestra'])
+  expect(h.calls.open).toContainEqual({ id: 'ocli-digest', title: 'ocli digest' })
+  for (const surface of SURFACES) {
+    const ui = await mountDigest($, surface)
+    const [md] = await ui.findAll({ type: 'Markdown' })
+    expect(md!.props.text).toBe('# ocli digest since 2026-10-10T18:30:00.000Z\n\n## t1 · 1/2 phases\n\n- implement: 1 run (completed 1) · pass 1/1 scored · 0 unscored')
+    expect(String(md!.props.text).replace(/\n/g, '')).not.toMatch(CONTROL)
+    await ui.press({ key: 'Copy' })
+    expect(h.calls.copy.at(-1)).toMatchObject({ text: md!.props.text, surface })
+    await ui.unmount()
+  }
+  expect(h.calls.toast).toEqual([])
+})
+
+test('/ocli-digest degrades to an unavailable line when process.run rejects or the script fails', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  let cwd: string | null = null
+  on('session.cwd', () => ({ value: cwd as never }))
+  await h.start($)
+  expect((await runDigest($ as never)).text).toBe('ocli digest unavailable: no project root')
+  expect(h.calls.process).toEqual([])
+  cwd = '/work'
+  h.proc.result = new Error('spawn node ENOENT')
+  // A throwing hook is skipped and the kit's own process.run rejects ("no implementation"): a rejection either way.
+  expect((await runDigest($ as never)).text).toMatch(/^ocli digest unavailable: \S/)
+  h.proc.result = { exitCode: 2, stdout: '', stderr: 'warn\n[digest] --since is not a date\u001b[0m\n', isStdoutTruncated: false, isStderrTruncated: false }
+  expect((await runDigest($ as never)).text).toBe('ocli digest unavailable: digest exited 2: [digest] --since is not a date')
+  expect(h.calls.open).not.toContainEqual({ id: 'ocli-digest', title: 'ocli digest' })
+  const ui = await mountDigest($, 'terminal')
+  expect(rowsOf(await ui.drawn()).join('\n')).toContain('no digest yet')
+  expect(await ui.findAll({ type: 'Markdown' })).toEqual([])
+  await ui.unmount()
+})
+
+test('/ocli-digest never runs a script from the session\'s project; with no plugin root it is unavailable', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  on('session.cwd', () => ({ value: '/clone' }))
+  h.proc.result = { exitCode: 0, stdout: DIGEST, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+  await h.start($)
+  await runDigest($ as never)
+  const [argv] = h.calls.process
+  expect(argv![1]).not.toMatch(/^\/clone\//)
+  expect(argv!.slice(2)).toEqual(['--root', '/clone/orchestra'])
+  // The degraded path: a runtime whose $.plugin has no absolute root.
+  expect(digestScript(undefined)).toBe(null)
+  expect(digestScript('')).toBe(null)
+  expect(digestScript('relative/dir')).toBe(null)
+  expect(digestScript('/p/ocli/plugin/')).toBe('/p/ocli/plugin/../dispatcher/digest.mjs')
+})
+
+test('/ocli-digest says when the digest was cut, by the runtime or by the pane, instead of dropping its end silently', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  on('session.cwd', () => ({ value: '/work' }))
+  await h.start($)
+  const drawn = async () => {
+    const ui = await mountDigest($, 'terminal')
+    const [md] = await ui.findAll({ type: 'Markdown' })
+    await ui.unmount()
+    return String(md!.props.text)
+  }
+  h.proc.result = { exitCode: 0, stdout: DIGEST, stderr: '', isStdoutTruncated: true, isStderrTruncated: false }
+  await runDigest($ as never)
+  expect(await drawn()).toMatch(/\n\n… cut: [^\n]*Needs a decision[^\n]*$/)
+  h.proc.result = { exitCode: 0, stdout: `${DIGEST}${'- x\n'.repeat(40_000)}## Needs a decision\n\n- t1 / implement failed\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+  await runDigest($ as never)
+  const long = await drawn()
+  expect([...long].length).toBe(99_900)
+  expect(long).toMatch(/\n\n… cut: [^\n]*for all of it$/)
+  h.proc.result = { exitCode: 0, stdout: DIGEST, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+  await runDigest($ as never)
+  expect(await drawn()).not.toContain('… cut')
 })

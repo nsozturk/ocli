@@ -1,7 +1,7 @@
 import { test, expect, describe } from 'claude-code/testing'
 
 import { AGY, CODEX, GLM_LIVE, MUSE, OPENCODE } from './fixtures'
-import { card, cardVariants, clean, colorOf, displayStatus, fitCards, latestAt, parseLines, phasesOf, reduce, runLine, runLines, taskSpan, taskStatus, tokensOf } from './reduce'
+import { card, cardVariants, checkpointCard, checkpointDrift, clean, colorOf, displayStatus, fitCards, foldPlan, HEADER_HEIGHT, latestAt, parseCheckpoint, parseLines, resumePrompt, phasesOf, reduce, runLine, runLines, taskSpan, taskStatus, tokensOf } from './reduce'
 import type { Card } from './reduce'
 import type { OcliRun } from '../types'
 
@@ -218,7 +218,7 @@ test('span: earliest start to latest end, or to now while anything runs', () => 
   expect(taskSpan([...done, mk('c', { startedAt: T0 + 2000, lastAt: NOW_C })], NOW_C)).toBe(60_000)
 })
 
-const texts = (c: Card) => c.rows.map(row => row.kind === 'text' ? row.text : row.kind === 'split' ? row.left + row.right : row.prefix + row.dots.map(() => '●').join('') + row.tail + row.right)
+const texts = (c: Card) => c.rows.map(row => row.kind === 'text' ? row.text : row.kind === 'split' ? row.left + row.right : row.kind === 'button' ? row.label : row.prefix + row.dots.map(() => '●').join('') + row.tail + row.right)
 
 test('a card: header, status, runs and tokens, description, phases with dots, done/total and LLMs', () => {
   const runs = [
@@ -339,4 +339,294 @@ test('a card from an old $.state run (no phase, title or where) still draws', ()
   delete run.phase; delete run.title; delete run.where
   const c = card('t', [run as OcliRun], NOW_C, 40, () => true)
   expect(texts(c).some(line => line.startsWith('▾ implement'))).toBe(true)
+})
+
+// --- declared phases (plan.json) ---------------------------------------------------------------
+
+test('foldPlan: v1 with a phases array; names cleaned, emptied ones dropped, deduped, capped at 50', () => {
+  const plan = (value: unknown) => foldPlan(JSON.stringify(value))
+  expect(plan({ v: 1, phases: [{ name: 'implement' }, { name: 're\u001b[31mview' }, { name: '' }, { name: 'implement' }, { name: 7 }, null, 'merge', { name: 'x'.repeat(60) }], declaredAt: 'z' }))
+    .toEqual(['implement', 'review', 'x'.repeat(40)])
+  // An empty plan is malformed (dispatch.mjs refuses one): null, so it costs an error and draws no card.
+  expect(plan({ v: 1, phases: [] })).toBeNull()
+  expect(plan({ v: 1, phases: [{ name: '\u0007' }, { name: '  ' }, { name: 3 }] })).toBeNull()
+  expect(plan({ v: 1, phases: Array.from({ length: 70 }, (_, i) => ({ name: `p${i}` })) })).toHaveLength(50)
+  for (const bad of [{ v: 2, phases: [{ name: 'a' }] }, { phases: [{ name: 'a' }] }, { v: '1', phases: [{ name: 'a' }] }, { v: 1, phases: 'a' }, { v: 1 }, [1], null, 'plan']) {
+    expect(plan(bad)).toBeNull()
+  }
+  expect(foldPlan('{"v":1,"phases":[')).toBeNull()
+  expect(foldPlan('')).toBeNull()
+})
+
+test('phasesOf: declared phases first in declared order (even with no runs), then undeclared in first-seen order', () => {
+  const runs = [
+    mk('u', { phase: 'hotfix', startedAt: T0 + 1000 }),
+    mk('r', { phase: 'review', startedAt: T0 + 2000 }),
+    mk('i', { phase: 'implement', startedAt: T0 + 3000 }),
+  ]
+  const phases = phasesOf(runs, ['implement', 'review', 'merge', 'implement'])
+  expect(phases.map(([name, list]) => [name, list.map(run => run.runId)])).toEqual([
+    ['implement', ['i']], ['review', ['r']], ['merge', []], ['hotfix', ['u']],
+  ])
+  expect(phasesOf(runs).map(([name]) => name)).toEqual(['hotfix', 'review', 'implement'])
+})
+
+test('a declared phase with no runs draws as a pending row: no dots, "declared", 0/0; the count row says D/M phases', () => {
+  const runs = [
+    mk('a', { phase: 'implement', status: 'completed', startedAt: T0, endedAt: T0 + 5000 }),
+    mk('x', { phase: 'extra', status: 'completed', startedAt: T0 + 6000, endedAt: T0 + 7000 }),
+  ]
+  const c = card('t', runs, NOW_C, 60, () => false, false, ['implement', 'review', 'merge'])
+  const lines = texts(c)
+  expect(lines[2]!.trimEnd()).toBe('2 runs · ? tokens · 2/4 phases')
+  const rows = c.rows.filter(r => r.kind === 'phase')
+  expect(rows.map(r => r.kind === 'phase' && r.prefix.trim())).toEqual(['▸ implement', '▸ review', '▸ merge', '▸ extra'])
+  const review = rows[1]!
+  if (review.kind !== 'phase') throw new Error('not a phase row')
+  expect(review).toMatchObject({ dots: [], right: '0/0', isPending: true })
+  expect(review.tail.trim()).toBe('declared')
+  expect(rows[0]!.kind === 'phase' && rows[0]!.isPending).toBeFalsy()
+  for (const line of lines) expect([...line].length).toBeLessThanOrEqual(60)
+  expect(lines.find(line => line.startsWith('▸ review'))).toMatch(/^▸ review +declared +0\/0$/)
+  // The header form counts the declared phases too.
+  const header = texts(card('t', runs, NOW_C, 60, () => false, true, ['implement', 'review', 'merge']))
+  expect(header[2]!.trimEnd()).toBe('2 runs · ? tokens · 2/4 phases')
+  expect(header[3]!.trimEnd()).toBe('4 phases · pane too short to list them')
+  // No plan: the count row is as before.
+  expect(texts(card('t', runs, NOW_C, 60, () => false))[2]!.trimEnd()).toBe('2 runs · ? tokens')
+})
+
+test('done rule: a phase is done only with a run and none running or stale', () => {
+  const done = (list: OcliRun[], now = NOW_C) => texts(card('t', list, now, 60, () => false, false, ['p', 'q']))[2]!.trimEnd()
+  const completed = mk('a', { phase: 'p', status: 'completed', endedAt: T0 + 1000 })
+  expect(done([completed])).toBe('1 run · ? tokens · 1/2 phases')
+  expect(done([completed, mk('b', { phase: 'p', status: 'running', lastAt: NOW_C })])).toBe('2 runs · ? tokens · 0/2 phases')
+  expect(done([completed, mk('s', { phase: 'p', status: 'running', lastAt: T0 })], T0 + 11 * 60_000)).toBe('2 runs · ? tokens · 0/2 phases')
+  expect(done([completed, mk('f', { phase: 'p', status: 'failed', endedAt: T0 + 1000 })])).toBe('2 runs · ? tokens · 1/2 phases')
+  expect(done([completed, mk('c', { phase: 'q', status: 'blocked', endedAt: T0 + 1000 })])).toBe('2 runs · ? tokens · 2/2 phases')
+})
+
+test('a narrow card keeps the D/M phases figure: it leads the count row when the whole row does not fit', () => {
+  const runs = [
+    mk('a', { phase: 'implement', status: 'completed', endedAt: T0 + 1000, tokens: { input: 1500, output: 500 } }),
+    mk('b', { phase: 'review', status: 'running', lastAt: NOW_C }),
+  ]
+  const count = (columns: number, isHeader = false) => texts(card('t', runs, NOW_C, columns, () => false, isHeader, ['implement', 'review', 'merge']))[2]!.trimEnd()
+  expect(count(40)).toBe('2 runs · 2k tokens · 1/3 phases')
+  expect(count(26)).toBe('1/3 phases · 2 runs · 2k …')
+  expect(count(16)).toBe('1/3 phases · 2 …')
+  expect(count(16, true)).toBe('1/3 phases · 2 …')
+  // No plan: the row is cut as before.
+  expect(texts(card('t', runs, NOW_C, 16, () => false))[2]!.trimEnd()).toBe('2 runs · 2k tok…')
+})
+
+test('the header form is the shortest form of every task card, HEADER_HEIGHT rows', () => {
+  const runs = [mk('a', { phase: 'implement', status: 'completed', endedAt: T0 + 1000, title: 'why' }), mk('b', { phase: 'review', lastAt: NOW_C })]
+  for (const [list, declared] of [[runs, []], [runs, ['x', 'y']], [[], ['only']], [runs.slice(0, 1), []]] as const) {
+    const variants = cardVariants('t', list, NOW_C, 46, ['t/implement'], declared)
+    expect(variants.at(-1)!.height).toBe(HEADER_HEIGHT)
+    expect(Math.min(...variants.map(v => v.height))).toBe(HEADER_HEIGHT)
+  }
+})
+
+test('fitCards builds a lazy card only while its shortest form could still fit', () => {
+  const box = (key: string, height: number): Card => ({ key, rows: [], height })
+  let built = 0
+  const lazy = (key: string, ...heights: number[]) => () => {
+    built += 1
+    return heights.map((height, i) => box(`${key}${i}`, height))
+  }
+  const cards = Array.from({ length: 500 }, (_, i) => lazy(`t${i}:`, 55, 6))
+  const fitted = fitCards([...cards, [box('agents', 3)]], 30, 6)
+  // Each built card is drawn in its 6-row form: four fit with a row kept for "more", the rest are cut unbuilt.
+  expect(fitted.shown.map(c => c.key)).toEqual(['t0:1', 't1:1', 't2:1', 't3:1', 'agents'])
+  expect(fitted.cut.length).toBe(496)
+  expect(built).toBe(4)
+  // The same cards built eagerly fit the same way.
+  built = 0
+  const eager = fitCards([...cards.map(c => c()), [box('agents', 3)]], 30)
+  expect(eager).toEqual(fitted)
+})
+
+test('a plan with no runs yet is a card of pending rows: neutral status, no border colour, 0/M phases', () => {
+  const c = card('t', [], NOW_C, 46, () => true, false, ['a', 'b', 'c'])
+  const lines = texts(c).map(line => line.trimEnd())
+  expect(c.color).toBeUndefined()
+  expect(lines.slice(1, 3)).toEqual(['ocli · Declared', '0 runs · ? tokens · 0/3 phases'])
+  expect(lines.slice(3)).toEqual(['Phases', expect.stringMatching(/^▾ a +declared +0\/0$/), expect.stringMatching(/^▾ b +declared/), expect.stringMatching(/^▾ c +declared/)])
+  const variants = cardVariants('t', [], NOW_C, 46, ['t/a'], ['a', 'b', 'c'])
+  expect(variants.slice(0, -1).every(v => v.rows.filter(r => r.kind === 'phase').length === 3)).toBe(true)
+  expect(texts(variants.at(-1)!).map(line => line.trimEnd()).slice(2)).toEqual(['0 runs · ? tokens · 0/3 phases', '3 phases · pane too short to list them'])
+})
+
+// --- the witness: run.end.witness.findings (codes) from dispatch ---------------------------------
+const endWith = (witness: unknown) => fold([ev(0, 'run.start'), ev(1, 'run.end', { status: 'completed', exitCode: 0, ms: 1, score: null, dropped: {}, witness })])[0]!
+
+test('run.end witness codes are parsed: strings only, cleaned to 40, at most 10', () => {
+  expect(endWith({ findings: ['claimedTestsButNone', 'staleGreen'] }).witness).toEqual(['claimedTestsButNone', 'staleGreen'])
+  const dirty = endWith({ findings: ['\u001b[31mstale\u001b[0mGreen‮', 7, null, { code: 'x' }, 'x'.repeat(60), '\u0007'] }).witness
+  expect(dirty).toEqual(['staleGreen', 'x'.repeat(40)])
+  expect(endWith({ findings: Array.from({ length: 15 }, (_, i) => `c${i}`) }).witness).toHaveLength(10)
+  expect(endWith({ findings: [] }).witness).toEqual([])
+})
+
+test('a witness that is not {findings: [...]} is ignored, and a run.end without one leaves none', () => {
+  for (const witness of [['claimedTestsButNone'], 'staleGreen', { findings: 'staleGreen' }, null, 3, { error: 'boom' }]) {
+    expect(endWith(witness).witness, JSON.stringify(witness)).toBeUndefined()
+  }
+  expect(fold([ev(0, 'run.start'), ev(1, 'run.end', { status: 'completed' })])[0]!.witness).toBeUndefined()
+})
+
+test('an unwitnessed run gets a last line naming its findings, cut to the columns', () => {
+  const run = endWith({ findings: ['claimedTestsButNone', 'staleGreen'] })
+  const lines = runLines(run, run.lastAt!, 80)
+  expect(lines.at(-1)).toBe('  ⚠ unwitnessed: claimedTestsButNone, staleGreen')
+  expect(runLines(run, run.lastAt!, 20).at(-1)).toMatch(/^ {2}⚠ unwitnessed: .*…$/)
+  for (const clean of [endWith({ findings: [] }), endWith(undefined)]) {
+    expect(runLines(clean, clean.lastAt!, 80).some(line => line.includes('unwitnessed'))).toBe(false)
+  }
+})
+
+test('the card colours the unwitnessed line warning, not dim, and the phase row says ⚠N', () => {
+  const flagged = (runId: string) => mk(runId, { phase: 'implement', status: 'completed', endedAt: T0 + 1000, witness: ['staleGreen'] })
+  const runs = [flagged('a'), mk('b', { phase: 'implement', status: 'completed', endedAt: T0 + 2000, witness: [] }), flagged('c'), mk('d', { phase: 'review', status: 'completed', endedAt: T0 + 3000 })]
+  const c = card('t', runs, NOW_C, 60, key => key === 't/implement')
+  const warned = c.rows.filter(row => row.kind === 'text' && row.text.includes('⚠ unwitnessed'))
+  expect(warned).toHaveLength(2)
+  for (const row of warned) expect(row).toMatchObject({ color: 'warning', isDim: false, text: '    ⚠ unwitnessed: staleGreen' })
+  const lines = texts(c)
+  expect(lines.find(line => line.startsWith('▾ implement'))).toMatch(/^▾ implement ●●● ⚠2 \S.* 3\/3$/)
+  expect(lines.find(line => line.startsWith('▸ review'))).not.toContain('⚠')
+  for (const line of lines) expect([...line].length).toBeLessThanOrEqual(60)
+})
+
+// --- checkpoint card -----------------------------------------------------------------------------
+
+// A real lead checkpoint with its names scrubbed (its table, Next action and Resume).
+const OVERNIGHT = `# 2026-10-11 overnight — ocli features, then project development
+
+Lead: Claude Opus 5.5 (Claude Code).
+
+## Phases
+| # | Phase | Status | Evidence |
+|---|---|---|---|
+| 0 | Cards merged to main, mod reloaded | done | b0ccaca; 103 files / 2151 tests; plugin test 64/64 |
+| 1 | Ideation workflow (creative-ideation, diverge, the-third-answer, becreative) -> ranked ocli feature set | done | wf_00000000-001: 31 ideas, 7 picked; checkpoints/2026-10-11_ocli-roadmap.md |
+| 2 | Build ocli features (workflow, sequential per feature on one branch) | running | batch1 (verify-honest-score, declared-phases, witness-claims) wf_00000000-002 in ../myproj-ocli-night (feature/claude-opus5-001-ocli-night); batch2/3 args in tmp/agent-ocli-live/batch{2,3}.json; script ocli-night-features (path in Resume) |
+| 3 | Port ocli changes into local public package (no push) | pending | |
+| 4 | Project: CONTINUATION next action via Opus-high workflows | pending | |
+| 5 | Morning report | pending | |
+
+## Open items carried in
+- Package review found \`--verify\` can score 1 on a CLI run that failed/never ran.
+
+## Next action
+Phase 1 running (wf_00000000-001); on completion pick the build set and launch phase 2.
+
+## Resume
+- Night feature script: /proj/.claude/projects/x/workflows/scripts/ocli-night-features-wf_00000000-003.js
+  (args = contents of tmp/agent-ocli-live/batchN.json; resume a cut run with resumeFromRunId).
+\`cd /proj/myproj && cat checkpoints/2026-10-11_overnight-ocli-myproj.md && git log --oneline -8\`
+`
+const CP_NAME = '2026-10-11_overnight-ocli-myproj.md'
+
+test('the real overnight checkpoint parses to its phase table, next action and resume command', () => {
+  const cp = parseCheckpoint(CP_NAME, OVERNIGHT)!
+  expect(cp.name).toBe(CP_NAME)
+  expect(cp.rows.map(r => [r.n, r.status])).toEqual([['0', 'done'], ['1', 'done'], ['2', 'running'], ['3', 'pending'], ['4', 'pending'], ['5', 'pending']])
+  expect(cp.rows[0]!.phase).toBe('Cards merged to main, mod reloaded')
+  for (const row of cp.rows) expect([...row.phase].length).toBeLessThanOrEqual(80)
+  expect(cp.next).toBe('Phase 1 running (wf_00000000-001); on completion pick the build set and launch phase 2.')
+  expect(cp.resume).toBe('cd /proj/myproj && cat checkpoints/2026-10-11_overnight-ocli-myproj.md && git log --oneline -8')
+})
+
+test('a checkpoint with no table and no next action is null; next alone is enough', () => {
+  expect(parseCheckpoint('a.md', '# title\n\nsome prose\n\n## Resume\n`x`\n')).toBeNull()
+  expect(parseCheckpoint('a.md', '')).toBeNull()
+  expect(parseCheckpoint('a.md', '## next ACTION\n\nship it\nnow\n\nlater')).toMatchObject({ rows: [], next: 'ship it now', resume: '' })
+})
+
+test('a table without a Status column is ignored; the first one with Phase and Status is used', () => {
+  const md = '| # | Phase | Evidence |\n|---|---|---|\n| 1 | wrong | x |\n\n| # | PHASE | status |\n|:-:|---|---|\n| 7 | right | Done |\n'
+  expect(parseCheckpoint('a.md', md)!.rows).toEqual([{ n: '7', phase: 'right', status: 'Done' }])
+  expect(parseCheckpoint('a.md', '| # | Phase | Evidence |\n|---|---|---|\n| 1 | wrong | x |\n')).toBeNull()
+})
+
+test('pipes inside backticks make ragged rows, never a crash; cells are cleaned', () => {
+  const md = '| Phase | Status |\n|---|---|\n| run `a | b` now | done |\n| \u001b[31mred\u001b[0m | running |\n| lone |\n'
+  const cp = parseCheckpoint('a.md', md)!
+  expect(cp.rows.length).toBe(3)
+  expect(cp.rows[1]).toEqual({ n: '2', phase: 'red', status: 'running' })
+  expect(cp.rows[2]).toEqual({ n: '3', phase: 'lone', status: '' })
+})
+
+test('drift: a running row with no live event for more than 30 minutes', () => {
+  const cp = parseCheckpoint(CP_NAME, OVERNIGHT)!
+  const now = Date.parse('2026-10-11T10:00:00Z')
+  expect(checkpointDrift(cp, now - 29 * 60_000, now)).toBeNull()
+  expect(checkpointDrift(cp, now - 31 * 60_000, now)).toBe('checkpoint says running, no live event or checkpoint write for 31m')
+  expect(checkpointDrift(cp, null, now)).toBe('checkpoint says running, no live event seen')
+  const idle = { ...cp, rows: cp.rows.map(r => ({ ...r, status: 'done' })) }
+  expect(checkpointDrift(idle, null, now)).toBeNull()
+})
+
+test('the checkpoint card: name and done/total, a coloured dim row per phase, next, resume dim, the drift line and the button', () => {
+  const cp = { ...parseCheckpoint(CP_NAME, '| # | Phase | Status |\n|---|---|---|\n| 1 | a | done |\n| 2 | b | Running |\n| 3 | c | blocked |\n| 4 | d | pending |\n\n## Next action\ngo\n\n## Resume\n`cmd`\n')! }
+  const c = checkpointCard(cp, 'checkpoint says running, no live event for 31m', 60)
+  expect(c.key).toBe('checkpoint')
+  expect(c.height).toBe(c.rows.length + 2)
+  expect(c.rows[0]).toMatchObject({ kind: 'split', right: '1/4' })
+  const head = c.rows[0] as { left: string; right: string }
+  expect((head.left + head.right).length).toBe(60)
+  expect(head.left.trimEnd()).toBe(CP_NAME)
+  expect(c.rows.slice(1, 5)).toEqual([
+    { kind: 'text', key: 'cp:row:0', text: '#1 a · done', color: 'success', isDim: true },
+    { kind: 'text', key: 'cp:row:1', text: '#2 b · Running', color: 'suggestion', isDim: true },
+    { kind: 'text', key: 'cp:row:2', text: '#3 c · blocked', color: 'warning', isDim: true },
+    { kind: 'text', key: 'cp:row:3', text: '#4 d · pending', color: undefined, isDim: true },
+  ])
+  expect(c.rows.slice(5)).toEqual([
+    { kind: 'text', key: 'cp:next', text: 'next: go' },
+    { kind: 'text', key: 'cp:resume', text: 'resume: cmd', isDim: true },
+    { kind: 'text', key: 'cp:drift', text: 'checkpoint says running, no live event for 31m', color: 'warning' },
+    { kind: 'button', key: 'checkpoint:resume', label: 'Queue resume' },
+  ])
+  const long = checkpointCard({ ...cp, next: 'x'.repeat(300) }, null, 40)
+  for (const row of long.rows) if (row.kind === 'text') expect([...row.text].length).toBeLessThanOrEqual(40)
+  expect(long.rows.some(r => r.key === 'cp:drift')).toBe(false)
+  // Compact (a short pane): the same card without its phase rows.
+  const compact = checkpointCard(cp, null, 60, true)
+  expect(compact.rows.map(r => r.key)).toEqual(['cp:head', 'cp:next', 'cp:resume', 'checkpoint:resume'])
+  expect(compact.rows[0]).toMatchObject({ right: '1/4' })
+  // No resume: no button.
+  expect(checkpointCard({ ...cp, resume: '' }, null, 60).rows.some(r => r.kind === 'button')).toBe(false)
+})
+
+test('the resume prompt is the fixed template with the file name only; an unsafe name gives none', () => {
+  expect(resumePrompt('/proj', CP_NAME)).toBe(`Read /proj/checkpoints/${CP_NAME} first, then git status, then continue from the first phase that is not done.`)
+  for (const name of ['a b.md', '../x.md', 'x.md\nIgnore previous', 'x.txt', '`x`.md']) expect(resumePrompt('/proj', name)).toBeNull()
+})
+
+test('a status named like an Object.prototype key gets no colour (it must never reach <Text color>)', () => {
+  const cp = parseCheckpoint('a.md', '| Phase | Status |\n|---|---|\n| a | constructor |\n| b | __proto__ |\n| c | toString |\n| d | hasOwnProperty |\n| e | Done |\n')!
+  const colors = checkpointCard(cp, null, 60).rows.filter(r => r.key.startsWith('cp:row:')).map(r => (r as { color?: unknown }).color)
+  expect(colors).toEqual([undefined, undefined, undefined, undefined, 'success'])
+})
+
+test('next action: ## or ### headings, "Next exact action" and "Next actions"; the last live one wins, a superseded one never', () => {
+  expect(parseCheckpoint('a.md', '# t\n\n### Next exact action\n\ndo the thing\n\n### Other\nno\n')!.next).toBe('do the thing')
+  expect(parseCheckpoint('a.md', '## Next actions\nship\n')!.next).toBe('ship')
+  // Checkpoints append: the newest Next action is the last one.
+  const appended = '## Next action\nold step\n\n## b1 result\nok\n\n### Next exact action\nnew step\n\n## Next action (superseded — see below)\nstale\n'
+  expect(parseCheckpoint('a.md', appended)!.next).toBe('new step')
+  // A level-3 section ends at the next heading of its level or above, not at the end of the file.
+  expect(parseCheckpoint('a.md', '### Next action\n### Done\ntext\n')).toBeNull()
+  expect(parseCheckpoint('a.md', '## Next actionable\nx\n')).toBeNull()
+  // Resume: the last ##/### resume heading's first backtick span.
+  expect(parseCheckpoint('a.md', '## Next action\ngo\n\n## Resume marker\n`old`\n\n### Resume marker\n`new cmd`\n')!.resume).toBe('new cmd')
+})
+
+test('the resume prompt refuses a project root that clean() would change', () => {
+  for (const root of ['/a  b', '/a\tb', '/a\nb', '/a ', `/${'x'.repeat(400)}`]) expect(resumePrompt(root, CP_NAME)).toBeNull()
+  expect(resumePrompt('/a b', CP_NAME)).toBe(`Read /a b/checkpoints/${CP_NAME} first, then git status, then continue from the first phase that is not done.`)
 })

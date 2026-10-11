@@ -9,6 +9,7 @@ the pane: you do not need this dispatcher to use the plugin.
 ```
 <live root>/<task>/<runId>.jsonl       normalized events, one JSON object per line   (this contract)
 <live root>/<task>/<runId>.raw.jsonl   every raw CLI line: {"at","stream","line"}     (never read by the plugin)
+<live root>/<task>/plan.json           the task's declared phases (optional, see below)
 ```
 
 - **Live root.** `<cwd>/orchestra/live` by default, where `cwd` is the dispatcher's working
@@ -52,7 +53,7 @@ directory name. A line that names another run is ignored.
 | `tool.end` | `tool`, `detail`, `ok` | `ok` is `true`, `false`, or `null` when the CLI gives no verdict |
 | `usage` | `input`, `output`, `cached`, `reasoning` | token counts; each is a number or `null` (unknown, never `0`). Sum them per run. |
 | `unparsed` | `line` | a stdout line that is not a JSON object, first 500 characters |
-| `run.end` | `exitCode`, `signal`, `ms`, `status`, `nodeId`, `score`, `dropped` | exactly once, last. `dropped` maps CLI event types the normalizer did not translate to counts (at most 50 keys, then `__other__`). |
+| `run.end` | `exitCode`, `signal`, `ms`, `status`, `nodeId`, `score`, `dropped`, `witness` | exactly once, last. `dropped` maps CLI event types the normalizer did not translate to counts (at most 50 keys, then `__other__`). `witness` is optional, see below. |
 
 `text`, `detail` and `line` are cut at 500 characters. Unknown kinds must be ignored by readers.
 
@@ -69,9 +70,57 @@ directory name. A line that names another run is ignored.
 Before `run.end` arrives a reader shows the run as `running`; the plugin shows a running run whose
 last event is more than 10 minutes old as `stale`. A reader treats any other status string as
 `failed`. `score` is `1` or `0` when a `--verify` command ran, otherwise `null` (unknown, not zero). It is
-also `null` when the CLI never started (`spawn-error`: the verifier is skipped) and when a `failed` or
-`blocked` run left the work tree as it was: a verifier passing on an untouched tree scores the base, not
-the run.
+also `null` when the CLI never started (`spawn-error`: the verifier is skipped) and when the run, whatever
+its status, left the work tree as it was or git could not read it: a verifier passing on an untouched tree
+scores the base, not the run. The tree is read before the CLI and again before the verifier (so a file the
+verifier writes is not the CLI's work); it includes `HEAD`, so a CLI that committed its work changed it,
+and a content hash of each listed file, so more work in an already-dirty file counts. Symlinks and FIFOs
+are never opened, and git runs with `core.fsmonitor` off.
+
+### `run.end.witness`
+
+The dispatcher checks the CLI's closing claims (its last `message`) against its own `tool.end` trace
+(`dispatcher/witness.mjs`). `run.end` carries only the finding codes, `{"findings": ["staleGreen", …]}`;
+an empty list means witnessed and clean. The field is absent when the witness did not run (a signal
+ended the run) or threw. The full findings, with their text, are on the tree record. A finding is a
+hint for review, never a status: it changes no score, status or exit code.
+
+| code | meaning |
+|---|---|
+| `claimedTestsButNone` | says the tests pass; no shell command in the trace ran a test and no verifier gave a verdict |
+| `staleGreen` | says tests (or the typecheck) pass; the last green test run came before the last edit |
+| `claimedRedNoFailingRun` | says red before green; no test run failed before the first edit |
+| `commitNotFound` | names a commit sha that was not made during the run |
+| `doneNoChange` | says the work is done or fixed; the work tree has no change |
+| `verifyContradicts` | says the tests pass; the `--verify` command exited non-zero |
+
+What counts as a test command can be widened with `testCommandPattern` (a regular expression, matched
+case-insensitively) in `dispatcher/policy.json`. Readers ignore codes they do not know.
+
+### `plan.json`: declared phases
+
+`node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task <task>` writes
+`<live root>/<task>/plan.json` and nothing else (no CLI is spawned, no tree record is written):
+
+```json
+{"v":1,"phases":[{"name":"implement"},{"name":"review"},{"name":"merge"}],"declaredAt":"2026-01-01T12:00:00.000Z"}
+```
+
+Names are cleaned like `--phase`, deduplicated in order and capped at 50. The file is written owner-only
+through a fresh temp name and renamed into place, so a reader never sees half a plan; declaring again
+replaces it. The plugin draws the declared phases first, in order, with a pending row for each one that has
+no run yet, and counts `D/M phases`. It ignores a plan over 64 KiB, one older than a day or dated more than a day ahead, a
+symlink, and one naming no phase.
+
+### Tree record
+
+`orchestra/tree/<task>.jsonl` gets one JSON object per finished run (not part of the live contract; the
+plugin never reads it). Besides the run's ids, CLI, model, exit code, `ms`, `score`, `verify`, usage and
+`blocked` evidence, it carries the run's `title` and `phase` (as on `run.start`) and `witness`:
+`{v: 1, claims: [...], findings: [{code, text}]}`, or `{v: 1, error}` when the witness threw.
+`node dispatcher/digest.mjs` summarizes the tree and the live `run.start`/`run.end`/`usage` lines of the
+last 12 hours (`--since <ISO>`, `--json 1`, `--root <dir holding tree/ and live/>`) without writing
+anything.
 
 ## Ordering guarantees
 

@@ -1,6 +1,6 @@
 {
   "name": "ocli-monitor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Workflow-style live cards for headless coding-CLI runs (Codex, opencode, agy, Muse) from normalized live event files.",
   "types": "./types/index.d.ts",
   "userConfig": {

@@ -15,19 +15,23 @@
 // Files (relative to the process cwd, normally the project root the ocli pane watches):
 //   orchestra/live/<task>/<runId>.jsonl      normalized live events (ORCHESTRA_LIVE_DIR moves the root)
 //   orchestra/live/<task>/<runId>.raw.jsonl  every raw CLI line, owner-only
+//   orchestra/live/<task>/plan.json          the declared phases (--declare-phases), owner-only
 //   orchestra/tree/<task>.jsonl              one record per finished run
 //
 // Usage:
 //   node dispatcher/dispatch.mjs --role implement --task fix-parser --prompt "..." [--verify "npm test"]
 //                     [--title <what it is for>] [--phase <card phase, default: the role>]
 //                     [--parent <nodeId>] [--root <dir>] [--suffix <per-run text, appended LAST for cache stability>]
+//   node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task fix-parser
+//                                (writes the task's plan for the pane's card; spawns nothing, records no node)
 
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, readFile, readlink, rename, writeFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { normalize, createLineSplitter } from './events.mjs';
+import { claimsOf, witness } from './witness.mjs';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor } from './usage.mjs';
@@ -133,7 +137,7 @@ const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 /** Untrusted text made safe for the pane: markdown heading marks, ANSI escapes and control
  * characters removed, whitespace folded, at most `max` code points. */
-function paneLabel(source, max) {
+export function paneLabel(source, max) {
   const text = String(source ?? '')
     .replace(/[\u001b\u009d]\][^\u0007\u001b\u009c]*(?:\u0007|\u001b\\|\u009c)?/g, '') // OSC, e.g. hyperlinks
     .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, '') // CSI
@@ -156,18 +160,54 @@ export function runPhase(phase, role) {
   return paneLabel(phase, 40) || role;
 }
 
+// ORCHESTRA_LIVE_DIR (read per call, so tests can point it at a temp dir) moves the live root.
+const liveRoot = () => (process.env.ORCHESTRA_LIVE_DIR ? path.resolve(process.env.ORCHESTRA_LIVE_DIR) : path.resolve('orchestra', 'live'));
+
+// --task becomes a path segment under orchestra/live/ and orchestra/tree/,
+// and a CLI argv value ({task} -> opencode --title). A leading alphanumeric rules out '.', '..' and
+// a value that the CLI would parse as a flag ('--share').
+function checkTask(task) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(task ?? '')) {
+    throw new Error(`--task must match [A-Za-z0-9][A-Za-z0-9._-]* (got ${JSON.stringify(task)})`);
+  }
+}
+
+const MAX_PHASES = 50;
+
+/** --declare-phases: the task's whole plan, for the pane's card to draw before any run starts. Each
+ * name is cleaned as --phase is, so a run's phase and its declared row compare equal. Atomic: the
+ * pane never reads a half-written plan. Nothing is spawned and nothing enters the tree. */
+async function declarePhases(args) {
+  checkTask(args.task);
+  const names = [...new Set(String(args['declare-phases'] ?? '').split(',').map(name => runPhase(name, '')).filter(Boolean))]
+    .slice(0, MAX_PHASES);
+  if (names.length === 0) throw new Error('--declare-phases names no phase');
+  const dir = path.join(liveRoot(), args.task);
+  await mkdir(dir, { recursive: true });
+  // An unguessable name opened O_EXCL: a link planted in the live dir (a CLI under --yolo can write
+  // there) is refused, never written through. ponytail: <task> itself being a linked dir is followed,
+  // as createLive follows it.
+  const temp = path.join(dir, `plan.json.${randomUUID()}.tmp`);
+  const plan = { v: 1, phases: names.map(name => ({ name })), declaredAt: new Date().toISOString() };
+  await writeFile(temp, `${JSON.stringify(plan)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  await rename(temp, path.join(dir, 'plan.json'));
+  process.stderr.write(`[dispatch] declared ${names.length} phases for ${args.task}\n`);
+}
+
 function createLive(args, route, workspace) {
   const runId = randomUUID();
-  // ORCHESTRA_LIVE_DIR (read per call, so tests can point it at a temp dir) moves the live root;
-  // liveFile is then that absolute path, otherwise the cwd-relative one.
+  // liveFile is the absolute path under an ORCHESTRA_LIVE_DIR override, otherwise the cwd-relative one.
   const override = process.env.ORCHESTRA_LIVE_DIR;
-  const file = path.join(override ? path.resolve(override) : path.resolve('orchestra', 'live'), args.task, `${runId}.jsonl`);
+  const file = path.join(liveRoot(), args.task, `${runId}.jsonl`);
   const liveFile = override ? file : `orchestra/live/${args.task}/${runId}.jsonl`;
   const rawFile = file.replace(/\.jsonl$/, '.raw.jsonl');
   const state = { dropped: Object.create(null), cliErrors: [] };
   let seq = 0;
   let errors = 0;
   let finalText = null;
+  // The tool.end records written, for the witness: the only kind it reads, so streamed message deltas
+  // never push them out. ponytail: the newest 5000; a longer run's oldest edits and test runs fall out.
+  const events = [];
   const attempt = action => { try { action(); } catch { errors++; } };
   attempt(() => mkdirSync(path.dirname(file), { recursive: true }));
   // Create both per-run files even when the child produces no output.
@@ -176,12 +216,18 @@ function createLive(args, route, workspace) {
   const emit = (event, at = new Date().toISOString()) => {
     const record = { v: 1, runId, seq, at, task: args.task, role: args.role, cli: route.cli, ...event };
     // seq advances only once the record is on disk: a failed write must not leave a gap.
-    attempt(() => { appendFileSync(file, `${JSON.stringify(record)}\n`, LIVE_WRITE); seq++; });
+    attempt(() => {
+      appendFileSync(file, `${JSON.stringify(record)}\n`, LIVE_WRITE);
+      seq++;
+      if (record.kind === 'tool.end') events.push(record);
+      if (events.length > 5000) events.shift();
+    });
   };
   return {
     runId, liveFile, state, emit,
     get errors() { return errors; },
     get finalText() { return finalText; },
+    get events() { return events; },
     start(pid) {
       emit({ kind: 'run.start', model: route.model, root: workspace, parentId: args.parent ?? null, pid,
         title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role) });
@@ -259,14 +305,43 @@ export async function decideBlocked({ result, role, readUsage, usageReport = nul
 }
 
 
+// Porcelain v2 fields before the path, per entry type (1 changed, 2 renamed, u unmerged, ? untracked).
+const PATH_FIELD = { 1: 8, 2: 9, u: 10, '?': 1 };
+
 /** The work tree as git sees it, minus the dispatcher's own files (live, tree, codex -o) and
- * node_modules: what the developer CLI could have changed. null when it is not a readable git tree. */
+ * node_modules: what the developer CLI could have changed. null when it is not a readable git tree.
+ * HEAD (branch.oid) is in it, so a CLI that committed its work changed it; so is each listed file's
+ * content hash, so more work in a file that was already dirty is not invisible. */
 async function treeState(workspace) {
-  const status = await run('git', ['status', '--porcelain', '--untracked-files=all'], workspace);
+  // core.fsmonitor in the repo config is a command git status runs; the CLI could have written it.
+  const status = await run('git', ['-c', 'core.fsmonitor=false', 'status', '--porcelain=v2', '--branch', '--untracked-files=all'], workspace);
   if (status.code !== 0) return null;
-  return status.stdout.split('\n')
-    .filter(line => line.trim() && !/node_modules|(^|[\s/"])orchestra\/(live|tree)\/|\.orchestra-last\.md"?$/.test(line))
-    .join('\n');
+  const lines = status.stdout.split('\n')
+    .filter(line => line.trim() && !/node_modules|(^|[\s/"])orchestra\/(live|tree)\/|\.orchestra-last\.md"?$/.test(line)
+      && (!line.startsWith('# ') || line.startsWith('# branch.oid ')));
+  // ponytail: whole-file reads, twice per dispatch; a C-quoted path or a --root below the repo top
+  // reads as '-' both times, which falls back to the porcelain line alone.
+  return (await Promise.all(lines.map(async line => {
+    const skip = PATH_FIELD[line[0]];
+    if (skip === undefined) return line;
+    const file = line.split(' ').slice(skip).join(' ').split('\t')[0];
+    // lstat, never a followed open: the CLI leaves the tree, and a FIFO it left would block the read
+    // (and the dispatcher) forever, a link would read outside the workspace. A link is its target string.
+    const where = path.join(workspace, file);
+    const body = await lstat(where).then(stat => stat.isFile() ? readFile(where) : stat.isSymbolicLink() ? readlink(where) : null, () => null);
+    const hash = body === null ? '-' : createHash('sha1').update(body).digest('hex');
+    return `${line} ${hash}`;
+  }))).join('\n');
+}
+
+/** Entries of `after` not in `before`, and the reverse, the branch header aside: 0 iff nothing changed
+ * but HEAD. A moved HEAD (a commit) shows as its header changing, so it counts. */
+function changedLines(before, after) {
+  const entries = state => state.split('\n').filter(line => line && !line.startsWith('# '));
+  const a = new Set(entries(before));
+  const b = new Set(entries(after));
+  const moved = before && before.split('\n').find(line => line.startsWith('# branch.oid ')) !== after.split('\n').find(line => line.startsWith('# branch.oid '));
+  return [...a].filter(line => !b.has(line)).length + [...b].filter(line => !a.has(line)).length + (moved ? 1 : 0);
 }
 
 async function readRouteUsage(route) {
@@ -285,15 +360,13 @@ async function readRouteUsage(route) {
 
 export async function main(argvInput = process.argv.slice(2)) {
   const args = parseArgs(argvInput);
+  // `in`, not `!== undefined`: the flag last with no value parses to undefined and must still be
+  // this mode (and fail as naming no phase), not fall through to "--role is required".
+  if ('declare-phases' in args) return declarePhases(args);
   for (const required of ['role', 'task', 'prompt']) {
     if (!args[required]) throw new Error(`--${required} is required`);
   }
-  // --task becomes a path segment under orchestra/live/ and orchestra/tree/,
-  // and a CLI argv value ({task} -> opencode --title). A leading alphanumeric rules out '.', '..' and
-  // a value that the CLI would parse as a flag ('--share').
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(args.task)) {
-    throw new Error(`--task must match [A-Za-z0-9][A-Za-z0-9._-]* (got ${JSON.stringify(args.task)})`);
-  }
+  checkTask(args.task);
   const workspace = path.resolve(args.root ?? process.cwd());
   // Your own dispatcher/policy.json (gitignored) wins; without one, the shipped example is used.
   const policyText = await readFile(path.join(HERE, 'policy.json'), 'utf8').catch(error => {
@@ -339,13 +412,18 @@ export async function main(argvInput = process.argv.slice(2)) {
   let score = null;
   let nodeId = null;
   let blocked = false;
+  let witnessResult = null;
   try {
     // Taken before the CLI runs, so a tree that was already dirty does not count as the CLI's work.
     const treeBefore = args.verify ? await treeState(workspace) : null;
+    const cliStartedAt = Date.now();
     result = await run(route.cli, argv, workspace, live);
     // The pane cannot see the finally: run.end lands only after the usage read and the verifier
     // (minutes, with a slow test suite), so a finished CLI would look "running" until then.
     live.emit({ kind: 'step', label: `cli.exit code=${result.code} signal=${result.signal}` });
+    // The tree the CLI left, read before the verifier: a report or snapshot the verifier writes is not
+    // the CLI's work.
+    const treeAfter = args.verify && !result.spawnError ? await treeState(workspace) : null;
     // Codex's app-server read is account/rateLimits/read, not an inference call: reading the
     // account state itself spends no model allowance. Read before the verifier can add work.
     // Account-wide deltas can still include concurrent sessions; they are not isolated token costs.
@@ -379,12 +457,46 @@ export async function main(argvInput = process.argv.slice(2)) {
     const { blockedEvidence, blockedCheck } = decision;
 
     // A verifier that passes on an UNCHANGED tree proves nothing about the developer — it proves the
-    // base was green (a run cut off by its quota, or a CLI that failed on a missing model, before
-    // writing a byte would otherwise score 1). A blocked or failed run that left the tree as it was,
-    // or whose tree git cannot read, is unscored, not passed.
-    if (score !== null && (blocked || result.code !== 0)) {
-      const treeAfter = await treeState(workspace);
-      if (treeBefore === null || treeAfter === null || treeAfter === treeBefore) score = null;
+    // base was green (a run cut off by its quota before writing a byte would score 1 that way).
+    // A CLI that failed before writing a byte (a missing model, a crash) would score 1 the same way,
+    // and so would one that exited 0 having done nothing. Any run that left the tree as it was, or
+    // whose tree git cannot read, is unscored, not passed.
+    if (score !== null && (treeBefore === null || treeAfter === null || treeAfter === treeBefore)) score = null;
+
+    // The witness: the CLI's closing claims checked against its own trace. It reports and never
+    // decides — score, status and exit code above are final — and its throw costs only itself.
+    try {
+      const said = claimsOf(live.finalText);
+      // Read only when a claim needs it. --verify already read the tree on both sides; without it the
+      // tree is read once, after: a tree dirty before the run counts as changed, and so does a HEAD
+      // committed since the CLI started (a CLI that committed everything leaves a clean tree).
+      // The commits made during the run (full shas), or null when git could not say. A sha merely in
+      // the object store (main's HEAD, another branch) was not committed by this CLI.
+      // ponytail: by commit time, not HEAD at start: a forged GIT_COMMITTER_DATE, or someone else
+      // committing in this worktree during the run, passes.
+      const madeDuringRun = async () => {
+        const listed = await run('git', ['rev-list', `--max-age=${Math.floor(cliStartedAt / 1000)}`, '--max-count=1000', 'HEAD'], workspace);
+        return listed.code === 0 ? listed.stdout.split('\n').filter(Boolean) : null;
+      };
+      let made;
+      let changedFiles = null;
+      if (said.done && args.verify) changedFiles = treeBefore === null || treeAfter === null ? null : changedLines(treeBefore, treeAfter);
+      else if (said.done && !result.spawnError) {
+        const after = await treeState(workspace);
+        if (after !== null) {
+          made = await madeDuringRun();
+          const dirty = changedLines('', after);
+          // A clean tree is no change only once git said no commit was made either.
+          changedFiles = dirty === 0 && made === null ? null : dirty + (made?.length ? 1 : 0);
+        }
+      }
+      if (said.commits.length && made === undefined) made = await madeDuringRun();
+      witnessResult = witness(live.events, live.finalText, {
+        verify, changedFiles, testCommandPattern: policy.testCommandPattern ?? null,
+        commitExists: sha => (made ? made.some(full => full.startsWith(sha)) : undefined),
+      });
+    } catch (error) {
+      witnessResult = { v: 1, error: String(error) };
     }
     const node = {
       schemaVersion: 1,
@@ -395,6 +507,8 @@ export async function main(argvInput = process.argv.slice(2)) {
       parentId: args.parent ?? null,
       task: args.task,
       role: args.role,
+      title: runTitle(args.title, args.prompt),
+      phase: runPhase(args.phase, args.role),
       cli: route.cli,
       model: route.model,
       promptBytes: Buffer.byteLength(args.prompt, 'utf8'),
@@ -416,6 +530,8 @@ export async function main(argvInput = process.argv.slice(2)) {
       verify,
       stdoutTail: result.stdout.slice(-4000),
       stderrTail: result.stderr.slice(-2000),
+      // The CLI's claims against its own trace (witness.mjs); {v, error} when it threw.
+      witness: witnessResult,
       recordedAt: new Date().toISOString(),
     };
 
@@ -441,7 +557,10 @@ export async function main(argvInput = process.argv.slice(2)) {
     if (!ended) live.emit({ kind: 'run.end', exitCode: result?.code ?? null, signal: result?.signal ?? null,
       ms: result?.ms ?? null,
       status: !finished ? 'dispatch-error' : result?.spawnError ? 'spawn-error' : blocked ? 'blocked' : result?.code === 0 ? 'completed' : 'failed',
-      nodeId, score, dropped: live.state.dropped });
+      nodeId, score, dropped: live.state.dropped,
+      // Codes only: the text stays in the tree. Absent when the witness never ran or threw — an
+      // empty list would say "witnessed, clean".
+      ...(Array.isArray(witnessResult?.findings) ? { witness: { findings: witnessResult.findings.map(f => f.code) } } : {}) });
     ended = true;
     process.stderr.write(`[dispatch] node ${nodeId ?? 'unknown'} role=${args.role} cli=${route.cli} exit=${result?.code ?? 'unknown'} ms=${result?.ms ?? 'unknown'} score=${score ?? 'unknown'} eventWriteErrors=${live.errors}\n`);
   }

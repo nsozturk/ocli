@@ -19,20 +19,29 @@ export const OPTIONS = { options: { liveDirs: ROOT } }
 const sizeOf = (node: Node) => node.size ?? node.text?.length ?? 0
 
 export function harness(on: On) {
-  const fs = new Map<string, Node>([[ROOT, { kind: 'dir' }]])
+  // /work is the session's cwd (start below): a project root always exists.
+  const fs = new Map<string, Node>([[ROOT, { kind: 'dir' }], ['/work', { kind: 'dir' }]])
   const calls = {
     toast: [] as string[],
     status: [] as (string | undefined)[],
     read: [] as string[],
     open: [] as unknown[],
+    register: [] as string[],
+    process: [] as (readonly string[])[],
+    copy: [] as unknown[],
   }
+  /** What process.run answers: a result; an Error makes the hook throw, so it is skipped and the call rejects. Set per test. */
+  const proc: { result: unknown } = { result: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   /** Paths whose fs.list rejects (EACCES), as a dir that cannot be read. */
   const failList = new Set<string>()
   /** Called after fs.stat answers: a test swaps the tree here to race the read that follows. */
   const hooks = { afterStat: (_path: string, _resolve: boolean) => {} }
   const clock = mock.clock(on, { now: NOW })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('command.register', ($, e) => {
+    calls.register.push(e.name)
+    return { value: { command: e.name } }
+  })
   on('ui.open', ($, e) => {
     calls.open.push(e)
     return { value: { isPlaced: true } }
@@ -40,6 +49,15 @@ export function harness(on: On) {
   on('ui.status', ($, e) => {
     calls.status.push(e.text)
     return { value: undefined }
+  })
+  on('process.run', ($, e) => {
+    calls.process.push(e.argv)
+    if (proc.result instanceof Error) throw proc.result
+    return { value: proc.result as never }
+  })
+  on('ui.copy', ($, e) => {
+    calls.copy.push(e)
+    return { value: { isCopied: true } }
   })
   on('ui.toast', ($, e) => {
     calls.toast.push(e.text)
@@ -96,6 +114,7 @@ export function harness(on: On) {
     failList,
     hooks,
     calls,
+    proc,
     clock,
     put,
     start: ($: { session: { start: (e: { cwd: string; surface: 'terminal'; isInteractive: boolean }) => Promise<unknown> } }) =>

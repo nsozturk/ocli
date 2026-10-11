@@ -21,7 +21,7 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "ocli",
-  "softwareVersion": "0.2.0",
+  "softwareVersion": "0.3.0",
   "description": "Live, workflow-style progress for headless coding CLIs (Codex, opencode, Antigravity agy, Muse) inside Claude Code: a dispatcher that writes normalized live-event files and a Claude Code plugin that draws them as cards.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
@@ -65,7 +65,7 @@ th{background:var(--card-bg)}
 </head>
 <body>
 <nav class="nav">
-  <span class="brand">ocli</span><span class="tag">v0.2.0</span><span class="tag">MIT</span>
+  <span class="brand">ocli</span><span class="tag">v0.3.0</span><span class="tag">MIT</span>
   <a class="gh" href="https://github.com/&lt;owner&gt;/ocli">GitHub</a>
 </nav>
 <div class="wrap">
@@ -150,10 +150,14 @@ project's <code>.gitignore</code>:</p>
 <tr><td><code>--verify</code></td><td>a command run afterwards; its exit code becomes <code>score</code> 1/0</td></tr>
 <tr><td><code>--suffix</code></td><td>per-run text appended last, keeping the prompt prefix cache-stable</td></tr>
 <tr><td><code>--parent</code></td><td>the record id of the run this one continues</td></tr>
+<tr><td><code>--declare-phases</code></td><td>with <code>--task</code> only: write the task's plan (<code>plan.json</code>) so the card shows every phase before it runs; spawns nothing</td></tr>
 </table>
 <p>Exit codes: <code>0</code> recorded, <code>1</code> verifier failed, <code>2</code> refused, CLI
-not startable, or errored. A failed or blocked run that left the work tree unchanged is unscored
-(<code>score: null</code>) even when the verifier passes. Live files go to <code>&lt;cwd&gt;/orchestra/live</code>; <code>ORCHESTRA_LIVE_DIR</code>
+not startable, or errored. A run that left the work tree unchanged (contents and <code>HEAD</code>) is
+unscored (<code>score: null</code>) even when the verifier passes, whatever its exit code.
+The CLI's closing claims are checked against its own trace (<code>witness.mjs</code>); unbacked ones
+show as <code>⚠ unwitnessed</code> on the run. <code>/ocli-digest</code> (or
+<code>node dispatcher/digest.mjs</code>) summarizes the last 12 hours per task and phase. Live files go to <code>&lt;cwd&gt;/orchestra/live</code>; <code>ORCHESTRA_LIVE_DIR</code>
 moves them (then set the plugin's <code>liveDirs</code> to the same absolute dir).</p>
 </section>
 
@@ -213,6 +217,8 @@ Any tool that writes this contract shows up in the pane. Full specification:
 <li>In the desktop app the pane appears only after the plugin was installed from a terminal session.</li>
 <li>Error event shapes for agy and Muse (and codex <code>turn.failed</code>, opencode <code>error</code>) are derived from source, not captured.</li>
 <li>Only codex exposes a local usage counter; other refusals are labelled unconfirmed.</li>
+<li><code>/ocli-digest</code> runs the checkout's <code>dispatcher/digest.mjs</code>: it works when the plugin is loaded from a checkout (<code>--plugin-dir</code>), not from a marketplace install.</li>
+<li>The resume card is optional: it appears only in projects with dated <code>checkpoints/YYYY-MM-DD_*.md</code> files holding a Phase/Status table.</li>
 </ul>
 </section>
 

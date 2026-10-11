@@ -96,6 +96,72 @@ node dispatcher/dispatch.mjs --role reason --task slice-046-cards --phase review
 folded) and cut at 40 characters. Without it, or when it is empty, the phase is the role, and runs
 written before phases existed are grouped by their role too.
 
+### Declared phases: `--declare-phases`
+
+The whole plan can be declared before any run starts, so the card shows how much is left:
+
+```sh
+node dispatcher/dispatch.mjs --declare-phases implement,review,mutate,merge --task slice-047
+```
+
+This writes `orchestra/live/<task>/plan.json` (`{v: 1, phases: [{name}], declaredAt}`, atomically,
+owner-only); it spawns nothing and records nothing in the tree. Names are cleaned like `--phase`,
+deduped and capped at 50; declaring again replaces the plan. The card then draws the declared phases
+first, in order: one with no run yet is a dim `declared` row with `0/0`. Phases that were not
+declared still show, after them. The count row adds `D/M phases`, where a phase is done once it has
+a run and none of its runs is running or stale, and M counts the undeclared phases too; when the row
+is too narrow for all of it, `D/M phases` moves to its front, so it is never the part cut. A plan with
+no run yet is a card of its own (`ocli · Declared`, no border colour), placed by the plan's mtime
+(a future mtime counts as the moment it was read). A plan over 64 KiB, older than a day or dated more
+than a day ahead, a link, or one naming no phase is not used; a malformed one costs one footer error
+per change of the file. Deleting `plan.json` takes the declared rows away; a dir that cannot be listed
+for a tick keeps the plan last read. The dispatcher writes the plan through a random temp name opened
+exclusively, so a link planted in the live dir is refused, never written through.
+
+### Unwitnessed claims
+
+The dispatcher checks a CLI's closing claims against its own event trace (`dispatcher/witness.mjs`)
+and puts the finding codes on `run.end` as `witness: {findings: [...]}`; the text stays in the tree
+node. An expanded run with findings gets a last line in `warning`, e.g.
+`⚠ unwitnessed: claimedTestsButNone, staleGreen`, and its phase row says `⚠N` for the N such runs.
+Codes are cleaned and capped (10, 40 characters each); any other shape of `witness` is ignored. A
+finding is a hint for the review, never a status: it changes no score, colour or count.
+
+### Resume card: the project's checkpoint
+
+Optional: this card exists only for a project that keeps dated checkpoint files with a phase table;
+without a `checkpoints/` dir there is no card and no error.
+
+The first card is the project's checkpoint, from `<project root>/checkpoints/YYYY-MM-DD_*.md` (the
+root as for the live dir: `$.session.root`, then `$.session.cwd`, whatever `liveDirs` says; the
+2.1.294 runtime has no `$.session.root`, so skipping the card when `liveDirs` is set would never
+draw it). Of the ten newest files (by the date in the name, then by mtime) it takes the first with a
+resume command, else the first that parses at all: a notes file, or a feature checkpoint a merge
+touched later, does not displace the lead's checkpoint. A newer checkpoint with its own resume command
+does. It is read on the first tick, every 30th after it (about once a minute) and on the tick the
+session moves to another project, whose card then replaces the old one at once (no root: no card).
+An unchanged listing is not read again.
+
+The card shows the file name and `done/total`, one row per phase of the first table with `Phase` and
+`Status` columns (`#n phase · status`: done green, running blue, blocked yellow), `next:` (the first
+paragraph under the last `##`/`###` `Next action`, `Next exact action` or `Next actions` heading not
+marked superseded: checkpoints append, so the last is the live one) and `resume:` (the first backtick
+span under the last `##`/`###` `Resume…` heading). A row that says `running` while neither a live
+event nor a write of the checkpoint came for 30 minutes adds `checkpoint says running, no live event
+or checkpoint write for Nm`. Any live run counts, even one unrelated to the running phase. A pane too
+short for the phase rows draws the card without them; shorter still, the "more" line says
+`checkpoint hidden`.
+
+`Queue resume` (drawn when there is a resume command) submits one fixed prompt, never automatically:
+`Read <root>/checkpoints/<name> first, then git status, then continue from the first phase that is
+not done.` Only the file name enters it, and only a plain one (`[A-Za-z0-9._-]+.md`); no checkpoint
+text does. A root that is not plain (a run of spaces, a control character, over 400 characters) is
+never put in it: the press toasts to resume by hand. When the submit fails, a toast carries the same
+text to copy. No checkpoints dir, or one that is a link or resolves outside the root, is no card and no
+error. A checkpoints dir or file that cannot be statted, listed or read keeps the card last drawn and
+costs one error per load (about a minute) until it reads; a file refused by the realPath guard costs
+one error per change of the listing.
+
 The status line reads `ocli: N running` while any run is running. A run that ends gets one toast;
 when more than three end in one tick, `blocked` ones go first and the rest become one
 `ocli: +N more runs ended` toast.
@@ -103,6 +169,24 @@ A `blocked` run tries `$.ui.notify` first and falls back to a toast. On the 2.1.
 `$.ui.notify` does not exist, and where no terminal is bound (the desktop) nothing is sent. Ends
 that were already there at the first tick are not announced, and a reload never repeats an
 announcement (the record of announced runs lives in `$.state`).
+
+## /ocli-digest
+
+Runs the plugin's own `node <plugin root>/../dispatcher/digest.mjs --root <project root>/orchestra` (20 s
+timeout) and draws what it prints, the last 12 hours per task and phase, in a pane named
+`ocli-digest`, with a `Copy` button. Each line of the output is cleaned as every other untrusted
+string is. A digest longer than the pane holds (or cut by the runtime) ends in a `… cut:` line,
+since its last section, `Needs a decision`, is the one lost. It never submits a prompt and never
+calls a model. When the script cannot run (no project root, no plugin root, `$.process` missing on
+the runtime, a timeout, a non-zero exit) the command answers `ocli digest unavailable: <reason>`
+and opens nothing.
+`$.process.run`, `$.ui.copy` and `Markdown` are not yet proven on the 2.1.294 runtime: each is
+called inside a try, and without `Markdown` the pane draws one `Text` per line.
+
+The script is the checkout's `dispatcher/digest.mjs`, so `/ocli-digest` works when the plugin is
+loaded from a checkout of this repository (`--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS`). A marketplace
+install caches `plugin/` alone; there the command answers `ocli digest unavailable`, and
+`node /path/to/ocli/dispatcher/digest.mjs` run from the project root prints the same digest.
 
 ## Safety
 
@@ -120,6 +204,11 @@ Everything read from a live file is treated as untrusted CLI output:
   skipped. The path is resolved again after the read and the text is dropped if it moved; a swap
   and a swap back within one read is not caught, since `$.fs.read` has no no-follow open.
 - A dir that cannot be listed costs one error per tick and does not stop the other dirs.
+- `/ocli-digest` is the one place the plugin runs code, and it runs only the script beside the
+  plugin (`$.plugin.root`), never one from the session's project: a project that carries its own
+  `dispatcher/digest.mjs` never has it executed; only its `orchestra/` dir is read, as data (`--root`).
+- A checkpoint is read under the same realPath guard, only if it is a plain dated `.md` of at most
+  256 KiB; every cell and line of it is cleaned before it is drawn.
 - Files over 4 MiB are not read and are marked "too large". The engine refuses any `$.fs.read`
   over 4 MiB anyway.
 

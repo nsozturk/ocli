@@ -8,6 +8,8 @@ working in this repository or using it to dispatch other CLIs.
 - `dispatcher/dispatch.mjs` runs ONE headless coding CLI per call and writes normalized live events.
 - `dispatcher/events.mjs` is the pure normalizer: CLI JSON line → zero or more contract events.
 - `dispatcher/usage.mjs` reads codex's usage counter (`codex app-server`, `account/rateLimits/read`).
+- `dispatcher/witness.mjs` is pure: checks a CLI's closing claims against its own `tool.end` trace.
+- `dispatcher/digest.mjs` is the read-only night digest of `orchestra/tree` and `orchestra/live`.
 - `plugin/` is the Claude Code plugin `ocli-monitor` that draws the live files as cards.
 - `docs/LIVE-EVENTS.md` is the contract between the two. Change it and both sides together.
 
@@ -17,6 +19,8 @@ working in this repository or using it to dispatch other CLIs.
 node dispatcher/dispatch.mjs --role <route> --task <task> --prompt "<brief>" \
   [--phase <card phase>] [--title <one line>] [--root <workspace>] [--verify "<cmd>"] \
   [--suffix <per-run text>] [--parent <recordId>]
+node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task <task>   # plan only, no run
+node dispatcher/digest.mjs [--since <ISO>] [--json 1]                                # last 12 hours
 ```
 
 - Run it from the project root: live files go to `<cwd>/orchestra/live/<task>/<runId>.jsonl`
@@ -34,8 +38,10 @@ node dispatcher/dispatch.mjs --role <route> --task <task> --prompt "<brief>" \
 | 1 | `--verify` ran and failed (`score: 0`) |
 | 2 | the dispatcher refused or failed: bad arguments, unknown or non-`ok` route, unknown argv placeholder, the CLI could not be started (`spawn-error`; the verifier is skipped), or an error after the CLI ran (`run.end.status: dispatch-error`) |
 
-A `failed` or `blocked` run that left the work tree as it was (git status before vs after, the
-dispatcher's own files excluded) is `score: null` even when `--verify` passes.
+A run that left the work tree as it was (git status, `HEAD` and file contents before the CLI vs
+before the verifier, the dispatcher's own files excluded) is `score: null` even when `--verify`
+passes, whatever its exit code. Witness findings (`run.end.witness.findings`) are hints for review,
+never a status.
 
 The final assistant message is printed on stdout; diagnostics (`[dispatch] …`) go to stderr,
 including the live file path and a summary line with `eventWriteErrors`.

@@ -28,9 +28,19 @@ export type OcliRun = {
   ms: number | null
   /** Total of `run.end.dropped`; its keys are CLI-controlled and never kept. */
   dropped: number
+  /** run.end's witness finding codes: claims the run's own trace does not back. Absent on a run
+   * folded by an older version ($.state outlives a reload) and on a run.end without a witness. */
+  witness?: string[]
   /** Highest `seq` folded in: the dedupe key with `runId`. */
   lastSeq: number
 }
+
+/** A task's declared phases (its plan.json), cleaned, and the plan file's mtime: the card's order
+ * while the task has no run. */
+export type OcliPlan = { task: string; phases: string[]; at: number }
+
+/** The newest project checkpoint (`<root>/checkpoints/*.md`) as the pane draws it; every string cleaned. */
+export type Checkpoint = { name: string; rows: { n: string; phase: string; status: string }[]; next: string; resume: string }
 
 export type OcliDir = { path: string; isMissing: boolean }
 
@@ -54,6 +64,12 @@ declare module 'claude-code' {
       primed: boolean
       /** `<task>/<phase>` keys of the phase rows the person expanded. */
       expanded: string[]
+      /** Declared phases, one entry per task, from `<live dir>/<task>/plan.json`. */
+      plans: OcliPlan[]
+      /** The newest checkpoint, its file's mtime and the project root it was read under; null when none. */
+      checkpoint: (Checkpoint & { mtimeMs: number; root: string }) | null
+      /** The last /ocli-digest output (dispatcher/digest.mjs markdown, each line cleaned); '' before the first. */
+      digest: string
     }
   }
 }

@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
-const mocks = vi.hoisted(() => ({ spawn: vi.fn(), append: vi.fn(), live: vi.fn(), mkdir: vi.fn(), policy: vi.fn(), delta: vi.fn() }));
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), append: vi.fn(), live: vi.fn(), mkdir: vi.fn(), policy: vi.fn(), delta: vi.fn(), witness: vi.fn(), lstat: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: mocks.spawn }));
 vi.mock('node:fs', async original => ({ ...await original<Record<string, unknown>>(), appendFileSync: mocks.live, mkdirSync: mocks.mkdir }));
-vi.mock('node:fs/promises', async original => ({ ...await original<Record<string, unknown>>(), readFile: mocks.policy, appendFile: mocks.append, mkdir: vi.fn() }));
+vi.mock('node:fs/promises', async original => ({ ...await original<Record<string, unknown>>(), readFile: mocks.policy, appendFile: mocks.append, mkdir: vi.fn(), lstat: mocks.lstat }));
+// The real witness by default (beforeEach); one test makes it throw.
+vi.mock('../dispatcher/witness.mjs', async original => ({ ...await original<Record<string, unknown>>(), witness: mocks.witness }));
 vi.mock('../dispatcher/usage.mjs', () => ({ readCodexUsage: vi.fn(async () => ({status:'unknown'})), readGlmUsage: vi.fn(async () => ({status:'unknown'})), claudeUsageFromLead: vi.fn(), usageDelta: mocks.delta, gateFor: vi.fn() }));
 // @ts-expect-error plain ESM tooling
 import { main, runPhase, runTitle } from '../dispatcher/dispatch.mjs';
+const realWitness = (await vi.importActual<{ witness: (...args: unknown[]) => unknown }>('../dispatcher/witness.mjs')).witness;
 const originalPolicy = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
 let policy: typeof originalPolicy;
 let child: EventEmitter & {stdout: EventEmitter; stderr: EventEmitter; pid: number};
@@ -18,6 +23,9 @@ const raw = () => mocks.live.mock.calls.filter(([file, body]) => body && String(
 beforeEach(() => {
   vi.resetAllMocks();
   policy = structuredClone(originalPolicy);
+  mocks.witness.mockImplementation(realWitness);
+  // Every tree entry a regular file, so the readFile mock decides its content; the FIFO test uses the real lstat.
+  mocks.lstat.mockImplementation(async () => ({ isFile: () => true, isSymbolicLink: () => false }));
   mocks.policy.mockImplementation(async () => JSON.stringify(policy));
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -123,9 +131,9 @@ it('marks cli exit and verify boundaries in the live stream', async () => {
   let call = 0;
   mocks.spawn.mockImplementation((command: string) => {
     const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
-    // With --verify the tree is read (git) before the CLI: that spawn is not counted here.
+    // With --verify the tree is read (git) before and after the CLI: those spawns are not counted here.
     const code = command === 'git' ? 0 : call++ === 0 ? 0 : 3;
-    queueMicrotask(() => {proc.emit('close', code, null);});
+    queueMicrotask(() => {if (command === 'git' && call > 0) proc.stdout.emit('data', '? new.ts\n'); proc.emit('close', code, null);});
     return proc;
   });
   await dispatch('--verify','false-verifier');
@@ -148,6 +156,9 @@ it('ends when the verifier throws, keeps the developer exit and says the dispatc
     queueMicrotask(() => proc.emit('close',0,null)); return proc;
   }).mockImplementationOnce(() => {
     const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => proc.emit('close',0,null)); return proc;
+  }).mockImplementationOnce(() => { // git: the tree read after the CLI, before the verifier
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:124});
     queueMicrotask(() => proc.emit('close',0,null)); return proc;
   }).mockImplementationOnce(() => {
     const proc = Object.assign(new EventEmitter(), {stdout:{on() {throw new Error('verifier listener failed');}},stderr:new EventEmitter()});
@@ -431,11 +442,47 @@ it('a failed CLI that did change the tree keeps the verifier score', async () =>
   await dispatch('--verify','true');
   expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:1});
 });
-it('a completed CLI keeps the verifier score without reading the tree', async () => {
-  const calls = scoredRun({ cli: proc => proc.emit('close',0,null), git: ['', ''] });
+it('a completed CLI that left the tree untouched is unscored: the verifier only proved the base green', async () => {
+  scoredRun({ cli: proc => proc.emit('close',0,null), git: ['# branch.oid aaa\n', '# branch.oid aaa\n'] });
+  await dispatch('--verify','true');
+  expect(events().at(-1)).toMatchObject({kind:'run.end', status:'completed', score:null});
+  expect(node()).toMatchObject({score:null, verify:{command:'true', code:0}});
+});
+it('a completed CLI that changed the tree keeps the verifier score', async () => {
+  scoredRun({ cli: proc => proc.emit('close',0,null), git: ['', '? src/parser.ts\n'] });
   await dispatch('--verify','true');
   expect(events().at(-1)).toMatchObject({kind:'run.end', status:'completed', score:1});
-  expect(calls.filter(c => c === 'git').length).toBeLessThanOrEqual(1);
+});
+it('a CLI that committed its work (clean tree before and after, HEAD moved) keeps the verifier score', async () => {
+  scoredRun({ cli: proc => proc.emit('close',0,null), git: ['# branch.oid aaa\n# branch.head main\n', '# branch.oid bbb\n# branch.head main\n'] });
+  await dispatch('--verify','true');
+  expect(events().at(-1)).toMatchObject({kind:'run.end', status:'completed', score:1});
+});
+// Review finding: the after-read used to run AFTER the verifier, so a report the verifier wrote
+// looked like the CLI's work and a CLI that crashed before writing a byte scored 1.
+it('a file the verifier writes is not the CLI\'s work: a failed CLI that wrote nothing stays unscored', async () => {
+  let verifierRan = false;
+  mocks.spawn.mockImplementation((command: string) => {
+    if (command === '/bin/sh') verifierRan = true;
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {
+      if (command === 'git') proc.stdout.emit('data', verifierRan ? '? test-report.xml\n' : '');
+      proc.emit('close', command === 'codex' ? 1 : 0, null);
+    });
+    return proc;
+  });
+  await dispatch('--verify','echo x > test-report.xml');
+  expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:null});
+});
+// Review finding: porcelain lines carry no content, so more work in an already-dirty file was invisible.
+it('a failed CLI that did real work in an already-dirty file keeps the verifier score', async () => {
+  let cliRan = false;
+  const dirty = '1 .M N... 100644 100644 100644 1111111111111111111111111111111111111111 1111111111111111111111111111111111111111 a.txt\n';
+  scoredRun({ cli: proc => { cliRan = true; proc.emit('close',1,null); }, git: [dirty, dirty] });
+  mocks.policy.mockImplementation(async (file: string) => String(file).endsWith('a.txt')
+    ? (cliRan ? 'dirty\nreal-work\n' : 'dirty\n') : JSON.stringify(policy));
+  await dispatch('--verify','grep -q real-work a.txt');
+  expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:1});
 });
 it('a failed CLI in a workspace git cannot read is unscored', async () => {
   mocks.spawn.mockImplementation((command: string) => {
@@ -445,4 +492,260 @@ it('a failed CLI in a workspace git cannot read is unscored', async () => {
   });
   await dispatch('--verify','true');
   expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:null});
+});
+// Mutant (c) survived the ported set: no test had an unreadable tree BEFORE and a readable one after.
+it('a failed CLI whose tree git could not read before the run is unscored, whatever it reads after', async () => {
+  let gitCalls = 0;
+  mocks.spawn.mockImplementation((command: string) => {
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {
+      if (command === 'git' && gitCalls++ > 0) proc.stdout.emit('data', ' M src/parser.ts\n');
+      proc.emit('close', command === 'git' ? (gitCalls === 1 ? 128 : 0) : command === 'codex' ? 1 : 0, null);
+    });
+    return proc;
+  });
+  await dispatch('--verify','true');
+  expect(gitCalls).toBe(2);
+  expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:null});
+});
+// Review finding: mutant `treeAfter === null ||` removed survived all 74 dispatch tests.
+it('a failed CLI whose tree git cannot read after the run is unscored, whatever it read before', async () => {
+  let gitCalls = 0;
+  mocks.spawn.mockImplementation((command: string) => {
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {
+      const code = command === 'git' ? (gitCalls++ === 0 ? 0 : 128) : command === 'codex' ? 1 : 0;
+      proc.emit('close', code, null);
+    });
+    return proc;
+  });
+  await dispatch('--verify','true');
+  expect(gitCalls).toBe(2);
+  expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:null});
+});
+it('the tree node records the run title and its phase: --phase, else the role', async () => {
+  await main(['--role', 'reason', '--task', 'mock-live', '--phase', 'review round 2', '--title', 'Slice 047', '--prompt', 'p']);
+  expect(node()).toMatchObject({ role: 'reason', phase: 'review round 2', title: 'Slice 047' });
+  mocks.append.mockClear();
+  await main(['--role', 'reason', '--task', 'mock-live', '--prompt', '# first line\nsecond']);
+  expect(node()).toMatchObject({ role: 'reason', phase: 'reason', title: 'first line' });
+});
+
+// --- the witness: closing claims checked against the run's own trace --------------------------
+const claiming = (text: string) => fixture.replace('"text":"DONE"', `"text":${JSON.stringify(text)}`);
+/** A run whose CLI says `text`; git answers from `git` (by subcommand) and the verifier exits `verifyCode`. */
+/** `out` as a list answers successive calls in order (the tree before, then after). */
+const witnessedRun = ({ text, git = {}, verifyCode = 0, cliOut }: { text: string; git?: Record<string, { out?: string | string[]; err?: string; code?: number }>; verifyCode?: number; cliOut?: string }) => {
+  const calls: { command: string; args: string[] }[] = [];
+  mocks.spawn.mockImplementation((command: string, args: string[]) => {
+    calls.push({ command, args });
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {
+      if (command === 'codex') { proc.stdout.emit('data', cliOut ?? claiming(text)); return proc.emit('close', 0, null); }
+      if (command === '/bin/sh') return proc.emit('close', verifyCode, null);
+      const answer = git[sub(args)] ?? {};
+      const out = Array.isArray(answer.out) ? answer.out.shift() : answer.out;
+      if (out) proc.stdout.emit('data', out);
+      if (answer.err) proc.stderr.emit('data', answer.err);
+      proc.emit('close', answer.code ?? 0, null);
+    });
+    return proc;
+  });
+  return calls;
+};
+const runEnd = () => events().at(-1);
+/** git's subcommand, after any -c key=value pairs. */
+const sub = (args: string[]) => args[args.findIndex((a, i) => a !== '-c' && args[i - 1] !== '-c')]!;
+const gitCalls = (calls: { command: string; args: string[] }[]) => calls.filter(c => c.command === 'git').map(c => sub(c.args));
+it('a run that says all tests pass and ran no test gets claimedTestsButNone on the tree node and on run.end', async () => {
+  witnessedRun({ text: 'All tests pass.' });
+  await dispatch();
+  expect(node().witness).toEqual({ v: 1, claims: ['testsPass'], findings: [{ code: 'claimedTestsButNone', text: expect.any(String) }] });
+  expect(runEnd()).toMatchObject({ kind: 'run.end', status: 'completed', witness: { findings: ['claimedTestsButNone'] } });
+});
+it('run.end carries the finding codes only, never their text; a clean witness is an empty list', async () => {
+  witnessedRun({ text: 'I looked around.' });
+  await dispatch();
+  expect(node().witness).toEqual({ v: 1, claims: [], findings: [] });
+  expect(runEnd().witness).toEqual({ findings: [] });
+});
+const codexLine = (item: unknown) => `${JSON.stringify({ type: 'item.completed', item })}\n`;
+const emitting = (out: string) => mocks.spawn.mockImplementation(() => {
+  const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+  queueMicrotask(() => { proc.stdout.emit('data', out); proc.emit('close', 0, null); });
+  return proc;
+});
+it('the witness reads the tool.end records dispatch emitted, capped at the newest 5000', async () => {
+  emitting(codexLine({ type: 'command_execution', command: 'ls', exit_code: 0 }).repeat(5100));
+  // A copy at call time: dispatch keeps appending to the live array (run.end) after the witness ran.
+  let seen: { seq: number; runId: string; kind: string }[] = [];
+  mocks.witness.mockImplementation((list: typeof seen, ...rest: unknown[]) => { seen = [...list]; return realWitness(list, ...rest); });
+  await dispatch();
+  expect(seen).toHaveLength(5000);
+  // run.start (0), 5100 tool.end (1..5100), the cli.exit step (5101, not a tool.end): the oldest 100 dropped.
+  expect(seen[0]!.seq).toBe(101);
+  expect(seen.at(-1)).toMatchObject({ kind: 'tool.end', seq: 5100, runId: events()[0].runId });
+  expect(seen.every(e => e.kind === 'tool.end')).toBe(true);
+});
+it('streamed message deltas never evict the tool events the witness reads', async () => {
+  witnessedRun({ text: '', git: { status: { out: '# branch.oid aaa\n' } },
+    cliOut: codexLine({ type: 'file_change', status: 'completed', changes: [{ kind: 'add', path: 'a.ts' }] })
+      + codexLine({ type: 'agent_message', text: 'Implemented.' }).repeat(5100) });
+  await dispatch();
+  expect(mocks.witness.mock.calls[0]![0]).toEqual([expect.objectContaining({ kind: 'tool.end', tool: 'file_change', seq: 1 })]);
+  expect(runEnd().witness).toEqual({ findings: ['doneNoChange'] });
+});
+it('a record whose write failed never reaches the witness', async () => {
+  mocks.live.mockImplementation(() => { throw new Error('disk full'); });
+  witnessedRun({ text: 'All tests pass.' });
+  await dispatch();
+  expect(mocks.witness.mock.calls[0]![0]).toEqual([]);
+});
+it('a throwing witness is recorded on the node and the run still ends completed, with no witness on run.end', async () => {
+  mocks.witness.mockImplementation(() => { throw new Error('witness exploded'); });
+  witnessedRun({ text: 'All tests pass.' });
+  await expect(dispatch()).resolves.toBeUndefined();
+  expect(runEnd()).toMatchObject({ kind: 'run.end', status: 'completed', exitCode: 0 });
+  expect(runEnd()).not.toHaveProperty('witness');
+  expect(node().witness).toEqual({ v: 1, error: 'Error: witness exploded' });
+});
+it('score, status, exit code and the CLI argv are the same with the witness and without it (it throwing)', async () => {
+  const outcome = async (throws: boolean, verifyCode: number) => {
+    mocks.live.mockClear(); mocks.append.mockClear(); process.exitCode = undefined;
+    if (throws) mocks.witness.mockImplementation(() => { throw new Error('off'); });
+    else mocks.witness.mockImplementation(realWitness);
+    const calls = witnessedRun({ text: 'All tests pass. Done.', verifyCode, git: { status: { out: ['', '? src/a.ts\n'] } } });
+    await dispatch('--verify', 'npm test');
+    // Timings and ids differ run to run; everything else must not.
+    const { witness: _w, runId: _r, nodeId: _n, liveFile: _l, recordedAt: _t, ms: _m, verify: { ms: _vm, ...verify }, ...others } = node();
+    const rest = { ...others, verify };
+    const { witness: _ew, runId: _er, nodeId: _en, seq: _es, at: _ea, ms: _em, ...end } = runEnd();
+    return { end, rest, exitCode: process.exitCode, cli: calls.filter(c => c.command === 'codex') };
+  };
+  try {
+    for (const verifyCode of [0, 1]) {
+      const witnessed = await outcome(false, verifyCode);
+      // The real witness did have something to say on the failing verifier: not a no-op standing in for itself.
+      expect(node().witness.findings.map((f: { code: string }) => f.code)).toEqual(verifyCode ? ['verifyContradicts'] : []);
+      expect(await outcome(true, verifyCode)).toEqual(witnessed);
+    }
+    expect((await outcome(false, 1)).end).toMatchObject({ status: 'completed', score: 0 });
+    expect(process.exitCode).toBe(1);
+  } finally { process.exitCode = undefined; }
+});
+it('with --verify the witness reuses the tree reads: no extra git call, and an unchanged tree after "Fixed." is doneNoChange', async () => {
+  const calls = witnessedRun({ text: 'Fixed.', git: { status: { out: '# branch.oid aaa\n' } } });
+  await dispatch('--verify', 'true');
+  expect(calls.filter(c => c.command === 'git')).toHaveLength(2);
+  expect(runEnd()).toMatchObject({ status: 'completed', score: null, witness: { findings: ['doneNoChange'] } });
+});
+it('without --verify a done claim reads the tree once after the CLI; the branch header is not a change', async () => {
+  for (const [out, findings] of [['# branch.oid aaa\n# branch.head main\n', ['doneNoChange']], ['# branch.oid aaa\n? src/a.ts\n', []]] as const) {
+    mocks.live.mockClear();
+    const calls = witnessedRun({ text: 'Fixed.', git: { status: { out } } });
+    await dispatch();
+    expect(gitCalls(calls)).toEqual(['status', 'rev-list']);
+    expect(runEnd().witness).toEqual({ findings });
+  }
+});
+it('the tree read hashes regular files only: a FIFO or a symlink is never opened (a FIFO would hang the dispatcher)', async () => {
+  const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  const ws = fileURLToPath(new URL('../tmp/agent-witness-claims/tree-ws', import.meta.url));
+  fs.rmSync(ws, { recursive: true, force: true });
+  fs.mkdirSync(ws, { recursive: true });
+  try {
+    execFileSync('mkfifo', [path.join(ws, 'fifo')]);
+    fs.symlinkSync('/etc/hosts', path.join(ws, 'link'));
+    fs.writeFileSync(path.join(ws, 'real.txt'), 'x');
+    mocks.lstat.mockImplementation((await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).lstat);
+    // A read of the FIFO never settles, as a real open() of one with no writer would not.
+    mocks.policy.mockImplementation(async (file: string) => String(file).startsWith(ws)
+      ? (String(file).endsWith('real.txt') ? 'x' : new Promise(() => undefined)) : JSON.stringify(policy));
+    witnessedRun({ text: 'Fixed.', git: { status: { out: '# branch.oid aaa\n? fifo\n? link\n? real.txt\n' } } });
+    await dispatch('--root', ws);
+    expect(mocks.policy.mock.calls.map(([file]) => String(file)).filter(file => file.startsWith(ws))).toEqual([path.join(ws, 'real.txt')]);
+    expect(runEnd()).toMatchObject({ kind: 'run.end', status: 'completed', witness: { findings: [] } });
+  } finally { fs.rmSync(ws, { recursive: true, force: true }); }
+});
+it('git status runs with the repo fsmonitor hook switched off', async () => {
+  const calls = witnessedRun({ text: 'Fixed.', git: { status: { out: '# branch.oid aaa\n' } } });
+  await dispatch();
+  const status = calls.filter(c => c.command === 'git' && sub(c.args) === 'status');
+  expect(status).toHaveLength(1);
+  expect(status[0]!.args.slice(0, 3)).toEqual(['-c', 'core.fsmonitor=false', 'status']);
+});
+it('no done claim, no tree read; an unreadable tree is unknown, never "no change"', async () => {
+  let calls = witnessedRun({ text: 'I looked around.' });
+  await dispatch();
+  expect(calls.filter(c => c.command === 'git')).toEqual([]);
+  mocks.live.mockClear();
+  calls = witnessedRun({ text: 'DONE', git: { status: { code: 128, err: 'fatal: not a git repository' } } });
+  await dispatch();
+  expect(runEnd().witness).toEqual({ findings: [] });
+});
+it('a claimed sha must be a commit made during the run: one rev-list of HEAD since the CLI started', async () => {
+  const full = `3f2a1bc${'0'.repeat(33)}`;
+  for (const [answer, findings] of [
+    // An old commit (main's HEAD, any object in the store) is not in the list: git cat-file -e would pass it.
+    [{ out: `${'9'.repeat(40)}\n` }, ['commitNotFound']],
+    [{ out: '' }, ['commitNotFound']],
+    [{ out: `${'9'.repeat(40)}\n${full}\n` }, []],
+    [{ code: 128, err: 'fatal: not a git repository (or any of the parent directories): .git\n' }, []],
+  ] as const) {
+    mocks.live.mockClear(); mocks.append.mockClear();
+    const before = Math.floor(Date.now() / 1000);
+    const calls = witnessedRun({ text: 'Committed 3f2a1bc.', git: { 'rev-list': answer, 'cat-file': { code: 0 } } });
+    await dispatch();
+    const git = calls.filter(c => c.command === 'git');
+    expect(git).toHaveLength(1);
+    const [subcommand, maxAge, ...rest] = git[0]!.args;
+    expect([subcommand, ...rest]).toEqual(['rev-list', '--max-count=1000', 'HEAD']);
+    expect(Number(maxAge!.replace('--max-age=', ''))).toBeGreaterThanOrEqual(before);
+    expect(runEnd().witness).toEqual({ findings });
+  }
+});
+it('one rev-list answers every claimed sha', async () => {
+  const calls = witnessedRun({ text: 'commit aaaaaa1, commit aaaaaa2, commit aaaaaa3, commit aaaaaa4', git: { 'rev-list': { out: `aaaaaa2${'0'.repeat(33)}\n` } } });
+  await dispatch();
+  expect(gitCalls(calls)).toEqual(['rev-list']);
+  expect(node().witness.findings[0].text).toContain('aaaaaa1, aaaaaa3, aaaaaa4');
+});
+it('policy.json testCommandPattern reaches the witness', async () => {
+  policy.testCommandPattern = 'printf hi';
+  witnessedRun({ text: 'All tests pass.' });
+  await dispatch();
+  expect(runEnd().witness).toEqual({ findings: [] });
+});
+it('the signal-path run.end carries no witness', async () => {
+  vi.spyOn(process, 'kill').mockImplementation(() => true);
+  mocks.spawn.mockImplementation(() => {
+    child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), pid: 4244 });
+    return child;
+  });
+  const pending = dispatch();
+  await vi.waitFor(() => expect(events()[0]?.kind).toBe('run.start'));
+  process.emit('SIGTERM', 'SIGTERM');
+  expect(runEnd()).toMatchObject({ kind: 'run.end', signal: 'SIGTERM' });
+  expect(runEnd()).not.toHaveProperty('witness');
+  child.emit('close', null, 'SIGTERM'); await pending.catch(() => undefined);
+});
+// Mutant D9 (a moved HEAD not counted) survived the first table: no test committed under --verify.
+it('with --verify a CLI that committed its work (clean tree, HEAD moved) is a change, not doneNoChange', async () => {
+  witnessedRun({ text: 'Fixed.', git: { status: { out: ['# branch.oid aaa\n', '# branch.oid bbb\n'] } } });
+  await dispatch('--verify', 'true');
+  expect(runEnd()).toMatchObject({ status: 'completed', score: 1, witness: { findings: [] } });
+});
+it('without --verify a clean tree whose commits git cannot list is unknown, never "no change"', async () => {
+  witnessedRun({ text: 'Fixed.', git: { status: { out: '# branch.oid bbb\n' }, 'rev-list': { code: 128, err: "fatal: ambiguous argument 'HEAD'" } } });
+  await dispatch();
+  expect(runEnd().witness).toEqual({ findings: [] });
+});
+it('without --verify a clean tree with a commit made since the CLI started is a change; none is not', async () => {
+  for (const [made, findings] of [[`${'b'.repeat(40)}\n`, []], ['', ['doneNoChange']]] as const) {
+    mocks.live.mockClear();
+    witnessedRun({ text: 'Done and committed.', git: { status: { out: '# branch.oid bbb\n' }, 'rev-list': { out: made } } });
+    await dispatch();
+    expect(runEnd().witness).toEqual({ findings });
+  }
 });
