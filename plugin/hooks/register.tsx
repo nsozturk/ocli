@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, FsEntry, Register } from 'claude-code'
 
-import type { Checkpoint, OcliDir, OcliMeta, OcliPlan, OcliRun } from '../types'
+import type { Checkpoint, OcliDir, OcliHistory, OcliMeta, OcliPlan, OcliRun } from '../types'
 
 type OcliCheckpoint = Checkpoint & { mtimeMs: number; root: string }
-import { CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldPlan, HEADER_HEIGHT, isEnded, isLooping, latestAt, parseCheckpoint, parseLines, phaseOf, reduce, resumePrompt, runKey } from './reduce'
+import { addHistory, CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldHistory, foldPlan, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isEnded, isLooping, latestAt, parseCheckpoint, parseLines, phaseOf, reduce, resumePrompt, runKey } from './reduce'
 import type { Card, OcliEvent, Row } from './reduce'
 
 const PANE = 'ocli'
@@ -19,8 +19,12 @@ const MAX_BYTES = 4 * 1024 * 1024
 // Bounds what one tick reads, keeps in $.state and draws: a CLI under --yolo can create files here.
 const MAX_FILES = 500
 const MAX_TOASTS = 3
-// Expanded phase rows kept in $.state; the oldest are forgotten past this.
+// Expanded cards kept in $.state; the oldest are forgotten past this.
 const MAX_EXPANDED = 200
+// The blank row under each card (its marginBottom), counted in what the card costs.
+const GAP = 1
+// $.store key of the History list: it outlives the session, $.state does not.
+const HISTORY_KEY = 'history'
 // A plan is at most 50 names of 40 code points: 64 KiB is room to spare.
 const MAX_PLAN_BYTES = 64 * 1024
 const MAX_CHECKPOINT_BYTES = 256 * 1024
@@ -42,6 +46,8 @@ const expandedAtom = atom({ plugin: 'ocli-monitor', key: 'expanded' } as const, 
 const plansAtom = atom({ plugin: 'ocli-monitor', key: 'plans' } as const, [] as OcliPlan[])
 const checkpointAtom = atom({ plugin: 'ocli-monitor', key: 'checkpoint' } as const, null as OcliCheckpoint | null)
 const digestAtom = atom({ plugin: 'ocli-monitor', key: 'digest' } as const, '')
+const historyAtom = atom({ plugin: 'ocli-monitor', key: 'history' } as const, [] as OcliHistory[])
+const historyOpenAtom = atom({ plugin: 'ocli-monitor', key: 'historyOpen' } as const, false)
 
 /** Each listed plan by task as one tick saw it; null when unreadable or malformed (not drawn). */
 type Found = Map<string, OcliPlan | null>
@@ -50,6 +56,17 @@ type $ = EngineInterface
 
 const liveDirsOf = (value: unknown): string[] =>
   String(value ?? '').split(',').map(dir => dir.trim().replace(/\/+$/, '')).filter(dir => dir.startsWith('/'))
+
+/** Runs grouped by task, in first-seen order. */
+function runsByTask(runs: readonly OcliRun[]): Map<string, OcliRun[]> {
+  const tasks = new Map<string, OcliRun[]>()
+  for (const run of runs) {
+    const list = tasks.get(run.task)
+    if (list) list.push(run)
+    else tasks.set(run.task, [run])
+  }
+  return tasks
+}
 
 // Module memory, lost on reload by design: a fresh module re-reads every file once, and the
 // seq dedupe in reduce makes that harmless. Everything drawn or announced lives in $.state.
@@ -83,6 +100,27 @@ let lastStatus: string | undefined | null = null
 // refused file costs one error per change, not one a minute.
 let checkpointRoot: string | null | undefined
 let checkpointSeen: string | null = null
+// Whether this module load has read History back from $.store (once, on the first tick).
+let historyLoaded = false
+
+/** History into $.store, so a new session finds it. A runtime without $.store keeps it for the session. */
+function persistHistory($: $, list: OcliHistory[]) {
+  try {
+    void $.store.set(HISTORY_KEY, list).catch(() => undefined)
+  } catch {}
+}
+
+/** The first tick of a module load: an empty History in $.state (a new session) is read back from
+ * $.store. A reload keeps $.state, so a list there is never overwritten. */
+async function loadHistory($: $) {
+  if (historyLoaded) return
+  historyLoaded = true
+  try {
+    if ((await read($, historyAtom)).length) return
+    const stored = foldHistory(await $.store.get(HISTORY_KEY))
+    if (stored.length) await update($, historyAtom, () => stored)
+  } catch {}
+}
 
 const DIGEST_CUT = '\n\n… cut: the digest is longer than this pane holds, so its end (Needs a decision) may be missing; run node <plugin root>/lib/digest.mjs for all of it'
 
@@ -304,6 +342,7 @@ async function tick($: $) {
   let now: number | null = null
   try {
     now = await $.clock.now()
+    await loadHistory($)
     const root = await projectRoot($)
     if (configured.length === 0) {
       const next = root === null ? [] : [`${root}/orchestra/live`]
@@ -379,6 +418,7 @@ export const register: Register = (on, options) => {
   dirs = configured
   checkpointRoot = undefined
   checkpointSeen = null
+  historyLoaded = false
 
   on('session.start', async ($, e, next) => {
     // The timer first: nothing after it can stop the pane from ticking.
@@ -429,6 +469,8 @@ export const register: Register = (on, options) => {
     const meta = await read($, metaAtom)
     const expanded = await read($, expandedAtom)
     const checkpoint = await read($, checkpointAtom)
+    const history = await read($, historyAtom)
+    const isHistoryOpen = await read($, historyOpenAtom)
     const now = await $.clock.now()
     const columns = Math.max(20, e.props.bodyColumns)
     const rows = Math.max(3, e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 24)
@@ -449,20 +491,25 @@ export const register: Register = (on, options) => {
     if (meta.skipped) head.push({ key: 'skipped', text: `⚠ too many live files: ${meta.skipped} skipped`, color: 'warning' })
     if (runs.length === 0 && meta.dirs.some(dir => !dir.isMissing)) head.push({ key: 'empty', text: 'no runs yet', isDim: true })
 
-    const tasks = new Map<string, OcliRun[]>()
-    for (const run of runs) {
-      const list = tasks.get(run.task)
-      if (list) list.push(run)
-      else tasks.set(run.task, [run])
-    }
+    const tasks = runsByTask(runs)
     // A declared plan with no run yet is a card of its own, placed by the plan's mtime.
     for (const task of plans.keys()) if (!tasks.has(task)) tasks.set(task, [])
-    // Each task card in every form it can take; the first that fits is drawn (cardVariants). Built
-    // lazily: only the cards whose header form could still fit are built at all.
-    const cards: (Card[] | (() => Card[]))[] = [...tasks]
+    // A card the person moved to History stays out of the list until its runs move again.
+    const dismissed = new Map(history.map(entry => [entry.task, entry] as const))
+    for (const [task, list] of tasks) if (isDismissed(dismissed.get(task), list)) tasks.delete(task)
+    const shownHistory = history.filter(entry => !tasks.has(entry.task))
+    const canMoveAll = [...tasks.values()].some(list => isDismissible(list, now))
+
+    // What a card costs is its rows, its border and the blank row under it.
+    const spaced = (list: Card[]): Card[] => list.map(c => ({ ...c, height: c.height + GAP }))
+    const order = [...tasks]
       .map(([task, list]) => [list.length ? latestAt(list) : (plans.get(task)?.at ?? 0), task, list] as const)
       .sort((a, b) => b[0] - a[0])
-      .map(([, task, list]) => () => cardVariants(task, list, now, inner, expanded, plans.get(task)?.phases ?? []))
+    // Each task card in every form it can take, the first that fits drawn (cardVariants); `open` the
+    // tasks drawn expanded. Built lazily: only the cards whose header form could still fit are built.
+    const cards: (Card[] | (() => Card[]))[] = []
+    const taskCards = (open: readonly string[]) =>
+      order.map(([, task, list]) => () => spaced(cardVariants(task, list, now, inner, open, plans.get(task)?.phases ?? [])))
 
     // The checkpoint leads: a reset lead (or the person in the morning) starts from it.
     if (checkpoint) {
@@ -470,8 +517,11 @@ export const register: Register = (on, options) => {
       // live dir still rewrites it. ponytail: any live run counts, even one unrelated to the
       // running phase, so an unrelated run can hide a stall; the files say nothing that links them.
       const drift = checkpointDrift(checkpoint, Math.max(latestAt(runs), checkpoint.mtimeMs) || null, now)
-      cards.unshift([checkpointCard(checkpoint, drift, inner), checkpointCard(checkpoint, drift, inner, true)])
+      cards.push(spaced([checkpointCard(checkpoint, drift, inner), checkpointCard(checkpoint, drift, inner, true)]))
     }
+    let open = expanded.filter(task => tasks.has(task))
+    const tasksAt = cards.length
+    cards.push(...taskCards(open))
     const agentRows: Row[] = [{ kind: 'text', key: 'agents', text: 'Claude subagents', isBold: true }]
     if (agents === null) agentRows.push({ kind: 'text', key: 'agents:none', text: 'unavailable', isDim: true })
     else if (agents.length === 0) agentRows.push({ kind: 'text', key: 'agents:none', text: 'none', isDim: true })
@@ -479,29 +529,68 @@ export const register: Register = (on, options) => {
       const text = `${clean(agent.id, 40)} ${clean(agent.type, 40)} ${agent.status} ${clean(agent.description)}`
       agentRows.push({ kind: 'text', key: `agent:${clean(agent.id, 64)}`, text: fit(text, inner), isDim: agent.status !== 'running' })
     }
-    cards.push([{ key: 'agents', rows: agentRows, height: agentRows.length + 2 }])
+    cards.push(spaced([{ key: 'agents', rows: agentRows, height: agentRows.length + 2 }]))
+    const agentsAt = cards.length - 1
+    // History is last: what the person put away sits below everything still in play.
+    if (shownHistory.length) cards.push(spaced(historyVariants(shownHistory, isHistoryOpen, inner)))
+    const historyAt = shownHistory.length ? cards.length - 1 : -1
 
     const tickAt = meta.lastTickAt === null ? 'never' : new Date(meta.lastTickAt).toISOString().slice(11, 19)
     const footer: Line = {
       key: 'footer', isDim: true,
       text: fit(`${meta.dirs.length} dir${meta.dirs.length === 1 ? '' : 's'} · tick ${tickAt} · errors ${meta.errors}`, columns),
     }
-    // Lines above the cards and the footer are never cut; cards are drawn whole or not at all.
-    const fitted = fitCards(cards, rows - 1 - head.length, HEADER_HEIGHT)
-    // The subagents card is the last one; the row for this line was kept by fitCards.
-    const isAgentsCut = fitted.cut.includes(cards.length - 1)
+    // Lines above the cards and the footer are never cut; cards are drawn whole or not at all. While an
+    // expanded card is drawn closed for want of room, the earliest-expanded one closes and the cards are
+    // fitted again: the newest press is the one that survives.
+    const fitAll = () => {
+      cards.splice(tasksAt, order.length, ...taskCards(open))
+      return fitCards(cards, rows - 1 - head.length - (canMoveAll ? 1 : 0), HEADER_HEIGHT + GAP)
+    }
+    let fitted = fitAll()
+    const isSqueezed = (c: Card) => c.rows[0]?.kind === 'head' && c.rows[0].press.startsWith('card:') && !c.rows[0].isOpen && open.includes(c.rows[0].press.slice(5))
+    while (open.length > 1 && fitted.shown.some(isSqueezed)) {
+      open = open.slice(1)
+      fitted = fitAll()
+    }
+    const isAgentsCut = fitted.cut.includes(agentsAt)
+    const isHistoryCut = fitted.cut.includes(historyAt)
     const isCheckpointCut = checkpoint !== null && fitted.cut.includes(0)
-    const cutTasks = fitted.cut.length - (isAgentsCut ? 1 : 0) - (isCheckpointCut ? 1 : 0)
+    const cutTasks = fitted.cut.length - (isAgentsCut ? 1 : 0) - (isCheckpointCut ? 1 : 0) - (isHistoryCut ? 1 : 0)
     const more = [
       isCheckpointCut ? 'checkpoint hidden' : '', cutTasks ? `+${cutTasks} more task${cutTasks === 1 ? '' : 's'}` : '', isAgentsCut ? 'subagents hidden' : '',
+      isHistoryCut ? 'history hidden' : '',
     ].filter(Boolean).join(' · ')
 
-    // A press acts on what is drawn: a phase drawn closed opens and becomes the newest expansion (the
-    // one cardVariants keeps longest), one drawn open closes, whatever the stored list says.
+    // A press acts on what is drawn: a card drawn closed opens and becomes the newest expansion, one
+    // drawn open closes, whatever the stored list says.
     const toggle = (key: string, isDrawnOpen: boolean) => update($, expandedAtom, list => {
       const rest = list.filter(k => k !== key)
       return isDrawnOpen ? rest : [...rest, key].slice(-MAX_EXPANDED)
     })
+    // Moves cards to History, by hand only. The runs are read again at the press: a card whose task
+    // started running since it was drawn is never moved.
+    const dismiss = async (only: string | null) => {
+      const at = await $.clock.now()
+      const byTask = runsByTask(await read($, runsAtom))
+      const kept = new Map((await read($, historyAtom)).map(entry => [entry.task, entry] as const))
+      const entries = [...byTask]
+        .filter(([task, list]) => (only === null || task === only) && !isDismissed(kept.get(task), list) && isDismissible(list, at))
+        .map(([task, list]) => historyEntry(task, list, at))
+      if (!entries.length) return
+      persistHistory($, await update($, historyAtom, list => addHistory(list, entries)))
+    }
+    const restore = async (task: string) => {
+      persistHistory($, await update($, historyAtom, list => list.filter(entry => entry.task !== task)))
+    }
+    const press = (key: string, isDrawnOpen = false) => {
+      if (key === 'history:toggle') return void update($, historyOpenAtom, () => !isDrawnOpen)
+      const at = key.indexOf(':')
+      const [verb, task] = [key.slice(0, at), key.slice(at + 1)]
+      if (verb === 'card') return void toggle(task, isDrawnOpen)
+      if (verb === 'dismiss') return void dismiss(task)
+      if (verb === 'restore') return void restore(task)
+    }
     // Never auto-submitted: only a press queues it, and only the fixed text naming the file.
     const queueResume = () => {
       if (!checkpoint) return
@@ -531,15 +620,33 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
-      // A declared phase with no run: nothing to open, so no Button; the whole row is drawn dim.
+      // The 2.1.294 runtime refuses Text children in a Button (the types allow them): a Button carries
+      // a string label, what goes beside it is its own Text.
+      if (r.kind === 'head') {
+        return (
+          <Box key={r.key} flexDirection="row">
+            <Button key={r.press} label={r.label} plain onPress={() => press(r.press, r.isOpen)} />
+            <Text dimColor wrap="truncate-end">{r.pad + r.right}</Text>
+            {r.dismiss ? <Text> </Text> : null}
+            {r.dismiss ? <Button key={r.dismiss} label="×" plain onPress={() => press(r.dismiss!)} /> : null}
+          </Box>
+        )
+      }
+      if (r.kind === 'press') {
+        return (
+          <Box key={r.key} flexDirection="row">
+            <Button key={r.press} label={r.label} plain onPress={() => press(r.press)} />
+            <Text color={r.color} dimColor wrap="truncate-end">{r.text}</Text>
+          </Box>
+        )
+      }
+      // A phase is one summary row; the card's head opens its runs. Declared and not run yet: all dim.
       if (r.isPending) return <Text key={`row:${r.key}`} dimColor wrap="truncate-end">{r.prefix + r.tail + r.right}</Text>
       return (
         <Box key={`row:${r.key}`} flexDirection="row">
-          {/* The 2.1.294 runtime refuses Text children in a Button (the types allow them): the dots sit beside it. */}
-          <Button key={r.key} label={r.prefix.trimEnd()} plain onPress={() => toggle(r.open, r.isOpen)} />
-          <Text> </Text>
+          <Text wrap="truncate-end">{r.prefix}</Text>
           {r.dots.map((color, i) => <Text key={`dot:${i}`} color={color}>●</Text>)}
-          <Text dimColor wrap="truncate-end">{r.tail}</Text>
+          <Text color={r.isWarn ? 'warning' : undefined} dimColor={!r.isWarn} wrap="truncate-end">{r.tail}</Text>
           <Text dimColor wrap="truncate-end">{r.right}</Text>
         </Box>
       )
@@ -548,8 +655,9 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {head.map(text)}
+        {canMoveAll ? <Button key="history:all" label="Move completed to history" plain onPress={() => void dismiss(null)} /> : null}
         {fitted.shown.map(c => (
-          <Box key={c.key} flexDirection="column" borderStyle="round" borderColor={c.color} paddingX={1}>
+          <Box key={c.key} flexDirection="column" borderStyle="round" borderColor={c.color} paddingX={1} marginBottom={GAP}>
             {c.rows.map(row)}
           </Box>
         ))}

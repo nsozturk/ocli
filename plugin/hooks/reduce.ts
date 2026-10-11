@@ -1,7 +1,7 @@
 // Pure: live-file text -> events -> runs. No `$`. Every string from a live file is untrusted CLI
 // output, so it is cleaned here, at ingest: nothing downstream (pane, toast, notify, status) can
 // carry a terminal escape.
-import type { Checkpoint, OcliRun, OcliStatus } from '../types'
+import type { Checkpoint, OcliHistory, OcliRun, OcliStatus } from '../types'
 
 export type { Checkpoint } from '../types'
 
@@ -19,6 +19,8 @@ export type OcliEvent = {
   root?: string
   phase?: string
   prefixSha?: string
+  brief?: string
+  parentId?: string
   label?: string
   tool?: string
   detail?: string
@@ -77,6 +79,7 @@ function toEvent(raw: unknown): OcliEvent | null {
       event.model = clean(r.model, 80); event.title = clean(r.title, 120); event.root = clean(r.root, 300); event.phase = clean(r.phase, 40)
       // Exactly the dispatcher's shape or nothing: never cleaned into something that looks like one.
       if (typeof r.prefixSha === 'string' && PREFIX_SHA.test(r.prefixSha)) event.prefixSha = r.prefixSha
+      event.brief = clean(r.brief, 600); event.parentId = clean(r.parentId, 80)
       break
     case 'step': event.label = clean(r.label); break
     case 'tool.start':
@@ -160,6 +163,9 @@ const blank = (e: OcliEvent): OcliRun => ({
 
 const MAX_BEATS = 200
 const LOOP_AT = 8
+const MAX_RECENT = 5
+const MAX_WARNINGS = 3
+const VERIFY_END = /^verify\.end code=(-?\d+|null)$/
 
 /** What a tool call is, for the repeat streak: the tool and its whole detail (capped at ingest). A
  * prefix would merge different commands under one long wrapper or worktree path. */
@@ -191,19 +197,30 @@ export function reduce(runs: readonly OcliRun[], events: readonly OcliEvent[]): 
       run.where = (e.root ?? '').replace(/\/+$/, '').split('/').pop() ?? ''
       run.phase = e.phase ?? ''
       if (e.prefixSha) run.prefixSha = e.prefixSha
+      if (e.brief) run.brief = e.brief
+      if (e.root) run.root = e.root
+      if (e.parentId) run.parentId = e.parentId
       run.startedAt = e.at
     } else if (e.kind === 'tool.start') {
       run.streak = { ...repeat(prev.streak, sigOf(e)), open: true }
     } else if (e.kind === 'tool.end') {
       run.toolCount += 1
       const sig = sigOf(e)
+      run.recent = [...(prev.recent ?? []), { text: sig, ok: e.ok ?? null }].slice(-MAX_RECENT)
       // The end of the call a start opened closes it; the end of another call meanwhile leaves the
       // open one be. With none open (opencode and muse emit no tool.start) the end is itself the call.
       if (!prev.streak?.open) {
         const call = repeat(prev.streak, sig)
         run.streak = { ...call, okSince: e.ok === true, open: false }
       } else if (prev.streak.sig === sig) run.streak = { ...prev.streak, okSince: e.ok === true, open: false }
-    } else if (e.kind === 'warn') run.warnCount += 1
+    } else if (e.kind === 'warn') {
+      run.warnCount += 1
+      run.warnings = [...(prev.warnings ?? []), e.text ?? ''].slice(-MAX_WARNINGS)
+    } else if (e.kind === 'message') run.lastMessage = e.text ?? ''
+    else if (e.kind === 'step' && VERIFY_END.test(e.label ?? '')) {
+      const code = VERIFY_END.exec(e.label!)![1]!
+      run.verifyCode = code === 'null' ? null : Number(code)
+    }
     else if (e.kind === 'usage') {
       // A run whose input was summed before cached counts were read keeps cached unknown: a sum over
       // only the later events next to the whole input would draw a confidently wrong ratio.
@@ -299,28 +316,75 @@ const shortModel = (run: OcliRun): string => (run.model ?? '?').split('/').pop()
 const llm = (run: OcliRun): string => `${shortModel(run)} (${run.cli})`
 
 /** A run's first line: glyph, status word unless running/completed, the LLM, elapsed, tools, tokens, role. */
+/** Start to end (`ms` when the dispatcher measured it), or to `now` while running. */
+const elapsedOf = (run: OcliRun, now: number): number | null => isEnded(run.status)
+  ? (run.ms ?? (run.endedAt !== null && run.startedAt !== null ? run.endedAt - run.startedAt : null))
+  : run.startedAt === null ? null : now - run.startedAt
+
 export function runLine(run: OcliRun, now: number, columns: number): string {
   const shown = displayStatus(run, now)
   const word = shown === 'running' || shown === 'completed' ? '' : ` ${shown}`
-  const elapsed = isEnded(run.status)
-    ? (run.ms ?? (run.endedAt !== null && run.startedAt !== null ? run.endedAt - run.startedAt : null))
-    : run.startedAt === null ? null : now - run.startedAt
   const parts = [
-    `${GLYPH[shown]}${word}`, llm(run), duration(elapsed), `${run.toolCount}t`,
+    `${GLYPH[shown]}${word}`, llm(run), duration(elapsedOf(run, now)), `${run.toolCount}t`,
     `${count(run.tokens.input)}/${count(run.tokens.output)}`, `· ${run.role}`,
   ]
   return fit(parts.join(' '), columns)
 }
 
-/** All of a run's lines: the head, then what it is for and where it works, then its latest event.
- * A run folded by an older version has no title/where ($.state outlives a reload): those read as ''. */
-export function runLines(run: OcliRun, now: number, columns: number): string[] {
-  const lines = [runLine(run, now, columns)]
-  const what = [run.title ?? '', run.where ?? ''].filter(Boolean).join(' · ')
-  if (what) lines.push(fit(`  ${what}`, columns))
-  if (run.lastSummary) lines.push(isEnded(run.status) ? fit(`  ↳ ${run.lastSummary}`, columns) : liveLine(run, now, columns))
-  // Last, so the card can colour it: claims its own trace does not back (orchestra/witness.mjs).
-  if (run.witness?.length) lines.push(fit(`  ⚠ unwitnessed: ${run.witness.join(', ')}`, columns))
+/** Whole words greedily to `columns` cells, at most `max` lines; a word wider than a line is cut, and
+ * text left over past the last line marks it cut with an ellipsis. */
+export function wrap(text: string, columns: number, max: number): string[] {
+  const lines: string[] = []
+  for (const word of text.split(' ').filter(Boolean)) {
+    const last = lines.at(-1)
+    if (last !== undefined && cells(`${last} ${word}`) <= columns) lines[lines.length - 1] = `${last} ${word}`
+    else lines.push(fit(word, columns))
+  }
+  if (lines.length <= max) return lines
+  return [...lines.slice(0, max - 1), fit(`${lines[max - 1]} ${lines[max]}`, columns)]
+}
+
+/** One line of a run's block in the expanded card. */
+export type DetailLine = { text: string; color?: string; isDim?: boolean }
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/** How an ended run ended: status, exit code, score and the --verify verdict when one ran. */
+function endLine(run: OcliRun): string {
+  const verify = run.verifyCode === undefined ? '' : run.verifyCode === 0 ? ' · verify passed' : ` · verify failed (exit ${run.verifyCode ?? '?'})`
+  return `end: ${run.status} · exit ${run.exitCode ?? '?'} · score ${run.score ?? '?'}${verify}`
+}
+
+/** A run's block in the expanded card, `columns` wide: what it is (status, LLM, role, elapsed), what
+ * it was asked (the brief, else the title), where it works and what it continues, its tools and
+ * tokens, then what it is doing (the live line, its last tool calls, its last message, warnings) and
+ * how it ended. `isCompact` keeps one brief and message line and drops the calls and warnings. Every
+ * line fits; a run folded by an older version (no brief, root, recent…) still draws. */
+export function runDetail(run: OcliRun, now: number, columns: number, isCompact = false): DetailLine[] {
+  const shown = displayStatus(run, now)
+  const inner = Math.max(1, columns - 2)
+  const lines: DetailLine[] = [{ text: fit(`${GLYPH[shown]} ${shown} · ${llm(run)} · ${run.role} · ${duration(elapsedOf(run, now))}`, columns), color: colorOf(shown) }]
+  const body = (text: string, style: Omit<DetailLine, 'text'> = { isDim: true }) => lines.push({ text: `  ${fit(text, inner)}`, ...style })
+  for (const line of wrap(run.brief || run.title || '', inner, isCompact ? 1 : 3)) body(line, {})
+  const place = [run.root || run.where ? `in ${run.root || run.where}` : '', run.parentId ? `parent ${run.parentId}` : ''].filter(Boolean).join(' · ')
+  if (place) body(place)
+  const { input, output, cached } = run.tokens
+  body([plural(run.toolCount, 'tool'), run.warnCount ? plural(run.warnCount, 'warning') : '',
+    `tokens in ${count(input)} · out ${count(output)}${cached == null ? '' : ` · cached ${count(cached)}`}`].filter(Boolean).join(' · '))
+  if (!isEnded(run.status) && run.lastSummary) {
+    lines.push({ text: liveLine(run, now, columns), isDim: false, ...(isLooping(run) ? { color: 'warning' } : {}) })
+  }
+  if (!isCompact) {
+    for (const step of run.recent ?? []) {
+      if (step.ok === false) body(`✗ ${step.text}`, { color: 'error', isDim: false })
+      else body(`${step.ok ? '✓' : '·'} ${step.text}`)
+    }
+  }
+  if (run.lastMessage) for (const line of wrap(`says: ${run.lastMessage}`, inner, isCompact ? 1 : 2)) body(line)
+  if (!isCompact) for (const warning of run.warnings ?? []) body(`⚠ ${warning}`, { color: 'warning', isDim: false })
+  // Claims its own trace does not back (orchestra/witness.mjs): kept in the compact form too.
+  if (run.witness?.length) body(`⚠ unwitnessed: ${run.witness.join(', ')}`, { color: 'warning', isDim: false })
+  if (isEnded(run.status)) body(endLine(run))
   return lines
 }
 
@@ -393,10 +457,16 @@ export type Row =
   | { kind: 'text'; key: string; text: string; color?: string; isDim?: boolean; isBold?: boolean }
   /** Left filled with spaces to the width, so `right` sits at the right edge on every surface. */
   | { kind: 'split'; key: string; left: string; right: string; isBold?: boolean }
-  /** A phase: `prefix` (chevron, name), one dot colour per run, `tail` (LLMs, fill), `right` (done/total). */
   /** A pressable: the pane's render hook knows what its key does. */
   | { kind: 'button'; key: string; label: string }
-  | { kind: 'phase'; key: string; open: string; isOpen: boolean; prefix: string; dots: string[]; tail: string; right: string; isPending?: boolean }
+  /** A card's head: the `label` Button (▸/▾ and the name) presses `press`; `pad` and `right` fill the
+   * row to its width, less the two cells of ` ×` when there is a `dismiss` Button (its press key). */
+  | { kind: 'head'; key: string; press: string; isOpen: boolean; label: string; pad: string; right: string; dismiss?: string }
+  /** A `label` Button pressing `press`, then `text`. */
+  | { kind: 'press'; key: string; press: string; label: string; text: string; color?: string }
+  /** A phase: `prefix` (its name), one dot colour per run, `tail` (marks, LLMs, fill), `right` (done/total);
+   * `isWarn` while one of its runs may be looping. */
+  | { kind: 'phase'; key: string; prefix: string; dots: string[]; tail: string; right: string; isPending?: boolean; isWarn?: boolean }
 /** `height` is what the card costs in rows: its rows and the two of its border. */
 export type Card = { key: string; color?: string; rows: Row[]; height: number }
 
@@ -437,10 +507,30 @@ const isPhaseDone = (list: readonly OcliRun[], now: number): boolean =>
  * row per phase (a card has a phase: it exists for a run or a non-empty plan). */
 export const HEADER_HEIGHT = 6
 
-/** One task's card, `columns` wide inside its border. `isOpen` says which `<task>/<phase>` rows are
- * expanded; `isHeader` draws the header form, for a card too tall even with every phase closed.
- * `declared` is the task's plan: those phases are drawn first, a pending row for any not yet run. */
-export function card(task: string, runs: readonly OcliRun[], now: number, columns: number, isOpen: (key: string) => boolean, isHeader = false, declared: readonly string[] = []): Card {
+/** How much of a card is drawn: closed (`false`), or open with every run's block in full or compact. */
+export type Detail = false | 'full' | 'compact'
+
+const DISMISSIBLE: readonly TaskStatus[] = ['Completed', 'Failed', 'Blocked']
+
+/** Only a card whose runs are all over may go to History: never a running or stale one, nor a plan
+ * with no run yet. */
+export const isDismissible = (runs: readonly OcliRun[], now: number): boolean =>
+  runs.length > 0 && DISMISSIBLE.includes(taskStatus(runs, now))
+
+/** A card's head row `columns` wide: the ▸/▾ toggle naming it, `right` at the edge, then ` ×` when
+ * `dismiss` is its press key. */
+function headRow(key: string, press: string, isOpen: boolean, name: string, right: string, columns: number, dismiss?: string): Row {
+  const room = columns - width(right) - (dismiss ? 2 : 0)
+  const label = fit(`${isOpen ? '▾' : '▸'} ${name}`, Math.max(1, room - 1))
+  return { kind: 'head', key, press, isOpen, label, pad: ' '.repeat(Math.max(0, room - width(label))), right, ...(dismiss ? { dismiss } : {}) }
+}
+
+/** One task's card, `columns` wide inside its border. Closed (`open` false) it is its head (the ▸
+ * toggle, the span, × once dismissible), status, count, title and one row per phase; open, each phase
+ * row is followed by a block per run (runDetail). `isHeader` draws the header form, for a card too
+ * tall even closed. `declared` is the task's plan: those phases are drawn first, a pending row for
+ * any not yet run. */
+export function card(task: string, runs: readonly OcliRun[], now: number, columns: number, open: Detail, isHeader = false, declared: readonly string[] = []): Card {
   // A plan with no run yet is not "Completed" (what taskStatus says of no runs): it is neutral.
   const status = runs.length ? taskStatus(runs, now) : 'Declared'
   const color = runs.length ? TASK_COLOR[status as TaskStatus] : undefined
@@ -452,8 +542,9 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
   const tally = `${runs.length} run${runs.length === 1 ? '' : 's'} · ${count(tokens)} tokens`
   // The progress is why a plan exists: when the whole row does not fit, it leads, so it is never the part cut.
   const countRow = !declared.length ? tally : cells(`${tally} · ${done}`) <= columns ? `${tally} · ${done}` : `${done} · ${tally}`
+  const isOpen = !!open && !isHeader
   const rows: Row[] = [
-    { kind: 'split', key: `head:${task}`, left: fill(fit(task, columns - width(span) - 1), columns - width(span)), right: span, isBold: true },
+    headRow(`head:${task}`, `card:${task}`, isOpen, task, span, columns, isDismissible(runs, now) ? `dismiss:${task}` : undefined),
     { kind: 'text', key: 'status', text: `ocli · ${status}`, color, isDim: !runs.length },
     { kind: 'text', key: 'count', text: fit(countRow, columns), isDim: true },
   ]
@@ -466,8 +557,6 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
   if (recent) rows.push({ kind: 'text', key: 'what', text: fit(recent.title, columns), isDim: true })
   rows.push({ kind: 'text', key: 'phases', text: 'Phases', isBold: true })
   for (const [phase, list] of phases) {
-    const open = `${task}/${phase}`
-    const isOpenNow = isOpen(open)
     const shown = list.map(run => displayStatus(run, now))
     const right = `${list.filter(run => isEnded(run.status)).length}/${list.length}`
     const room = columns - width(right) - 1
@@ -475,14 +564,16 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
     const note = list.length ? ` ${[...new Set(list.map(shortModel))].join(', ')}` : ' declared'
     // The name gives way to the dots and the LLM names, down to a third of the row.
     const nameRoom = Math.max(Math.ceil(room / 3), room - list.length - width(note) - 1)
-    const prefix = `${fit(`${isOpenNow ? '▾' : '▸'} ${phase}`, Math.max(1, Math.min(room - 2, nameRoom)))} `
+    const prefix = `${fit(`  ${phase}`, Math.max(1, Math.min(room - 2, nameRoom)))} `
     // ponytail: a phase with more runs than room shows its newest dots and `+K` for the rest;
     // done/total still counts all.
     const dotRoom = Math.max(0, room - width(prefix))
     const keep = list.length <= dotRoom ? list.length : Math.max(0, dotRoom - 2 - String(list.length).length)
     const more = keep < list.length ? ` +${list.length - keep}` : ''
     const unwitnessed = list.filter(run => run.witness?.length).length
-    const warn = unwitnessed ? ` ⚠${unwitnessed}` : ''
+    // A run that may be looping marks its phase (its live line is in the open card).
+    const looping = list.filter((run, i) => shown[i] === 'running' && isLooping(run)).length
+    const warn = (unwitnessed ? ` ⚠${unwitnessed}` : '') + (looping ? ` ⟳${looping}` : '')
     const dots = shown.slice(list.length - keep).map(colorOf)
     // A prefix marker that does not fit whole is dropped, never cut into a misleading `⚠pre`.
     const drift = prefixNote(list)
@@ -492,35 +583,86 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
     const tailRoom = room - width(prefix) - dots.length - width(more) - width(marks)
     const names = width(cache) < tailRoom ? cache + note : note
     const tail = fill(more + marks + (tailRoom > 1 ? fit(names, tailRoom) : ''), columns - width(right) - width(prefix) - dots.length)
-    rows.push({ kind: 'phase', key: `phase:${open}`, open, isOpen: isOpenNow, prefix, dots, tail, right, ...(list.length ? {} : { isPending: true }) })
-    list.forEach((run, i) => {
-      if (isOpenNow) {
-        const lines = runLines(run, now, columns - 2)
-        const warnAt = run.witness?.length ? lines.length - 1 : -1
-        // runLines' ↳ line follows the head and, when there is one, the title/where line.
-        const loopAt = isLooping(run) && !isEnded(run.status) && run.lastSummary ? (run.title || run.where ? 2 : 1) : -1
-        lines.forEach((text, j) => rows.push(j === warnAt || j === loopAt
-          ? { kind: 'text', key: `run:${runKey(run)}:${j}`, text: `  ${text}`, color: 'warning', isDim: false }
-          : { kind: 'text', key: `run:${runKey(run)}:${j}`, text: `  ${text}`, color: j === 0 ? colorOf(shown[i]!) : undefined, isDim: j > 0 || isEnded(run.status) }))
-      } else if (shown[i] === 'running' && run.lastSummary) {
-        rows.push({ kind: 'text', key: `live:${runKey(run)}`, text: liveLine(run, now, columns), ...(isLooping(run) ? { color: 'warning' } : {}) })
-      }
-    })
+    rows.push({ kind: 'phase', key: `phase:${task}/${phase}`, prefix, dots, tail, right, ...(list.length ? {} : { isPending: true }), ...(looping ? { isWarn: true } : {}) })
+    if (!isOpen) continue
+    for (const run of list) {
+      runDetail(run, now, columns - 2, open === 'compact').forEach((line, j) => rows.push({
+        kind: 'text', key: `run:${runKey(run)}:${j}`, ...line, text: `  ${line.text}`,
+      }))
+    }
   }
   return { key: `task:${task}`, color, rows, height: rows.length + 2 }
 }
 
-/** A task's card in every form, most detailed first: the phases `expanded` lists open, then closing
- * the earliest-expanded one at a time (the newest press survives), then all closed, then the header. */
+/** A task's card in every form, most detailed first: open in full and compact while `expanded` names
+ * the task, then closed, then the header. */
 export function cardVariants(task: string, runs: readonly OcliRun[], now: number, columns: number, expanded: readonly string[], declared: readonly string[] = []): Card[] {
-  const mine = expanded.filter(key => key.startsWith(`${task}/`))
-  const variants = mine.map((_, i) => {
-    const open = new Set(mine.slice(i))
-    return card(task, runs, now, columns, key => open.has(key), false, declared)
-  })
-  variants.push(card(task, runs, now, columns, () => false, false, declared), card(task, runs, now, columns, () => false, true, declared))
-  return variants
+  const forms: Detail[] = expanded.includes(task) ? ['full', 'compact', false] : [false]
+  return [...forms.map(open => card(task, runs, now, columns, open, false, declared)), card(task, runs, now, columns, false, true, declared)]
 }
+
+// --- History: cards the person moved out of the list, by hand only --------------------------------
+
+const MAX_HISTORY = 100
+const MAX_HISTORY_ROWS = 20
+const HISTORY_STATUSES: readonly OcliHistory['status'][] = ['Completed', 'Failed', 'Blocked']
+
+/** A dismissible task's snapshot as of `now`: what its History row draws after its runs age out. */
+export function historyEntry(task: string, runs: readonly OcliRun[], now: number): OcliHistory {
+  return { task, status: taskStatus(runs, now) as OcliHistory['status'], runs: runs.length, tokens: tokensOf(runs), span: taskSpan(runs, now), lastAt: latestAt(runs), dismissedAt: now }
+}
+
+/** A dismissed card stays out of the list until one of its runs has an event newer than the
+ * dismissal saw: a new run of the task brings the card back. */
+export const isDismissed = (entry: OcliHistory | undefined, runs: readonly OcliRun[]): boolean =>
+  !!entry && latestAt(runs) <= entry.lastAt
+
+/** `list` with `entries` added: one entry per task (the new one replaces the old), the newest 100. */
+export function addHistory(list: readonly OcliHistory[], entries: readonly OcliHistory[]): OcliHistory[] {
+  const tasks = new Set(entries.map(entry => entry.task))
+  return [...list.filter(entry => !tasks.has(entry.task)), ...entries].slice(-MAX_HISTORY)
+}
+
+const numOrNull = (value: unknown): number | null | undefined => (value === null ? null : num(value) ?? undefined)
+
+/** History as read back from $.store (a file under the user's config): every entry checked and its
+ * task cleaned; anything else dropped. */
+export function foldHistory(raw: unknown): OcliHistory[] {
+  if (!Array.isArray(raw)) return []
+  const out: OcliHistory[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const r = item as Record<string, unknown>
+    const task = clean(r.task, 120)
+    const tokens = numOrNull(r.tokens)
+    const span = numOrNull(r.span)
+    const [runs, lastAt, dismissedAt] = [num(r.runs), num(r.lastAt), num(r.dismissedAt)]
+    if (!task || !HISTORY_STATUSES.includes(r.status as OcliHistory['status']) || tokens === undefined || span === undefined
+      || runs === null || lastAt === null || dismissedAt === null) continue
+    out.push({ task, status: r.status as OcliHistory['status'], runs, tokens, span, lastAt, dismissedAt })
+  }
+  return out.slice(-MAX_HISTORY)
+}
+
+/** The History card, `columns` wide: closed, its ▸ head and the count; open, also a row per entry,
+ * newest first (at most 20, the rest counted), each with a restore Button. */
+function historyCard(entries: readonly OcliHistory[], isOpen: boolean, columns: number): Card {
+  const rows: Row[] = [headRow('history:head', 'history:toggle', isOpen, 'History', String(entries.length), columns)]
+  if (isOpen) {
+    const newest = [...entries].sort((a, b) => b.dismissedAt - a.dismissedAt)
+    for (const entry of newest.slice(0, MAX_HISTORY_ROWS)) {
+      const at = new Date(entry.dismissedAt).toISOString().slice(11, 16)
+      const text = ` ${entry.task} · ${entry.status} · ${plural(entry.runs, 'run')} · ${count(entry.tokens)} tokens · ${duration(entry.span)} · dismissed ${at}`
+      rows.push({ kind: 'press', key: `entry:${entry.task}`, press: `restore:${entry.task}`, label: 'restore', text: fit(text, columns - width('restore')), color: TASK_COLOR[entry.status] })
+    }
+    if (newest.length > MAX_HISTORY_ROWS) rows.push({ kind: 'text', key: 'history:more', text: `+${newest.length - MAX_HISTORY_ROWS} older`, isDim: true })
+  }
+  return { key: 'history', rows, height: rows.length + 2 }
+}
+
+/** The History card's forms, most detailed first: open (when it is), then closed. */
+export const historyVariants = (entries: readonly OcliHistory[], isOpen: boolean, columns: number): Card[] =>
+  isOpen ? [historyCard(entries, true, columns), historyCard(entries, false, columns)] : [historyCard(entries, false, columns)]
 
 /** Cards in order, each a list of variants (most detailed first): a card is drawn whole in the first
  * variant that fits, keeping a row for the "more" line while cards follow or any was cut; a card

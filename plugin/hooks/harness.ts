@@ -18,7 +18,8 @@ export const OPTIONS = { options: { liveDirs: ROOT } }
 
 const sizeOf = (node: Node) => node.size ?? node.text?.length ?? 0
 
-export function harness(on: On) {
+/** `store`: what $.store holds when the session starts (a previous session's History). */
+export function harness(on: On, { store }: { store?: Record<string, unknown> } = {}) {
   // /work is the session's cwd (start below): a project root always exists.
   const fs = new Map<string, Node>([[ROOT, { kind: 'dir' }], ['/work', { kind: 'dir' }]])
   const calls = {
@@ -37,6 +38,17 @@ export function harness(on: On) {
   /** Called after fs.stat answers: a test swaps the tree here to race the read that follows. */
   const hooks = { afterStat: (_path: string, _resolve: boolean) => {} }
   const clock = mock.clock(on, { now: NOW })
+  // $.store in memory (mock.store's, plus the record of every set: one hook per event).
+  const kept = new Map(Object.entries(store ?? {}))
+  /** Every $.store.set, in order. */
+  const stored: { key: string; value: unknown }[] = []
+  on('store.get', ($, e) => ({ value: kept.get(e.key) }))
+  on('store.set', ($, e) => {
+    const value = JSON.parse(JSON.stringify(e.value)) as unknown
+    kept.set(e.key, value)
+    stored.push({ key: e.key, value })
+    return { value: undefined }
+  })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => {
     calls.register.push(e.name)
@@ -116,6 +128,7 @@ export function harness(on: On) {
     calls,
     proc,
     clock,
+    stored,
     put,
     start: ($: { session: { start: (e: { cwd: string; surface: 'terminal'; isInteractive: boolean }) => Promise<unknown> } }) =>
       $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true }),

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.3-8b5cf6" alt="Version 0.3.3">
+  <img src="https://img.shields.io/badge/version-0.4.0-8b5cf6" alt="Version 0.4.0">
   <img src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white" alt="Node.js 22+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/runtime%20deps-zero-0ea5e9" alt="Zero runtime dependencies">
@@ -32,19 +32,24 @@ Workflow-style cards with phases, status dots, token counts and the latest tool 
 
 ```
 ╭──────────────────────────────────────────────╮
-│ fix-parser                             4m12s │   task, total time
-│ ocli · Running                               │   Running > Blocked > Failed > Stale > Completed
+│ ▸ fix-parser                         4m12s × │   press ▸ to open it in place; × once it ended
+│ ocli · Completed                             │   Running > Blocked > Failed > Stale > Completed
 │ 4 runs · 131k tokens                         │   input + output, summed over runs
 │ Fix the tokenizer edge cases                 │   the newest run's --title
 │ Phases                                       │
-│ ▸ implement ●●● glm-5.3, gpt-6-astra     2/3 │   one dot per run, ended/total, the LLMs
-│   ↳ tool.end bash: npm test                  │   a running run's latest event
-│ ▸ review ● muse-spark-1.3-contributor    1/1 │
+│   implement ●●● glm-5.3, gpt-6-astra     3/3 │   one dot per run, ended/total, the LLMs
+│   review ● muse-spark-1.3-contributor    1/1 │
 ╰──────────────────────────────────────────────╯
 ```
 
-Press a phase row to expand it into its runs (status, LLM and CLI, elapsed time, tools, tokens,
-worktree). Ended runs raise one toast each; the status line reads `ocli: N running`.
+Press the card's head to open it in place: under each phase, one block per run says what the run
+was asked (its brief), where it works, its tools and tokens, what it is doing now (its live line and
+last tool calls), its latest message and warnings, and how it ended (exit, score, `--verify`). Press
+again to close it. Cards are spaced apart, and a finished card (completed, failed or blocked) gets an
+`×` that moves it to a **History** card at the bottom (closed by default; open it to restore one);
+`Move completed to history` moves them all at once. Nothing moves to History by itself, a running
+card is never moved, and History is kept across sessions. Ended runs raise one toast each; the
+status line reads `ocli: N running`.
 
 What else it does:
 
@@ -58,9 +63,10 @@ What else it does:
 - **Night digest.** `/ocli-digest` (or `node dispatcher/digest.mjs`) summarizes the last 12 hours per
   task and phase: runs by status, scored passes against unscored runs, tokens, witness findings, and
   what needs a decision.
-- **Heartbeat and loop warning.** A running run's live line leads with a 10-cell event-rate sparkline
-  (30 s bins) and `xN` once one call repeats; eight identical calls with no success turn it
-  warning-coloured and raise one "may be looping" toast. Nothing acts on the run.
+- **Heartbeat and loop warning.** In the open card, a running run's live line leads with a 10-cell
+  event-rate sparkline (30 s bins) and `xN` once one call repeats; eight identical calls with no
+  success turn it warning-coloured, mark its phase row `⟳N`, and raise one "may be looping" toast.
+  Nothing acts on the run.
 - **Cache ratio and prefix drift.** A phase row shows `cache N%`: cache reads over all input read, for
   the runs that report both (unknown is never `0%`). Each dispatch records `prefixSha`, the first 12 hex
   of sha256 of its `--prompt` (never the `--suffix`); `⚠prefix×K` marks a phase whose runs on one CLI

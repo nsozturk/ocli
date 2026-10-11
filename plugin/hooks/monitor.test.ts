@@ -33,7 +33,9 @@ function rowsOf(node: El | string): string[] {
   if (typeof node === 'string') return [node]
   if (node.type === 'Box' && node.props?.flexDirection !== 'row') {
     const inner = (node.children ?? []).flatMap(rowsOf)
-    return node.props?.borderStyle ? ['╭', ...inner, '╰'] : inner
+    // A margin below takes its rows too: drawn here as empty rows.
+    const gap = Array<string>(Number(node.props?.marginBottom ?? 0)).fill('')
+    return [...(node.props?.borderStyle ? ['╭', ...inner, '╰'] : inner), ...gap]
   }
   return [flat(node)]
 }
@@ -60,12 +62,12 @@ async function paneText($: unknown, surface: (typeof SURFACES)[number], bodyRows
   await ui.unmount()
   return rows
 }
-/** The pane's rows after pressing each phase row named, on one mounted drawing. */
-async function expanded($: unknown, surface: (typeof SURFACES)[number], phases: string[], bodyRows = 30) {
+/** The pane's rows after pressing the head of each task card named, on one mounted drawing. */
+async function expanded($: unknown, surface: (typeof SURFACES)[number], tasks: string[], bodyRows = 30) {
   const ui = await mount($, surface, bodyRows)
-  for (const key of phases) await ui.press({ key: `phase:${key}` })
+  for (const task of tasks) await ui.press({ key: `card:${task}` })
   const rows = rowsOf(await ui.drawn())
-  for (const key of phases) await ui.press({ key: `phase:${key}` }) // collapse again: $.state is shared across surfaces
+  for (const task of tasks) await ui.press({ key: `card:${task}` }) // collapse again: $.state is shared across surfaces
   await ui.unmount()
   return rows
 }
@@ -101,8 +103,11 @@ test('pane draws a run line on terminal AND desktop, with subagents and footer',
     expect(joined).toContain('glm-live')
     // GLM_LIVE is opencode: 3425600 cache reads on top of 119333 fresh input tokens (33 usage events)
     // -> 3425600 / 3544933 = 96.6%. The literal cached/input would print 2871%.
-    expect(texts.filter(t => t.startsWith("▸ implement"))).toEqual([expect.stringMatching(/^▸ implement ● cache 97% glm-5\.3 +1\/1$/)])
-    expect((await expanded($, surface, ['glm-live/implement'])).some(t => t.startsWith('  ✓ glm-5.3 (opencode) 15m54s 37t'))).toBe(true)
+    expect(texts.filter(t => t.startsWith('  implement'))).toEqual([expect.stringMatching(/^ {2}implement ● cache 97% glm-5\.3 +1\/1$/)])
+    const open = await expanded($, surface, ['glm-live'])
+    expect(open.some(t => t.startsWith('  ✓ completed · glm-5.3 (opencode) · implement · 15m54s'))).toBe(true)
+    expect(open.some(t => t.startsWith('    37 tools · '))).toBe(true)
+    expect(open.some(t => t.startsWith('    end: completed · exit 0 · score 1'))).toBe(true)
     expect(joined).toContain('Claude subagents')
     expect(joined).toContain('a1 Explore running scan the repo')
     expect(joined).toMatch(/^1 dir · tick /m)
@@ -213,11 +218,12 @@ test('control characters and ANSI escapes from a live file never reach the drawi
     const texts = await paneText($, surface)
     for (const text of texts) expect(text).not.toMatch(CONTROL)
     expect(texts.join('\n')).toContain('task-x')
-    expect(texts.some(t => t.includes('evilmodel')) && texts.some(t => t.includes('↳ message: wipe the screen'))).toBe(true)
-    expect(texts.some(t => t.startsWith('▸ phase 1 ●'))).toBe(true)
-    const open = await expanded($, surface, ['task-x/phase 1'])
+    expect(texts.some(t => t.includes('evilmodel'))).toBe(true)
+    expect(texts.some(t => t.startsWith('  phase 1 ●'))).toBe(true)
+    const open = await expanded($, surface, ['task-x'])
     for (const text of open) expect(text).not.toMatch(CONTROL)
     expect(open.some(t => t.includes('evilmodel (codex)'))).toBe(true)
+    expect(open.some(t => t.includes('↳ message: wipe the screen')) && open.some(t => t.includes('says: wipe the screen'))).toBe(true)
   }
   expect(h.calls.status.at(-1)).toBe('ocli: 1 running')
 })
@@ -230,7 +236,7 @@ test('dispatch-error and an unknown status render as failed', OPTIONS, async ($,
   h.put(`${ROOT}/task-a/r2.jsonl`, runLines('r2', [START, end('exploded')]), {})
   await h.tick()
   for (const surface of SURFACES) {
-    const runs = (await expanded($, surface, ['task-a/implement'])).filter(t => t.includes('(codex)')).map(t => t.trimStart())
+    const runs = (await expanded($, surface, ['task-a'])).filter(t => t.includes('(codex)')).map(t => t.trimStart())
     expect(runs.length).toBe(2)
     expect(runs.every(t => t.startsWith('✗ '))).toBe(true)
     expect(runs.some(t => t.startsWith('✗ dispatch-error'))).toBe(true)
@@ -258,7 +264,7 @@ test('a run silent for over 10 minutes is shown stale and not counted as running
   await h.tick()
   expect(h.calls.status.at(-1)).toBeUndefined()
   expect((await paneText($, 'terminal')).some(t => t.trimEnd() === 'ocli · Stale')).toBe(true)
-  expect((await expanded($, 'terminal', ['task-a/implement'])).some(t => t.startsWith('  ◌ stale gpt-5.6-luna (codex)'))).toBe(true)
+  expect((await expanded($, 'terminal', ['task-a'])).some(t => t.startsWith('  ◌ stale · gpt-5.6-luna (codex)'))).toBe(true)
 })
 
 test('an ended run whose file is older than 24 h is ignored', OPTIONS, async ($, on) => {
@@ -268,7 +274,7 @@ test('an ended run whose file is older than 24 h is ignored', OPTIONS, async ($,
   h.put(`${ROOT}/task-a/r2.jsonl`, runLines('r2', [START], old), { mtimeMs: old })
   await h.start($)
   await h.tick()
-  const runs = (await expanded($, 'terminal', ['task-a/implement'])).filter(t => t.includes('(codex)'))
+  const runs = (await expanded($, 'terminal', ['task-a'])).filter(t => t.includes('(codex)'))
   expect(runs.length).toBe(1)
   expect(runs[0]).toMatch(/^ {2}◌ stale/)
 })
@@ -435,7 +441,7 @@ test('cards are cut whole at every height, the rest summed up as +N more tasks',
       // Whole, or (too tall even closed) its header form: the first rows of the whole card and one note.
       for (const [key, drawn] of cards) {
         if (drawn.length === whole.get(key)!.length) expect(drawn).toEqual(whole.get(key))
-        else expect(drawn).toEqual([...whole.get(key)!.slice(0, 4), expect.stringMatching(/^\d+ phases? · pane too short to list them/), '╰'])
+        else expect(drawn).toEqual([...whole.get(key)!.slice(0, 4), expect.stringMatching(/^\d+ phases? · pane too short to list them/), '╰', ''])
       }
       const tasks = [...cards.keys()].filter(key => key.startsWith('task:')).length
       if (tasks < 6) expect(all.join('\n')).toContain(`+${6 - tasks} more task`)
@@ -474,7 +480,7 @@ function cardTask(h: ReturnType<typeof harness>) {
   h.put(`${ROOT}/task-p/d.jsonl`, runLines('d', [{ kind: 'run.start', model: 'gpt-5.6-luna' }, end('failed')], NOW - 80_000, { ...at, role: 'reason' }))
 }
 
-test('a task is one round card: header, status, runs and tokens, title, phases with dots, done/total, LLMs and the live line', OPTIONS, async ($, on) => {
+test('a task is one round card with a blank row under it: the ▸ toggle and span, status, runs and tokens, title, one row per phase with dots, done/total and LLMs', OPTIONS, async ($, on) => {
   const h = harness(on)
   cardTask(h)
   await h.start($)
@@ -490,38 +496,45 @@ test('a task is one round card: header, status, runs and tokens, title, phases w
       'row:phase:task-p/implement': ['success', 'suggestion'], 'row:phase:task-p/review': ['warning'], 'row:phase:task-p/reason': ['error'],
     })
     const rows = cardsOf(tree).get('task:task-p')!.map(r => r.trimEnd())
-    expect(rows[1]).toMatch(/^task-p +2m06s$/)
+    expect(rows[1]).toMatch(/^▸ task-p +2m06s$/)
     expect(rows.slice(2, 6)).toEqual(['ocli · Running', '4 runs · 1k tokens', 'Slice 046 cards', 'Phases'])
-    expect(rows[6]).toMatch(/^▸ implement ●● gpt-6-astra, glm-5\.3 +1\/2$/)
-    // The sparkline: both events (NOW - 60 s, NOW - 59 s) in the third-newest 30 s cell at NOW + 6 s.
-    expect(rows[7]).toBe(`  ${' '.repeat(7)}█   ↳ tool.end bash: npm test`)
-    expect(rows[8]).toMatch(/^▸ review ● glm-5\.3 +1\/1$/)
-    expect(rows[9]).toMatch(/^▸ reason ● gpt-5\.6-luna +1\/1$/)
-    expect(rows.length).toBe(11)
+    expect(rows[6]).toMatch(/^ {2}implement ●● gpt-6-astra, glm-5\.3 +1\/2$/)
+    expect(rows[7]).toMatch(/^ {2}review ● glm-5\.3 +1\/1$/)
+    expect(rows[8]).toMatch(/^ {2}reason ● gpt-5\.6-luna +1\/1$/)
+    // Closed, the card has no per-run line; under its border, the blank row that parts it from the next.
+    expect(rows.slice(9)).toEqual(['╰', ''])
+    expect((await paneText($, surface)).filter(t => t.includes('↳'))).toEqual([])
   }
 })
 
-test('pressing a phase row expands it to its runs; it stays expanded in $.state across mounts; pressing again collapses', OPTIONS, async ($, on) => {
+test('pressing a card head expands it in place to its runs, by phase; it stays expanded in $.state across mounts; pressing again collapses', OPTIONS, async ($, on) => {
   const h = harness(on)
   cardTask(h)
   await h.start($)
   await h.tick()
   for (const surface of SURFACES) {
-    const ui = await mount($, surface)
-    await ui.press({ key: 'phase:task-p/implement' })
+    const ui = await mount($, surface, 60)
+    await ui.press({ key: 'card:task-p' })
     const open = rowsOf(await ui.drawn())
     await ui.unmount()
-    expect(open.some(t => t.startsWith('▾ implement'))).toBe(true)
-    expect(open.some(t => t.startsWith('  ✓ gpt-6-astra (codex)'))).toBe(true)
-    expect(open.some(t => t.startsWith('  ● glm-5.3 (opencode)'))).toBe(true)
+    expect(open.some(t => t.startsWith('▾ task-p'))).toBe(true)
+    const at = (prefix: string) => open.findIndex(t => t.startsWith(prefix))
+    // Each run under its own phase row: implement's two, then review's.
+    expect(at('  implement')).toBeLessThan(at('  ✓ completed · gpt-6-astra (codex) · implement'))
+    expect(at('  ✓ completed · gpt-6-astra (codex)')).toBeLessThan(at('  ● running · glm-5.3 (opencode) · implement'))
+    expect(at('  ● running · glm-5.3 (opencode)')).toBeLessThan(at('  review'))
+    expect(at('  review')).toBeLessThan(at('  ⊘ blocked · glm-5.3 (codex) · implement'))
+    // What it is for (no brief from this dispatcher: the title), its tool call and its live line.
+    expect(open.some(t => t === '    Slice 046 cards')).toBe(true)
+    expect(open.some(t => t === '    ✓ bash: npm test')).toBe(true)
     expect(open.filter(t => t.includes('↳ tool.end bash: npm test')).length).toBe(1)
     // A fresh drawing (another mount, as after a reload) reads the expanded set from $.state.
-    const again = await mount($, surface)
-    expect(rowsOf(await again.drawn()).some(t => t.startsWith('▾ implement'))).toBe(true)
-    await again.press({ key: 'phase:task-p/implement' })
+    const again = await mount($, surface, 60)
+    expect(rowsOf(await again.drawn()).some(t => t.startsWith('▾ task-p'))).toBe(true)
+    await again.press({ key: 'card:task-p' })
     const closed = rowsOf(await again.drawn())
     await again.unmount()
-    expect(closed.some(t => t.startsWith('▸ implement'))).toBe(true)
+    expect(closed.some(t => t.startsWith('▸ task-p'))).toBe(true)
     expect(closed.some(t => t.includes('(codex)'))).toBe(false)
   }
 })
@@ -544,15 +557,16 @@ test('runs kept in $.state by 0.1.x (no phase) still draw, grouped by role', OPT
   await h.tick()
   for (const surface of SURFACES) {
     const rows = await paneText($, surface)
-    expect(rows.some(t => /^▸ implement ● gpt-5\.6-luna +1\/1$/.test(t))).toBe(true)
+    expect(rows.some(t => /^ {2}implement ● gpt-5\.6-luna +1\/1$/.test(t))).toBe(true)
   }
 })
 
-test('the expanded set is read from $.state: a drawing after a reload opens what was open', OPTIONS, async ($, on) => {
+test('the expanded set is read from $.state: a drawing after a reload opens what was open; a 0.3 phase key opens nothing', OPTIONS, async ($, on) => {
+  let stored = ['task-p']
   on('state.get', async ($, e, next) => {
     const got = await next(e)
     return (got as { value: { version: number } }).value.version === 0 && (e as { key: string }).key === 'expanded'
-      ? { value: { value: ['task-p/review'], version: 0 } }
+      ? { value: { value: stored, version: 0 } }
       : got
   })
   const h = harness(on)
@@ -560,39 +574,42 @@ test('the expanded set is read from $.state: a drawing after a reload opens what
   await h.start($)
   await h.tick()
   for (const surface of SURFACES) {
-    const rows = await paneText($, surface)
-    expect(rows.some(t => t.startsWith('▾ review'))).toBe(true)
-    expect(rows.some(t => t.startsWith('  ⊘ blocked glm-5.3 (codex)'))).toBe(true)
-    expect(rows.some(t => t.startsWith('▸ implement'))).toBe(true)
+    const rows = await paneText($, surface, 60)
+    expect(rows.some(t => t.startsWith('▾ task-p'))).toBe(true)
+    expect(rows.some(t => t.startsWith('  ⊘ blocked · glm-5.3 (codex)'))).toBe(true)
   }
+  stored = ['task-p/review']
+  const rows = await paneText($, 'terminal', 60)
+  expect(rows.some(t => t.startsWith('▸ task-p'))).toBe(true)
+  expect(rows.some(t => t.includes('(codex)'))).toBe(false)
 })
 
-test('a press acts on what is drawn: when two open phases do not fit, the newest survives and pressing the closed one opens it', OPTIONS, async ($, on) => {
+test('a press acts on what is drawn: when two open cards do not fit, the newest press survives and pressing the closed one opens it', OPTIONS, async ($, on) => {
   const h = harness(on)
-  for (const [i, phase] of ['A', 'A', 'A', 'B', 'B', 'B'].entries()) {
-    h.put(`${ROOT}/task-q/q${i}.jsonl`, runLines(`q${i}`, [{ kind: 'run.start', model: 'openai/gpt-6-astra', phase, title: `slice ${i}` }, end('completed')], NOW - 60_000 + i * 1000, { task: 'task-q' }))
+  for (const [i, task] of ['task-q', 'task-q', 'task-q', 'task-r', 'task-r', 'task-r'].entries()) {
+    h.put(`${ROOT}/${task}/q${i}.jsonl`, runLines(`q${i}`, [{ kind: 'run.start', model: 'openai/gpt-6-astra', phase: 'A', title: `slice ${i}` }, end('completed')], NOW - 60_000 + i * 1000, { task }))
   }
   await h.start($)
   await h.tick()
   for (const surface of SURFACES) {
     const tall = await mount($, surface, 200)
-    await tall.press({ key: 'phase:task-q/A' })
-    const onlyA = rowsOf(await tall.drawn()).length
-    await tall.press({ key: 'phase:task-q/B' }) // $.state now holds A then B
+    await tall.press({ key: 'card:task-q' })
+    const onlyQ = rowsOf(await tall.drawn()).length
+    await tall.press({ key: 'card:task-r' }) // $.state now holds q then r
     await tall.unmount()
-    const ui = await mount($, surface, onlyA) // room for one open phase, not two
+    const ui = await mount($, surface, onlyQ) // room for one open card, not two
     const before = rowsOf(await ui.drawn())
-    expect(before.length).toBeLessThanOrEqual(onlyA)
-    expect(before.some(t => t.startsWith('▾ B'))).toBe(true)
-    expect(before.some(t => t.startsWith('▸ A'))).toBe(true)
-    await ui.press({ key: 'phase:task-q/A' })
+    expect(before.length).toBeLessThanOrEqual(onlyQ)
+    expect(before.some(t => t.startsWith('▾ task-r'))).toBe(true)
+    expect(before.some(t => t.startsWith('▸ task-q'))).toBe(true)
+    await ui.press({ key: 'card:task-q' })
     const after = rowsOf(await ui.drawn())
-    expect(after.some(t => t.startsWith('▾ A'))).toBe(true)
-    expect(after.some(t => t.startsWith('▸ B'))).toBe(true)
-    // Pressing what is drawn open closes it: A, then B, leaves nothing expanded for the next surface.
-    await ui.press({ key: 'phase:task-q/A' })
-    expect(rowsOf(await ui.drawn()).some(t => t.startsWith('▾ B'))).toBe(true)
-    await ui.press({ key: 'phase:task-q/B' })
+    expect(after.some(t => t.startsWith('▾ task-q'))).toBe(true)
+    expect(after.some(t => t.startsWith('▸ task-r'))).toBe(true)
+    // Pressing what is drawn open closes it: q, then r, leaves nothing expanded for the next surface.
+    await ui.press({ key: 'card:task-q' })
+    expect(rowsOf(await ui.drawn()).some(t => t.startsWith('▾ task-r'))).toBe(true)
+    await ui.press({ key: 'card:task-r' })
     expect(rowsOf(await ui.drawn()).some(t => t.startsWith('▾'))).toBe(false)
     await ui.unmount()
   }
@@ -629,15 +646,15 @@ test('a plan beside a run file: declared phases drawn first, a pending one dim w
     await ui.unmount()
     const rows = cardsOf(tree).get('task:task-a')!.map(r => r.trimEnd())
     expect(rows).toContain('2 runs · ? tokens · 1/4 phases')
-    const phases = rows.filter(r => /^[▸▾] /.test(r))
+    const phases = rows.filter(r => /^ {2}\S/.test(r))
     expect(phases.map(r => r.split(/\s+/)[1])).toEqual(['implement', 'review', 'merge', 'hotfix'])
-    expect(phases[1]).toMatch(/^▸ review +declared +0\/0$/)
+    expect(phases[1]).toMatch(/^ {2}review +declared +0\/0$/)
     expect(phases[0]).toMatch(/1\/1$/)
-    // The pending row is one dim Text, its name included: no Button (it has nothing to open).
+    // The pending row is one dim Text, its name included: no Button (phase rows open nothing).
     const all = (n: El | string | undefined): El[] => (!n || typeof n === 'string' ? [] : [n, ...(n.children ?? []).flatMap(all)])
-    const named = all(tree).filter(n => /^▸ review\b/.test(flat(n)) && n.type !== 'Box')
+    const named = all(tree).filter(n => /^ {2}review\b/.test(flat(n)) && n.type !== 'Box')
     expect(named.map(n => [n.type, n.props?.dimColor])).toEqual([['Text', true]])
-    expect(flat(named[0]!).trimEnd()).toMatch(/^▸ review +declared +0\/0$/)
+    expect(flat(named[0]!).trimEnd()).toMatch(/^ {2}review +declared +0\/0$/)
     const ran = byKey(tree, 'row:phase:task-a/implement')!
     expect((ran.children ?? []).some(c => typeof c !== 'string' && c.type === 'Text' && !c.props?.dimColor)).toBe(true)
   }
@@ -652,14 +669,14 @@ test('a plan with no runs yet is a card of its own, ordered by the plan mtime', 
   await h.start($)
   await h.tick()
   for (const surface of SURFACES) {
-    const ui = await mount($, surface)
+    const ui = await mount($, surface, 40)
     const tree = await ui.drawn()
     const box = (await ui.findAll({ type: 'Box' })).find(b => b.props.key === 'task:task-new')!
     expect(box.props.borderColor).toBeUndefined()
     await ui.unmount()
     const cards = cardsOf(tree)
     expect([...cards.keys()]).toEqual(['task:task-new', 'task:task-a', 'task:task-old', 'agents'])
-    expect(cards.get('task:task-new')!.map(r => r.trimEnd())).toEqual(expect.arrayContaining(['ocli · Declared', '0 runs · ? tokens · 0/1 phases', expect.stringMatching(/^▸ x +declared +0\/0$/)]))
+    expect(cards.get('task:task-new')!.map(r => r.trimEnd())).toEqual(expect.arrayContaining(['ocli · Declared', '0 runs · ? tokens · 0/1 phases', expect.stringMatching(/^ {2}x +declared +0\/0$/)]))
   }
 })
 
@@ -674,13 +691,13 @@ test('a malformed plan costs one footer error, once; the pane still draws; a fix
   for (const surface of SURFACES) {
     const joined = (await paneText($, surface)).join('\n')
     expect(joined).toMatch(/errors 1/)
-    expect(joined).toMatch(/^▸ implement ● glm-5\.3 +0\/1$/m)
+    expect(joined).toMatch(/^ {2}implement ● glm-5\.3 +0\/1$/m)
     expect(joined).not.toContain('phases ·')
     expect(joined).toMatch(/^1 run · \? tokens$/m)
   }
   h.put(`${ROOT}/task-a/plan.json`, planText('implement', 'review'), { mtimeMs: NOW + 5000 })
   await h.tick()
-  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ review +declared +0\/0$/m)
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^ {2}review +declared +0\/0$/m)
   h.fs.delete(`${ROOT}/task-a/plan.json`)
   await h.tick()
   const joined = (await paneText($, 'desktop')).join('\n')
@@ -700,7 +717,7 @@ test('a plan that is a link, resolves outside, is over 64 KiB or is older than a
   expect(h.calls.read).toEqual([`${ROOT}/task-k/plan.json`])
   const joined = (await paneText($, 'terminal')).join('\n')
   for (const name of ['linked', 'outside', 'big', 'old']) expect(joined).not.toContain(name)
-  expect(joined).toMatch(/^▸ kept +declared/m)
+  expect(joined).toMatch(/^ {2}kept +declared/m)
 })
 
 test('a swapped plan (check, then a link at read time) is dropped, and a __proto__ task reaches no prototype', OPTIONS, async ($, on) => {
@@ -719,7 +736,7 @@ test('a swapped plan (check, then a link at read time) is dropped, and a __proto
   expect(isSwapped).toBe(true)
   const joined = (await paneText($, 'terminal')).join('\n')
   expect(joined).not.toContain('outside-secret')
-  expect(joined).toMatch(/^▸ proto +declared/m)
+  expect(joined).toMatch(/^ {2}proto +declared/m)
   expect(({} as Record<string, unknown>).phases).toBeUndefined()
 })
 
@@ -751,7 +768,7 @@ test('a plan past the per-tick file cap keeps what was drawn, as runs do', OPTIO
   await h.tick()
   const joined = (await paneText($, 'terminal', 200)).join('\n')
   expect(joined).toContain('too many live files: 1 skipped')
-  expect(joined).toMatch(/^▸ capped +declared/m)
+  expect(joined).toMatch(/^ {2}capped +declared/m)
 })
 
 test('a task dir that cannot be listed for one tick does not lose its unchanged plan', OPTIONS, async ($, on) => {
@@ -759,15 +776,15 @@ test('a task dir that cannot be listed for one tick does not lose its unchanged 
   h.put(`${ROOT}/task-a/plan.json`, planText('survives'))
   await h.start($)
   await h.tick()
-  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ survives +declared/m)
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^ {2}survives +declared/m)
   h.failList.add(`${ROOT}/task-a`)
   await h.tick()
   // Not even for the tick whose listing failed: the plan last read is drawn.
-  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ survives +declared/m)
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^ {2}survives +declared/m)
   h.failList.clear()
   await h.tick()
   const joined = (await paneText($, 'terminal')).join('\n')
-  expect(joined).toMatch(/^▸ survives +declared/m)
+  expect(joined).toMatch(/^ {2}survives +declared/m)
   expect(joined).toMatch(/errors 1/)
   expect(h.calls.read.filter(p => p.endsWith('plan.json')).length).toBe(1)
 })
@@ -780,7 +797,7 @@ test('a plan whose re-read throws keeps the last plan read, and costs an error',
   h.fs.set(`${ROOT}/task-a/plan.json`, { kind: 'file', size: 10, mtimeMs: NOW + 5000 }) // changed; fs.read throws
   await h.tick()
   const joined = (await paneText($, 'terminal')).join('\n')
-  expect(joined).toMatch(/^▸ last-good +declared/m)
+  expect(joined).toMatch(/^ {2}last-good +declared/m)
   expect(joined).toMatch(/errors 1/)
 })
 
@@ -793,8 +810,8 @@ test('a live dir that cannot be listed for one tick keeps its plans drawn, as it
   h.failList.add(ROOT)
   await h.tick()
   const joined = (await paneText($, 'terminal')).join('\n')
-  expect(joined).toMatch(/^▸ kept +declared/m)
-  expect(joined).toMatch(/^▸ implement /m)
+  expect(joined).toMatch(/^ {2}kept +declared/m)
+  expect(joined).toMatch(/^ {2}implement /m)
   expect(joined).toMatch(/errors 1/)
 })
 
@@ -810,7 +827,7 @@ test('a plan that left the listing is forgotten: one that comes back unchanged i
   expect((await paneText($, 'terminal')).join('\n')).not.toContain('back')
   h.fs.set(path, node)
   await h.tick()
-  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ back +declared/m)
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^ {2}back +declared/m)
   expect(h.calls.read.filter(p => p === path).length).toBe(2)
 })
 
@@ -834,7 +851,7 @@ test('a plan carried over a failed listing still ages out after a day', OPTIONS,
   h.put(`${ROOT}/task-a/plan.json`, planText('ageing'), { mtimeMs: NOW - 24 * 3_600_000 + 3000 })
   await h.start($)
   await h.tick()
-  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^▸ ageing +declared/m)
+  expect((await paneText($, 'terminal')).join('\n')).toMatch(/^ {2}ageing +declared/m)
   h.failList.add(`${ROOT}/task-a`)
   await h.tick()
   await h.tick()
@@ -853,7 +870,7 @@ test('a plan whose re-read threw is read again next tick, and its new phases dra
   h.fs.set(path, { kind: 'file', text, mtimeMs: NOW + 5000 }) // same size:mtime, now readable
   await h.tick()
   const joined = (await paneText($, 'terminal')).join('\n')
-  expect(joined).toMatch(/^▸ second +declared/m)
+  expect(joined).toMatch(/^ {2}second +declared/m)
   expect(joined).not.toContain('first')
 })
 
@@ -866,13 +883,13 @@ test('a run whose claims its trace does not back: ⚠1 on its phase row, a warni
   const warnings = (node: El | string): El[] => typeof node === 'string' ? []
     : [...(node.type === 'Text' && flat(node).includes('unwitnessed') ? [node] : []), ...(node.children ?? []).flatMap(warnings)]
   for (const surface of SURFACES) {
-    expect((await paneText($, surface)).find(t => t.startsWith('▸ implement'))).toMatch(/^▸ implement ●● ⚠1 /)
-    expect((await expanded($, surface, ['task-w/implement'])).filter(t => t.includes('unwitnessed')).map(t => t.trim()))
+    expect((await paneText($, surface)).find(t => t.startsWith('  implement'))).toMatch(/^ {2}implement ●● ⚠1 /)
+    expect((await expanded($, surface, ['task-w'])).filter(t => t.includes('unwitnessed')).map(t => t.trim()))
       .toEqual(['⚠ unwitnessed: claimedTestsButNone, staleGreen'])
     const ui = await mount($, surface)
-    await ui.press({ key: 'phase:task-w/implement' })
+    await ui.press({ key: 'card:task-w' })
     const found = warnings(await ui.drawn())
-    await ui.press({ key: 'phase:task-w/implement' })
+    await ui.press({ key: 'card:task-w' })
     await ui.unmount()
     expect(found.map(n => n.props?.color)).toEqual(['warning'])
     for (const n of found) expect(flat(n)).not.toMatch(CONTROL)
@@ -930,11 +947,12 @@ test('a pane too short for the phase rows draws the checkpoint compact; shorter 
   await h.start($)
   await h.tick()
   for (const surface of SURFACES) {
-    // 10 rows: a head line, the footer, a row for the "more" line, 7 for the card (the full one takes 10).
-    const ui = await mount($, surface, 10)
+    // 11 rows: a head line, the footer, a row for the "more" line, 8 for the card and the blank row
+    // under it (the full one takes 11).
+    const ui = await mount($, surface, 11)
     const tree = await ui.drawn()
     await ui.unmount()
-    expect(cardsOf(tree).get('checkpoint')).toEqual(['╭', expect.stringMatching(/^2026-10-11_x\.md +1\/3$/), 'next: SENTINEL-NEXT-TEXT pick the build set', 'resume: cd /work && git log', 'checkpoint says running, no live event or checkpoint write for 50m', 'Queue resume', '╰'])
+    expect(cardsOf(tree).get('checkpoint')).toEqual(['╭', expect.stringMatching(/^2026-10-11_x\.md +1\/3$/), 'next: SENTINEL-NEXT-TEXT pick the build set', 'resume: cd /work && git log', 'checkpoint says running, no live event or checkpoint write for 50m', 'Queue resume', '╰', ''])
     const short = (await paneText($, surface, 5)).join('\n')
     expect(short).toContain('checkpoint hidden')
     expect(short).not.toContain('more task')
@@ -1328,21 +1346,29 @@ test('a looping run silent for over 10 minutes is stale, not running: no loop to
   expect(h.calls.toast).toEqual([])
 })
 
-test('the live row: a sparkline, ×n and the warning colour while looping, within bodyColumns on terminal AND desktop', OPTIONS, async ($, on) => {
+test('the live row: a sparkline, ×n and the warning colour while looping in the open card; the closed card marks the phase ⟳; within bodyColumns on terminal AND desktop', OPTIONS, async ($, on) => {
   const h = harness(on)
   h.put(`${ROOT}/task-a/r1.jsonl`, loopLines(8))
   h.put(`${ROOT}/task-a/r2.jsonl`, runLines('r2', [{ ...START, title: 'x'.repeat(300) }, { kind: 'tool.start', tool: 'bash', detail: 'y'.repeat(300) }], NOW - 30_000, { task: 'task-a', phase: 'review' }))
   await h.start($)
   await h.tick()
   for (const surface of SURFACES) {
-    const ui = await mount($, surface)
+    const closed = await mount($, surface)
+    const tree = await closed.drawn()
+    await closed.unmount()
+    expect(liveTexts(tree)).toEqual([])
+    const mark = byKey(tree, 'row:phase:task-a/implement')!.children!.find(c => typeof c !== 'string' && flat(c).includes('⟳1')) as El
+    expect(mark.props?.color).toBe('warning')
+    const ui = await mount($, surface, 60)
+    await ui.press({ key: 'card:task-a' })
     const live = liveTexts(await ui.drawn())
+    await ui.press({ key: 'card:task-a' })
     await ui.unmount()
     const loop = live.find(n => flat(n).endsWith('×8'))!
-    expect(flat(loop)).toMatch(/^ {2}[ ▁-█]{10} ↳ tool\.end bash: npm test \(failed\) ×8$/)
+    expect(flat(loop)).toMatch(/^ {4}[ ▁-█]{10} ↳ tool\.end bash: npm test \(failed\) ×8$/)
     expect(loop.props?.color).toBe('warning')
     expect(live.filter(n => n.props?.color === 'warning').length).toBe(1)
-    const open = await expanded($, surface, ['task-a/implement', 'task-a/review'], 60)
+    const open = await expanded($, surface, ['task-a'], 60)
     for (const rows of [await paneText($, surface), open]) {
       for (const row of rows) expect(cells(row)).toBeLessThanOrEqual(PANE_PROPS.bodyColumns)
     }
@@ -1376,4 +1402,102 @@ test('a run silent past the stale cutoff (a killed CLI, no run.end) leaves its b
   expect(kept.runs?.[0]?.beats).toBeUndefined()
   expect(kept.runs?.[0]?.streak).toBeDefined()
   expect(JSON.stringify(kept.runs).length).toBeLessThan(1000)
+})
+
+// --- 0.4: History (by hand only), the open card's brief ------------------------------------------
+
+/** task-done (completed), task-bad (failed) and task-live (running, newest). */
+function historyTasks(h: ReturnType<typeof harness>) {
+  h.put(`${ROOT}/task-done/d.jsonl`, runLines('d', [START, end('completed')], NOW - 90_000, { task: 'task-done' }))
+  h.put(`${ROOT}/task-bad/b.jsonl`, runLines('b', [START, end('failed')], NOW - 80_000, { task: 'task-bad' }))
+  h.put(`${ROOT}/task-live/l.jsonl`, runLines('l', [START], NOW - 10_000, { task: 'task-live' }))
+}
+const keysOf = async ($: unknown, surface: (typeof SURFACES)[number], bodyRows = 60) => {
+  const ui = await mount($, surface, bodyRows)
+  const keys = [...cardsOf(await ui.drawn()).keys()]
+  await ui.unmount()
+  return keys
+}
+
+test('× moves an ended card to a closed History at the bottom; never by itself; opening it lists the card, restore brings it back; on both surfaces', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  historyTasks(h)
+  await h.start($)
+  for (let i = 0; i < 5; i++) await h.tick()
+  // Ticks alone never move a finished card.
+  expect(await keysOf($, 'terminal')).toEqual(['task:task-live', 'task:task-bad', 'task:task-done', 'agents'])
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface, 60)
+    // A running card has no ×.
+    await expect(ui.press({ key: 'dismiss:task-live' })).rejects.toThrow()
+    await ui.press({ key: 'dismiss:task-done' })
+    const tree = await ui.drawn()
+    const cards = cardsOf(tree)
+    expect([...cards.keys()]).toEqual(['task:task-live', 'task:task-bad', 'agents', 'history'])
+    // Closed by default (the first surface; the open state is shared $.state, so the second finds it open).
+    if (surface === 'terminal') expect(cards.get('history')!.slice(1, -2)).toEqual([expect.stringMatching(/^▸ History +1$/)])
+    if (cards.get('history')![1]!.startsWith('▸')) await ui.press({ key: 'history:toggle' })
+    const open = cardsOf(await ui.drawn()).get('history')!
+    expect(open[1]).toMatch(/^▾ History +1$/)
+    expect(open[2]).toMatch(/^restore task-done · Completed · 1 run · \? tokens · 1s · dismissed 12:30$/)
+    await ui.press({ key: 'restore:task-done' })
+    // Restored, History is empty: no card for it at all.
+    expect([...cardsOf(await ui.drawn()).keys()]).toEqual(['task:task-live', 'task:task-bad', 'task:task-done', 'agents'])
+    await ui.unmount()
+  }
+})
+
+test('"Move completed to history" moves every completed, failed or blocked card, never a running one; with none left it is not drawn', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  historyTasks(h)
+  await h.start($)
+  await h.tick()
+  const ui = await mount($, 'terminal', 60)
+  expect(rowsOf(await ui.drawn())[0]).toBe('Move completed to history')
+  await ui.press({ key: 'history:all' })
+  const rows = rowsOf(await ui.drawn())
+  await ui.unmount()
+  expect([...cardsOf(await (await mount($, 'desktop', 60)).drawn()).keys()]).toEqual(['task:task-live', 'agents', 'history'])
+  expect(rows).not.toContain('Move completed to history')
+  // Persisted for the next session.
+  expect(h.stored.at(-1)!.key).toBe('history')
+  expect(h.stored.at(-1)!.value).toEqual(expect.arrayContaining([expect.objectContaining({ task: 'task-bad', status: 'Failed' }), expect.objectContaining({ task: 'task-done', status: 'Completed' })]))
+  expect(h.stored.at(-1)!.value).toHaveLength(2)
+  // The running one ends: the button is back, for it alone.
+  h.put(`${ROOT}/task-live/l.jsonl`, runLines('l', [START, end('blocked')], NOW - 10_000, { task: 'task-live' }))
+  await h.tick()
+  const again = await mount($, 'terminal', 60)
+  expect(rowsOf(await again.drawn())).toContain('Move completed to history')
+  await again.press({ key: 'history:all' })
+  expect([...cardsOf(await again.drawn()).keys()]).toEqual(['agents', 'history'])
+  await again.unmount()
+})
+
+test('a dismissed task comes back when one of its runs moves again; History outlives the session through $.store', OPTIONS, async ($, on) => {
+  const entry = { task: 'task-done', status: 'Completed', runs: 1, tokens: null, span: 1000, lastAt: NOW - 89_000, dismissedAt: NOW - 1000 }
+  // A previous session's History, and junk beside it that is dropped.
+  const h = harness(on, { store: { history: [entry, { task: 'evil', status: 'constructor' }] } })
+  historyTasks(h)
+  await h.start($)
+  await h.tick()
+  expect(await keysOf($, 'terminal')).toEqual(['task:task-live', 'task:task-bad', 'agents', 'history'])
+  // A new run in the dismissed task: its card is back in the list, and out of History.
+  h.put(`${ROOT}/task-done/n.jsonl`, runLines('n', [START], NOW, { task: 'task-done' }))
+  await h.tick()
+  expect(await keysOf($, 'terminal')).toEqual(['task:task-done', 'task:task-live', 'task:task-bad', 'agents'])
+})
+
+test('the open card says what each run was asked: run.start.brief, else the title; and where it works', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-b/r1.jsonl`, runLines('r1', [{ ...START, title: 'RK1', root: '/w/wt-rk1', parentId: 'node-7', brief: 'slice RK1 · worktree wt-rk1 · Catalogue adapter · Write the GLM adapter.' }], NOW, { task: 'task-b' }))
+  h.put(`${ROOT}/task-b/r2.jsonl`, runLines('r2', [{ ...START, title: 'RK2 older dispatcher' }], NOW, { task: 'task-b' }))
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const open = await expanded($, surface, ['task-b'], 60)
+    expect(open).toContain('    slice RK1 · worktree wt-rk1 · Catalogue adapter · Write the GLM adapter.')
+    expect(open).toContain('    in /w/wt-rk1 · parent node-7')
+    expect(open).toContain('    RK2 older dispatcher')
+    for (const row of open) expect(row).not.toMatch(CONTROL)
+  }
 })

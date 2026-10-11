@@ -42,8 +42,36 @@ export type OcliRun = {
    * or a tool.end no start opened (opencode and muse emit no tool.start). `okSince` once a matching
    * tool.end reported ok; `open` while a start awaits its end. Dropped at run.end; absent on older folds. */
   streak?: { sig: string; n: number; okSince: boolean; open?: boolean }
+  /** run.start.brief: what the run was asked to do (--brief, else derived from --suffix and the
+   * prompt), at most 600 code points. Absent from an older dispatcher (the pane shows the title) and on
+   * runs folded by 0.3.x; the same holds for every field below. */
+  brief?: string
+  /** run.start.root, the whole workspace path (`where` is its last segment). */
+  root?: string
+  /** run.start.parentId: the node this run continues. */
+  parentId?: string
+  /** The last 5 tool.end calls (`<tool>: <detail>`), newest last, with their verdict. */
+  recent?: { text: string; ok: boolean | null }[]
+  /** The latest assistant message, cut at 300 code points. */
+  lastMessage?: string
+  /** The last 3 warn texts, newest last (warnCount counts them all). */
+  warnings?: string[]
+  /** The --verify exit code from the dispatcher's `verify.end code=<n>` step; null when it had none. */
+  verifyCode?: number | null
   /** Highest `seq` folded in: the dedupe key with `runId`. */
   lastSeq: number
+}
+
+/** A task card the person moved to History: a snapshot, so it still draws after its runs age out.
+ * The card stays hidden while no event of its runs is newer than `lastAt`. */
+export type OcliHistory = {
+  task: string
+  status: 'Completed' | 'Failed' | 'Blocked'
+  runs: number
+  tokens: number | null
+  span: number | null
+  lastAt: number
+  dismissedAt: number
 }
 
 /** A task's declared phases (its plan.json), cleaned, and the plan file's mtime: the card's order
@@ -74,8 +102,12 @@ declare module 'claude-code' {
       notified: string[]
       /** True once the first tick ran: ends seen before it are not announced. */
       primed: boolean
-      /** `<task>/<phase>` keys of the phase rows the person expanded. */
+      /** Tasks whose card the person expanded (0.3.x stored `<task>/<phase>` keys: they match no card). */
       expanded: string[]
+      /** Cards moved to History by the person, oldest first; mirrored to $.store under `history`. */
+      history: OcliHistory[]
+      /** Whether the History card is open. */
+      historyOpen: boolean
       /** Declared phases, one entry per task, from `<live dir>/<task>/plan.json`. */
       plans: OcliPlan[]
       /** The newest checkpoint, its file's mtime and the project root it was read under; null when none. */

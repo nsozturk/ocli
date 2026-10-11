@@ -8,6 +8,14 @@ named `ocli`. It reads the normalized live files `orchestra/live/<task>/<runId>.
 [`docs/LIVE-EVENTS.md`](../docs/LIVE-EVENTS.md)). It never reads `*.raw.jsonl`, never writes to the
 live dir, and never spawns or owns a CLI process.
 
+## Changes
+
+- **0.4.0** — The card's head is the toggle: it opens the card in place, with one block per run
+  saying what the run was asked (`run.start.brief`, new and optional in the live contract), where it
+  works, what it is doing and how it ended; the closed card keeps one line per phase. Cards are
+  spaced apart. Finished cards get an `×` and a `Move completed to history` button that move them to
+  a History card (never automatically), kept across sessions. Phase rows are no longer pressable.
+
 ## Requirements
 
 Claude Code ≥ 2.1.292 (mods need ≥ 2.1.287 in the terminal, ≥ 2.1.286 in the Desktop app) and
@@ -55,8 +63,8 @@ right away, and narrower ones keep it waiting until you run `/ocli`.
   and this session's subagent list (`$.agent.list`).
   Each file only when its resolved `realPath` lies under the resolved dir it was listed from; symlinks
   are skipped and a path that moves during the read is dropped.
-- **Never** uses the network, writes anything outside its own `$.state` (and the clipboard, on a
-  `Copy` press), or submits a prompt on its own (`$.prompt.submit` runs only on a `Queue resume` press, with fixed text).
+- **Never** uses the network, writes anything outside its own `$.state` and `$.store` (the History
+  list only; and the clipboard, on a `Copy` press), or submits a prompt on its own (`$.prompt.submit` runs only on a `Queue resume` press, with fixed text).
 
 The project root is `$.session.root`; on some builds `$.session.root` is unavailable, and the plugin
 falls back to the session cwd. The bundled scripts live in `lib/`, not `bin/`, so the plugin adds
@@ -69,31 +77,62 @@ modelled on Claude Code's Workflow progress card:
 
 ```
 ╭──────────────────────────────────────────────╮
-│ slice-046-cards                        4m12s │   task, total time (first start → last end, or now)
-│ ocli · Running                               │   Running > Blocked > Failed > Stale > Completed
+│ ▸ fix-parser                         4m12s × │   ▸/▾ opens it in place; total time; × once ended
+│ ocli · Completed                             │   Running > Blocked > Failed > Stale > Completed
 │ 4 runs · 131k tokens                         │   input + output summed; ? while none reported
-│ Slice 046 cards                              │   the newest run's title
+│ Fix the tokenizer edge cases                 │   the newest run's title
 │ Phases                                       │
-│ ▸ implement ●●● gpt-6-astra, glm-5.3     2/3 │   one dot per run, ended/total, the LLMs
-│   ↳ tool.end bash: npm test                  │   a running run's latest event, always shown
-│ ▸ review ● glm-5.3                       1/1 │
+│   implement ●●● glm-5.3, gpt-6-astra     3/3 │   one dot per run, ended/total, the LLMs
+│   review ● muse-spark-1.3-contributor    1/1 │
 ╰──────────────────────────────────────────────╯
 ```
 
 The border and the status word take the task's colour; each dot its run's: running `suggestion`,
 completed `success`, blocked or stale `warning`, failed / spawn-error / dispatch-error / any unknown
-status `error`. Pressing a phase row (`▸`, a click or Enter under the focus) expands it (`▾`) to its
-runs, each with its own lines: status glyph (`●` running, `◌` stale, `✓` completed, `⊘` blocked,
-`✗` failed-like), the LLM and CLI, elapsed time, tool count, tokens `in/out`, the role; then the
-title and worktree, then the latest event. What is expanded is kept in `$.state`, so a reload keeps
-it. A press acts on what is drawn: a `▸` row opens, a `▾` row closes. A phase with more runs than
-the row has room for shows its newest dots and `+K` for the rest; a long phase name is cut before
-the dots and the LLM names are. Every surface's element table has `Button` (terminal, desktop, mobile, vscode), so the rows can
-be pressed everywhere; a surface that could not press them would draw them collapsed.
+status `error`. Each card has a blank row under it. A phase row is one line: its runs' dots, the
+cache ratio and LLM names, ended/total, `⚠N` for runs whose claims are unwitnessed and `⟳N` (in
+`warning`) for runs that may be looping. A phase with more runs than the row has room for shows its
+newest dots and `+K` for the rest; a long phase name is cut before the dots and the LLM names are.
 
-Cards are never cut in the middle. A card that does not fit the pane closes its phases one at a
-time, the one expanded first closing first, so the latest press stays open. If it is too tall even
-closed (many phases, many running runs), it is drawn as its header:
+Pressing the card's head (`▸ <task>`, a click or Enter under the focus) opens the card in place
+(`▾`); pressing it again closes it. Open, each phase row is followed by one block per run:
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ ▾ fix-parser                                       2m10s │
+│ ocli · Running                                           │
+│ 2 runs · 131k tokens                                     │
+│ Phases                                                   │
+│   implement ●● gpt-6-astra, glm-5.3                  1/2 │
+│   ✓ completed · gpt-6-astra (codex) · reason · 1m02s     │   one block per run, under its phase
+│     Slice RK0 · Tokenizer tests · Add the missing edge…  │   the brief: what the run was asked
+│     end: completed · exit 0 · score 1 · verify passed    │   how it ended
+│   ● running · glm-5.3 (opencode) · implement · 2m10s     │
+│     slice RK1 · worktree ../wt-rk1 · Catalogue adapter · │   --brief, else --suffix + heading + paragraph
+│     Write the catalogue adapter for the GLM route.       │
+│     in /work/wt-rk1 · parent 3f2a9c                      │   where it works, what it continues
+│     12 tools · tokens in 120k · out 4k · cached 98k      │
+│     ▁▂▃▅█ ↳ tool.start bash: npm test                    │   what it is doing now
+│     ✓ edit: src/adapter.ts                               │   its last tool calls (✓ ok, ✗ failed)
+│     says: Writing the adapter now.                       │   its latest message
+╰──────────────────────────────────────────────────────────╯
+```
+
+Each block: the status glyph and word (`●` running, `◌` stale, `✓` completed, `⊘` blocked, `✗`
+failed-like), the LLM and CLI, the role and elapsed time; the brief (`run.start.brief`: `--brief`,
+else derived from the `--suffix` and the prompt's first heading and paragraph; the title for an older
+dispatcher), up to three lines; the whole workspace path and the parent node; tools, warnings and
+tokens; while running, the live line; the last five tool calls; the latest message, up to two lines;
+the last three warnings; unwitnessed claims; once ended, exit code, score and the `--verify` verdict.
+Every field is cleaned at ingest and cut to the pane's width. What is open is kept in `$.state`, so
+a reload keeps it. A press acts on what is drawn: a `▸` head opens, a `▾` head closes. Every
+surface's element table has `Button` (terminal, desktop, mobile, vscode), so heads can be pressed
+everywhere.
+
+Cards are never cut in the middle. An open card that does not fit is drawn in a compact form (one
+brief and message line, no tool calls or warnings), then closed; when two open cards do not both
+fit, the one opened first closes first, so the latest press stays open. If a card is too tall even
+closed (many phases), it is drawn as its header:
 
 ```
 ╭──────────────────────────────────────────────╮
@@ -109,6 +148,20 @@ their turn; what was left out is summed in one `+N more tasks · subagents hidde
 Below the task cards, "Claude subagents" is a card of its own, filled from `$.agent.list()` (this
 session's subagents and teammates; workflow agents are not listed). The footer shows how many dirs
 are watched, the last tick time and the error count.
+
+### History
+
+A card whose runs have all ended (`Completed`, `Failed` or `Blocked`) has an `×` on its head;
+pressing it moves the card to the **History** card at the bottom of the pane, closed by default
+(`▸ History  N`). Open, it lists the moved cards newest first (task, status, runs, tokens, span and
+when it was moved), each with a `restore` button that puts it back. `Move completed to history`, at
+the top of the pane while any card qualifies, moves every such card at once. Nothing is ever moved
+automatically: a finished card stays until you press. A running or stale card has no `×`, and the
+runs are read again at the press, so a card whose task started running meanwhile is not moved. A
+moved card comes back on its own when one of its runs has a newer event (a new run of the task).
+History is a snapshot per task in `$.state`, mirrored to `$.store` (the plugin's own JSON file under
+the Claude Code configuration dir), so it outlives the session; at most 100 entries, each checked
+and cleaned when read back.
 
 ### Phases: `--phase`
 
@@ -149,7 +202,7 @@ exclusively, so a link planted in the live dir is refused, never written through
 
 The dispatcher checks a CLI's closing claims against its own event trace (`dispatcher/witness.mjs`)
 and puts the finding codes on `run.end` as `witness: {findings: [...]}`; the text stays in the tree
-node. An expanded run with findings gets a last line in `warning`, e.g.
+node. A run with findings gets a line in `warning` in the open card, above its end line, e.g.
 `⚠ unwitnessed: claimedTestsButNone, staleGreen`, and its phase row says `⚠N` for the N such runs.
 Codes are cleaned and capped (10, 40 characters each); any other shape of `witness` is ignored. A
 finding is a hint for the review, never a status: it changes no score, colour or count.
@@ -197,11 +250,12 @@ A `blocked` run tries `$.ui.notify` first and falls back to a toast. On the 2.1.
 that were already there at the first tick are not announced, and a reload never repeats an
 announcement (the record of announced runs lives in `$.state`).
 
-A running run's live line leads with a heartbeat: a 10-cell event-rate sparkline (30 s bins, oldest
-left), plus `xN` on the repeated call's own row once one call has repeated three times. Eight
-identical calls (a `tool.start`, or a `tool.end` with no start open) with no successful matching end
-mark the run as looping: its live line turns `warning` and one "may be looping" toast is shown, kept
-in `$.state` so a reload does not repeat it. Nothing acts on the run.
+In the open card, a running run's live line leads with a heartbeat: a 10-cell event-rate sparkline
+(30 s bins, oldest left), plus `xN` on the repeated call's own row once one call has repeated three
+times. Eight identical calls (a `tool.start`, or a `tool.end` with no start open) with no successful
+matching end mark the run as looping: its live line turns `warning`, its phase row says `⟳N`, and one
+"may be looping" toast is shown, kept in `$.state` so a reload does not repeat it. Nothing acts on
+the run.
 
 ## /ocli-digest
 
