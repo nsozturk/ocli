@@ -1,7 +1,7 @@
 import { test, expect, describe } from 'claude-code/testing'
 
 import { AGY, CODEX, GLM_LIVE, MUSE, OPENCODE } from './fixtures'
-import { card, cardVariants, checkpointCard, checkpointDrift, clean, colorOf, displayStatus, fitCards, foldPlan, HEADER_HEIGHT, latestAt, parseCheckpoint, parseLines, resumePrompt, phasesOf, reduce, runLine, runLines, taskSpan, taskStatus, tokensOf } from './reduce'
+import { card, cardVariants, cells, checkpointCard, checkpointDrift, clean, colorOf, displayStatus, fitCards, foldPlan, HEADER_HEIGHT, isLooping, latestAt, parseCheckpoint, parseLines, resumePrompt, phasesOf, reduce, runLine, runLines, sparkline, taskSpan, taskStatus, tokensOf } from './reduce'
 import type { Card } from './reduce'
 import type { OcliRun } from '../types'
 
@@ -152,7 +152,8 @@ test('a run says which LLM has it, which slice it is and where it works', () => 
   expect(head).toContain('glm-5.3 (opencode)')
   expect(head).toContain('implement')
   expect(what).toBe('  Slice 045 pane · repo-ocli-pane')
-  expect(last).toBe('  ↳ tool.end bash: npm test')
+  // Running: the sparkline leads the live line, both events in its newest cell.
+  expect(last).toBe(`  ${' '.repeat(9)}█ ↳ tool.end bash: npm test`)
   for (const line of runLines(run, run.lastAt!, 20)) expect([...line].length).toBeLessThanOrEqual(20)
 })
 
@@ -242,7 +243,8 @@ test('a card: header, status, runs and tokens, description, phases with dots, do
   if (impl.kind !== 'phase') throw new Error('not a phase row')
   expect(impl.dots).toEqual(['success', 'suggestion', 'error'])
   expect(impl.open).toBe('t/implement')
-  expect(lines[6]!.trimEnd()).toBe('  ↳ tool.end bash: npm test')
+  // The one beat (BASE's run.start at T0, 60 s before NOW_C) is in the third-newest cell.
+  expect(lines[6]!.trimEnd()).toBe(`  ${' '.repeat(7)}█   ↳ tool.end bash: npm test`)
   expect(lines[7]).toMatch(/^▸ review ● glm-5.3 +1\/1$/)
   expect(lines.length).toBe(8)
 })
@@ -629,4 +631,143 @@ test('next action: ## or ### headings, "Next exact action" and "Next actions"; t
 test('the resume prompt refuses a project root that clean() would change', () => {
   for (const root of ['/a  b', '/a\tb', '/a\nb', '/a ', `/${'x'.repeat(400)}`]) expect(resumePrompt(root, CP_NAME)).toBeNull()
   expect(resumePrompt('/a b', CP_NAME)).toBe(`Read /a b/checkpoints/${CP_NAME} first, then git status, then continue from the first phase that is not done.`)
+})
+
+// --- heartbeat sparkline and loop detector ----------------------------------------------------
+const NOW_H = T0 + 600_000
+
+test('sparkline: ten 30 s cells, oldest left; an event on a bin edge belongs to the older cell', () => {
+  expect(sparkline([NOW_H], NOW_H)).toBe(`${' '.repeat(9)}█`)
+  expect(sparkline([NOW_H - 29_999], NOW_H)).toBe(`${' '.repeat(9)}█`)
+  expect(sparkline([NOW_H - 30_000], NOW_H)).toBe(`${' '.repeat(8)}█ `)
+  expect(sparkline([NOW_H - 270_000], NOW_H)).toBe(`█${' '.repeat(9)}`)
+  expect(sparkline([NOW_H - 299_999], NOW_H)).toBe(`█${' '.repeat(9)}`)
+  // Each cell relative to the busiest; a non-empty cell is at least ▁, an empty one a space.
+  const beats = [...Array(8).fill(NOW_H), NOW_H - 30_000, ...Array(4).fill(NOW_H - 60_000)]
+  expect(sparkline(beats, NOW_H)).toBe(`${' '.repeat(7)}▄▁█`)
+  expect(sparkline([NOW_H - 1000], NOW_H, 3, 1000)).toBe(' █ ')
+})
+
+test('sparkline: events older than the window, or dated after now, are not counted; none is a flat line', () => {
+  expect(sparkline([], NOW_H)).toBe('▁'.repeat(10))
+  expect(sparkline([NOW_H - 300_000, NOW_H - 400_000, NOW_H + 1], NOW_H)).toBe('▁'.repeat(10))
+  expect(sparkline([NOW_H - 300_000, NOW_H - 1], NOW_H)).toBe(`${' '.repeat(9)}█`)
+  expect(sparkline([NOW_H, NOW_H + 1, NOW_H + 40_000], NOW_H)).toBe(`${' '.repeat(9)}█`)
+})
+
+const tstart = (seq: number, detail = 'npm test', tool = 'bash') => ev(seq, 'tool.start', { tool, detail })
+const tend = (seq: number, ok: boolean | null, detail = 'npm test', tool = 'bash') => ev(seq, 'tool.end', { tool, detail, ok })
+const EIGHT = [ev(0, 'run.start'), ...Array.from({ length: 8 }, (_, i) => tstart(i + 1))]
+
+test('streak: an identical tool.start counts up, a different one starts over', () => {
+  expect(fold(EIGHT.slice(0, 4))[0]!.streak).toEqual({ sig: 'bash: npm test', n: 3, okSince: false, open: true })
+  expect(fold([...EIGHT.slice(0, 4), tstart(4, 'npm run build')])[0]!.streak).toEqual({ sig: 'bash: npm run build', n: 1, okSince: false, open: true })
+  expect(fold([...EIGHT.slice(0, 4), tstart(4, 'npm test', 'shell')])[0]!.streak).toEqual({ sig: 'shell: npm test', n: 1, okSince: false, open: true })
+  // Other events between the starts do not break it: a loop prints and fails in between.
+  expect(fold([...EIGHT.slice(0, 3), tend(3, false), ev(4, 'message', { text: 'retrying' }), tstart(5)])[0]!.streak!.n).toBe(3)
+  // The whole detail counts, not a prefix: agy's details are JSON under a deep worktree path, so three
+  // different commands (a real trace, names scrubbed) share their first 80 code points.
+  const root = '/home/user/Development/Fun/projects/myapp-obstruction-native-opencode'
+  const agy = [`${root}/modules/myapp-obstruction`, `${root}/modules/myapp-obstruction/ios`, `${root}/scripts/models/fetch-face-parsing.sh`]
+    .map((path, i) => tstart(i + 1, JSON.stringify({ CommandLine: `ls -la ${path}` }), 'run_command'))
+  expect(fold([ev(0, 'run.start'), ...agy])[0]!.streak).toEqual({ sig: `run_command: {"CommandLine":"ls -la ${root}/scripts/models/fetch-face-parsing.sh"}`, n: 1, okSince: false, open: true })
+  const long = 'x'.repeat(80)
+  expect(fold([ev(0, 'run.start'), tstart(1, `${long}a`), tstart(2, `${long}b`)])[0]!.streak!.n).toBe(1)
+})
+
+test('isLooping: eight identical tool.starts with no ok end, not seven; an ok matching end clears it until a new streak', () => {
+  expect(isLooping(fold(EIGHT)[0]!)).toBe(true)
+  expect(isLooping(fold(EIGHT.slice(0, 8))[0]!)).toBe(false)
+  // A failed end, an ok:null end and an ok end of another command do not clear it.
+  expect(isLooping(fold([...EIGHT, tend(9, false)])[0]!)).toBe(true)
+  expect(isLooping(fold([...EIGHT, tend(9, null)])[0]!)).toBe(true)
+  expect(isLooping(fold([...EIGHT, tend(9, true, 'npm run x')])[0]!)).toBe(true)
+  const ok = fold([...EIGHT, tend(9, true)])[0]!
+  expect(ok.streak).toEqual({ sig: 'bash: npm test', n: 8, okSince: true, open: false })
+  expect(isLooping(ok)).toBe(false)
+  // After a success the same command starts a new streak: it can warn again only after eight more.
+  const again = [...EIGHT, tend(9, true), ...Array.from({ length: 8 }, (_, i) => tstart(10 + i))]
+  expect(fold(again.slice(0, 11))[0]!.streak).toEqual({ sig: 'bash: npm test', n: 1, okSince: false, open: true })
+  expect(isLooping(fold(again.slice(0, 17))[0]!)).toBe(false)
+  expect(isLooping(fold(again)[0]!)).toBe(true)
+  expect(isLooping(mk('old'))).toBe(false)
+})
+
+test('beats: every timed event, newest last, at most 200; never mutating the runs passed in; dropped at run.end', () => {
+  const lines = [ev(0, 'run.start'), ...Array.from({ length: 250 }, (_, i) => ev(i + 1, 'step', { label: 'x' }))]
+  const run = fold(lines)[0]!
+  expect(run.beats!.length).toBe(200)
+  expect(run.beats![0]).toBe(Date.UTC(2026, 9, 10, 12, 0, 51))
+  expect(run.beats!.at(-1)).toBe(Date.UTC(2026, 9, 10, 12, 0, 250))
+  const untimed = JSON.stringify({ v: 1, runId: 'r1', seq: 1, at: 'never', task: 't', role: 'implement', cli: 'codex', kind: 'step', label: 'y' })
+  expect(fold([ev(0, 'run.start'), untimed])[0]!.beats).toEqual([Date.UTC(2026, 9, 10, 12, 0, 0)])
+  const before = fold(EIGHT.slice(0, 3))
+  const kept = structuredClone(before)
+  reduce(before, parseLines(file(EIGHT.slice(3))))
+  expect(before).toEqual(kept)
+  const ended = fold([...EIGHT, ev(9, 'run.end', { status: 'completed', exitCode: 0 })])[0]!
+  expect(ended.beats).toBeUndefined()
+  expect(ended.streak).toBeUndefined()
+})
+
+const liveRow = (c: Card) => c.rows.find(row => row.key.startsWith('live:'))
+const looping = (n: number, okSince = false, over: Partial<OcliRun> = {}) =>
+  mk('r', { phase: 'implement', status: 'running', lastAt: NOW_H - 1000, beats: [NOW_H - 1000], streak: { sig: 'bash: npm test', n, okSince }, lastSummary: 'tool.start bash: npm test', ...over })
+
+test('the live row: sparkline, summary, ×n from three repeats, warning colour only while looping; ended runs draw no sparkline', () => {
+  const at = (run: OcliRun) => liveRow(card('t', [run], NOW_H, 60, () => false))
+  const spark = `${' '.repeat(9)}█`
+  expect(at(looping(2))).toEqual({ kind: 'text', key: 'live:t/r', text: `  ${spark} ↳ tool.start bash: npm test` })
+  expect(at(looping(3))).toEqual({ kind: 'text', key: 'live:t/r', text: `  ${spark} ↳ tool.start bash: npm test ×3` })
+  expect(at(looping(8))).toEqual({ kind: 'text', key: 'live:t/r', text: `  ${spark} ↳ tool.start bash: npm test ×8`, color: 'warning' })
+  expect(at(looping(8, true))!).not.toHaveProperty('color')
+  // A long summary is cut, never the repeat count.
+  const long = at(looping(12, false, { lastSummary: `tool.start bash: ${'y'.repeat(200)}`, streak: { sig: `bash: ${'y'.repeat(200)}`, n: 12, okSince: false } })) as { text: string }
+  expect(cells(long.text)).toBe(60)
+  expect(long.text.endsWith('… ×12')).toBe(true)
+  // Expanded: the ↳ line carries the same, in warning colour; an ended run's carries no sparkline.
+  const open = card('t', [looping(8, false, { title: 'S', where: 'wt' })], NOW_H, 60, () => true)
+  const live = open.rows.find(row => row.kind === 'text' && row.text.includes('↳'))!
+  expect(live).toMatchObject({ text: `    ${spark} ↳ tool.start bash: npm test ×8`, color: 'warning', isDim: false })
+  const ended = runLines(looping(8, false, { status: 'failed', endedAt: NOW_H, lastSummary: 'end failed exit 1' }), NOW_H, 60)
+  expect(ended.at(-1)).toBe('  ↳ end failed exit 1')
+  expect(texts(open).every(line => cells(line) <= 60)).toBe(true)
+})
+
+test('a run kept in $.state by an older version (no beats, no streak) still draws, with a flat sparkline', () => {
+  const old = { ...looping(0) } as Record<string, unknown>
+  delete old.beats; delete old.streak
+  const row = liveRow(card('t', [old as OcliRun], NOW_H, 60, () => false))
+  expect(row).toEqual({ kind: 'text', key: 'live:t/r', text: `  ${'▁'.repeat(10)} ↳ tool.start bash: npm test` })
+  expect(runLines(old as OcliRun, NOW_H, 60).at(-1)).toBe(`  ${'▁'.repeat(10)} ↳ tool.start bash: npm test`)
+})
+
+test('streak on CLIs with no tool.start (opencode, muse): a tool.end no start opened counts as the call', () => {
+  const ends = (oks: (boolean | null)[]) => [ev(0, 'run.start'), ...oks.map((ok, i) => tend(i + 1, ok))]
+  expect(fold(ends(Array(7).fill(false)))[0]!.streak).toEqual({ sig: 'bash: npm test', n: 7, okSince: false, open: false })
+  expect(isLooping(fold(ends(Array(7).fill(false)))[0]!)).toBe(false)
+  expect(isLooping(fold(ends(Array(8).fill(false)))[0]!)).toBe(true)
+  // An ok end is a success: not looping, and the next failure starts over.
+  expect(isLooping(fold(ends([...Array(7).fill(false), true]))[0]!)).toBe(false)
+  expect(fold(ends([...Array(8).fill(false), true, false]))[0]!.streak!.n).toBe(1)
+  // A different command starts over.
+  expect(fold([...ends(Array(5).fill(false)), tend(6, false, 'npm run build')])[0]!.streak!.n).toBe(1)
+  // A start/end pair is one call, not two: codex, eight failing pairs.
+  const pairs = [ev(0, 'run.start'), ...Array.from({ length: 8 }, (_, i) => [tstart(2 * i + 1), tend(2 * i + 2, false)]).flat()]
+  expect(fold(pairs.slice(0, 9))[0]!.streak!.n).toBe(4)
+  expect(isLooping(fold(pairs.slice(0, 15))[0]!)).toBe(false)
+  expect(isLooping(fold(pairs)[0]!)).toBe(true)
+  // A healthy run of the real fixtures, still running: no loop.
+  for (const lines of [OPENCODE, MUSE]) expect(isLooping(fold(lines.filter(l => !l.includes('"run.end"')))[0]!)).toBe(false)
+})
+
+test('×n stands only on the repeated call itself, and not once it succeeded', () => {
+  const live = (lines: string[]) => runLines(fold(lines)[0]!, NOW_H, 120).find(l => l.includes('↳'))!
+  const five = [ev(0, 'run.start'), ...Array.from({ length: 5 }, (_, i) => tstart(i + 1))]
+  expect(live(five)).toMatch(/↳ tool\.start bash: npm test ×5$/)
+  expect(live([...five, tend(6, false)])).toMatch(/↳ tool\.end bash: npm test \(failed\) ×5$/)
+  expect(live([...five, ev(6, 'message', { text: 'thinking about something else' })])).toMatch(/↳ message: thinking about something else$/)
+  expect(live([...five, tend(6, true)])).toMatch(/↳ tool\.end bash: npm test$/)
+  // A different command whose detail starts with the repeated one's.
+  expect(live([...five, tend(6, false, 'npm test --watch')])).not.toMatch(/×/)
 })

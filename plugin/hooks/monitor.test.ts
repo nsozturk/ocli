@@ -3,7 +3,8 @@ import { test, expect } from 'claude-code/testing'
 import { GLM_LIVE } from './fixtures'
 import { harness, NOW, OPTIONS, PANE_PROPS, ROOT, runLines } from './harness'
 import { digestScript } from './register'
-import { parseLines, reduce } from './reduce'
+import { cells, parseLines, reduce } from './reduce'
+import type { OcliRun } from '../types'
 
 const START = { kind: 'run.start', model: 'gpt-5.6-luna' }
 const end = (status: unknown) => ({ kind: 'run.end', exitCode: status === 'completed' ? 0 : 1, signal: null, ms: 5000, status, nodeId: null, score: null, dropped: {} })
@@ -490,7 +491,8 @@ test('a task is one round card: header, status, runs and tokens, title, phases w
     expect(rows[1]).toMatch(/^task-p +2m06s$/)
     expect(rows.slice(2, 6)).toEqual(['ocli · Running', '4 runs · 1k tokens', 'Slice 046 cards', 'Phases'])
     expect(rows[6]).toMatch(/^▸ implement ●● gpt-6-astra, glm-5\.3 +1\/2$/)
-    expect(rows[7]).toBe('  ↳ tool.end bash: npm test')
+    // The sparkline: both events (NOW - 60 s, NOW - 59 s) in the third-newest 30 s cell at NOW + 6 s.
+    expect(rows[7]).toBe(`  ${' '.repeat(7)}█   ↳ tool.end bash: npm test`)
     expect(rows[8]).toMatch(/^▸ review ● glm-5\.3 +1\/1$/)
     expect(rows[9]).toMatch(/^▸ reason ● gpt-5\.6-luna +1\/1$/)
     expect(rows.length).toBe(11)
@@ -1245,4 +1247,131 @@ test('/ocli-digest says when the digest was cut, by the runtime or by the pane, 
   h.proc.result = { exitCode: 0, stdout: DIGEST, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
   await runDigest($ as never)
   expect(await drawn()).not.toContain('… cut')
+})
+
+// --- heartbeat sparkline and loop detector -----------------------------------------------------
+
+const TEST_START = { kind: 'tool.start', tool: 'bash', detail: 'npm test' }
+const LOOP_TOAST = 'ocli: task-a/implement codex may be looping (8× bash: npm test)'
+/** r1: run.start then `n` identical tool.starts and a failed end, from 30 s before NOW. */
+const loopLines = (n: number) => runLines('r1', [START, ...Array(n).fill(TEST_START), { kind: 'tool.end', tool: 'bash', detail: 'npm test', ok: false }], NOW - 30_000)
+/** Each drawn Text whose text has the live arrow, with its colour. */
+const liveTexts = (node: El | string): El[] => typeof node === 'string' ? []
+  : [...(node.type === 'Text' && flat(node).includes('↳') ? [node] : []), ...(node.children ?? []).flatMap(liveTexts)]
+
+test('eight identical tool.starts with no ok end: one "may be looping" toast, never again across ticks or a re-read', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  const looping = () => h.calls.toast.filter(t => t.includes('may be looping'))
+  const path = `${ROOT}/task-a/r1.jsonl`
+  // Append-only, as dispatch.mjs writes it: seven starts, then the eighth and a failed end.
+  h.put(path, loopLines(7).slice(0, -1))
+  await h.start($)
+  await h.tick()
+  await h.tick()
+  expect(looping()).toEqual([])
+  h.put(path, loopLines(8))
+  await h.tick()
+  expect(looping()).toEqual([LOOP_TOAST])
+  await h.tick()
+  await h.tick()
+  // A fresh module re-reads every file (a changed mtime forces it here): the seq dedupe and the kept key hold.
+  h.fs.get(path)!.mtimeMs = h.clock.now()
+  await h.tick()
+  expect(h.calls.read.filter(p => p === path).length).toBe(3)
+  expect(looping()).toEqual([LOOP_TOAST])
+  expect(h.calls.toast).toEqual([LOOP_TOAST])
+})
+
+test('a reload ($.state kept, fresh module): a loop already announced is not announced again; one not yet is', OPTIONS, async ($, on) => {
+  const lines = loopLines(8)
+  const notified = ['loop/task-a/r1']
+  on('state.get', async ($, e, next) => {
+    const got = await next(e)
+    const key = (e as { key: string }).key
+    const kept: Record<string, unknown> = { runs: reduce([], parseLines(lines.join('\n') + '\n')), notified, primed: true }
+    return (got as { value: { version: number } }).value.version === 0 && key in kept ? { value: { value: kept[key], version: 0 } } : got
+  })
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, lines)
+  await h.start($)
+  await h.tick()
+  await h.tick()
+  expect(h.calls.toast).toEqual([])
+  h.put(`${ROOT}/task-b/r2.jsonl`, runLines('r2', [START, ...Array(8).fill(TEST_START)], NOW - 30_000, { task: 'task-b' }))
+  await h.tick()
+  expect(h.calls.toast).toEqual(['ocli: task-b/implement codex may be looping (8× bash: npm test)'])
+})
+
+test('a loop toast counts against the three toasts a tick may show, and waits for the next tick', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  await h.start($)
+  await h.tick()
+  for (const id of ['e1', 'e2', 'e3']) h.put(`${ROOT}/task-e/${id}.jsonl`, runLines(id, [START, end('completed')], NOW, { task: 'task-e' }))
+  h.put(`${ROOT}/task-a/r1.jsonl`, loopLines(8))
+  await h.tick()
+  expect(h.calls.toast.length).toBe(3)
+  expect(h.calls.toast.some(t => t.includes('may be looping'))).toBe(false)
+  await h.tick()
+  expect(h.calls.toast.slice(3)).toEqual([LOOP_TOAST])
+  await h.tick()
+  expect(h.calls.toast.length).toBe(4)
+})
+
+test('a looping run silent for over 10 minutes is stale, not running: no loop toast', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [START, ...Array(8).fill(TEST_START)], NOW - 11 * 60_000))
+  await h.start($)
+  await h.tick()
+  await h.tick()
+  expect(h.calls.toast).toEqual([])
+})
+
+test('the live row: a sparkline, ×n and the warning colour while looping, within bodyColumns on terminal AND desktop', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, loopLines(8))
+  h.put(`${ROOT}/task-a/r2.jsonl`, runLines('r2', [{ ...START, title: 'x'.repeat(300) }, { kind: 'tool.start', tool: 'bash', detail: 'y'.repeat(300) }], NOW - 30_000, { task: 'task-a', phase: 'review' }))
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const live = liveTexts(await ui.drawn())
+    await ui.unmount()
+    const loop = live.find(n => flat(n).endsWith('×8'))!
+    expect(flat(loop)).toMatch(/^ {2}[ ▁-█]{10} ↳ tool\.end bash: npm test \(failed\) ×8$/)
+    expect(loop.props?.color).toBe('warning')
+    expect(live.filter(n => n.props?.color === 'warning').length).toBe(1)
+    const open = await expanded($, surface, ['task-a/implement', 'task-a/review'], 60)
+    for (const rows of [await paneText($, surface), open]) {
+      for (const row of rows) expect(cells(row)).toBeLessThanOrEqual(PANE_PROPS.bodyColumns)
+    }
+    expect(open.filter(t => /[▁-█] ↳ tool\.end bash: npm test \(failed\) ×8$/.test(t)).length).toBe(1)
+  }
+})
+
+test('a task dir named "loop:<task>" cannot silence a loop toast: loop keys cannot equal an end key', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  // Ended before the first tick: its end key (`loop:task-a/r1`) is kept at once.
+  h.put(`${ROOT}/loop:task-a/r1.jsonl`, runLines('r1', [START, end('completed')], NOW, { task: 'loop:task-a' }))
+  await h.start($)
+  await h.tick()
+  h.put(`${ROOT}/task-a/r1.jsonl`, loopLines(8))
+  await h.tick()
+  expect(h.calls.toast).toEqual([LOOP_TOAST])
+})
+
+test('a run silent past the stale cutoff (a killed CLI, no run.end) leaves its beats out of $.state', OPTIONS, async ($, on) => {
+  const kept: { runs?: OcliRun[] } = {}
+  on('state.set', async ($, e, next) => {
+    if ((e as { key: string }).key === 'runs') kept.runs = (e as { value: OcliRun[] }).value
+    return next(e)
+  })
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [START, ...Array.from({ length: 300 }, (_, i) => ({ kind: 'tool.start', tool: 'bash', detail: `step ${i}` }))], NOW - 400_000))
+  await h.start($)
+  await h.tick()
+  expect(kept.runs?.[0]?.beats?.length).toBe(200)
+  await h.clock.advance(11 * 60_000)
+  expect(kept.runs?.[0]?.beats).toBeUndefined()
+  expect(kept.runs?.[0]?.streak).toBeDefined()
+  expect(JSON.stringify(kept.runs).length).toBeLessThan(1000)
 })

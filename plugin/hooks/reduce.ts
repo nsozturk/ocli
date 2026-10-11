@@ -153,6 +153,18 @@ const blank = (e: OcliEvent): OcliRun => ({
   tokens: { input: null, output: null }, exitCode: null, score: null, ms: null, dropped: 0, lastSeq: -1,
 })
 
+const MAX_BEATS = 200
+const LOOP_AT = 8
+
+/** What a tool call is, for the repeat streak: the tool and its whole detail (capped at ingest). A
+ * prefix would merge different commands under one long wrapper or worktree path. */
+const sigOf = (e: OcliEvent): string => `${e.tool ?? ''}: ${e.detail ?? ''}`
+
+type Streak = NonNullable<OcliRun['streak']>
+/** One more call of `sig`. After a success the same command starts over: only a run of failures since then is a loop. */
+const repeat = (streak: Streak | undefined, sig: string): Streak =>
+  streak?.sig === sig && !streak.okSince ? { ...streak, n: streak.n + 1 } : { sig, n: 1, okSince: false }
+
 /** A run's identity: its live file, `<task>/<runId>.jsonl`. Neither part can hold a `/`. */
 export const runKey = (run: { task: string; runId: string }): string => `${run.task}/${run.runId}`
 
@@ -163,7 +175,10 @@ export function reduce(runs: readonly OcliRun[], events: readonly OcliEvent[]): 
     const prev = byId.get(runKey(e)) ?? blank(e)
     if (e.seq <= prev.lastSeq) continue
     const run: OcliRun = { ...prev, tokens: { ...prev.tokens }, lastSeq: e.seq }
-    if (e.at !== null) run.lastAt = Math.max(run.lastAt ?? e.at, e.at)
+    if (e.at !== null) {
+      run.lastAt = Math.max(run.lastAt ?? e.at, e.at)
+      run.beats = [...(prev.beats ?? []), e.at].slice(-MAX_BEATS)
+    }
     run.lastSummary = summary(e) ?? run.lastSummary
     if (e.kind === 'run.start') {
       run.model = e.model || null
@@ -171,12 +186,25 @@ export function reduce(runs: readonly OcliRun[], events: readonly OcliEvent[]): 
       run.where = (e.root ?? '').replace(/\/+$/, '').split('/').pop() ?? ''
       run.phase = e.phase ?? ''
       run.startedAt = e.at
-    } else if (e.kind === 'tool.end') run.toolCount += 1
-    else if (e.kind === 'warn') run.warnCount += 1
+    } else if (e.kind === 'tool.start') {
+      run.streak = { ...repeat(prev.streak, sigOf(e)), open: true }
+    } else if (e.kind === 'tool.end') {
+      run.toolCount += 1
+      const sig = sigOf(e)
+      // The end of the call a start opened closes it; the end of another call meanwhile leaves the
+      // open one be. With none open (opencode and muse emit no tool.start) the end is itself the call.
+      if (!prev.streak?.open) {
+        const call = repeat(prev.streak, sig)
+        run.streak = { ...call, okSince: e.ok === true, open: false }
+      } else if (prev.streak.sig === sig) run.streak = { ...prev.streak, okSince: e.ok === true, open: false }
+    } else if (e.kind === 'warn') run.warnCount += 1
     else if (e.kind === 'usage') run.tokens = { input: add(run.tokens.input, e.input), output: add(run.tokens.output, e.output) }
     else if (e.kind === 'run.end') {
       Object.assign(run, { status: e.status, endedAt: e.at, exitCode: e.exitCode, ms: e.ms, score: e.score, dropped: e.dropped })
       if (e.witness) run.witness = e.witness
+      // An ended run draws no sparkline: what only the live row reads leaves $.state with it.
+      delete run.beats
+      delete run.streak
     }
     byId.set(runKey(e), run)
   }
@@ -184,6 +212,36 @@ export function reduce(runs: readonly OcliRun[], events: readonly OcliEvent[]): 
 }
 
 export const isEnded = (s: OcliStatus): boolean => s !== 'running'
+
+/** Eight identical calls with no successful matching tool.end since: a CLI burning quota on
+ * one failing command. A run folded by an older version has no streak and is not looping. */
+export const isLooping = (run: OcliRun): boolean => (run.streak?.n ?? 0) >= LOOP_AT && !run.streak!.okSince
+
+const BARS = ' ▁▂▃▄▅▆▇█'
+
+/** Events per `binMs` bin over the last `cells` bins, oldest left, each as a bar relative to the
+ * busiest bin (an empty bin a space); no event in the window at all is a flat line. A bin's older
+ * edge belongs to it: an event exactly `binMs` ago is in the second-newest. Events dated after
+ * `now` are not counted. */
+export function sparkline(beats: readonly number[], now: number, cells = 10, binMs = 30_000): string {
+  const counts = new Array<number>(cells).fill(0)
+  for (const at of beats) {
+    const back = Math.floor((now - at) / binMs)
+    if (at <= now && back < cells) counts[cells - 1 - back]! += 1
+  }
+  const max = Math.max(...counts)
+  return max ? counts.map(n => BARS[Math.ceil((n / max) * 8)]).join('') : '▁'.repeat(cells)
+}
+
+/** The live line of a running run: its sparkline, its last summary and `×n` once that call has
+ * repeated three times; the count is kept when the summary is cut. */
+function liveLine(run: OcliRun, now: number, columns: number): string {
+  const s = run.streak
+  // Only on the repeated call's own row, and not once it succeeded.
+  const isOwn = !!s && !s.okSince && [`tool.start ${s.sig}`, `tool.end ${s.sig}`, `tool.end ${s.sig} (failed)`].includes(run.lastSummary)
+  const repeats = isOwn && s.n >= 3 ? ` ×${s.n}` : ''
+  return fit(`  ${sparkline(run.beats ?? [], now)} ↳ ${run.lastSummary}`, columns - cells(repeats)) + repeats
+}
 
 /** `stale` is never stored: a running run whose last event is older than 10 minutes, as of `now`. */
 export function displayStatus(run: OcliRun, now: number): OcliStatus | 'stale' {
@@ -249,7 +307,7 @@ export function runLines(run: OcliRun, now: number, columns: number): string[] {
   const lines = [runLine(run, now, columns)]
   const what = [run.title ?? '', run.where ?? ''].filter(Boolean).join(' · ')
   if (what) lines.push(fit(`  ${what}`, columns))
-  if (run.lastSummary) lines.push(fit(`  ↳ ${run.lastSummary}`, columns))
+  if (run.lastSummary) lines.push(isEnded(run.status) ? fit(`  ↳ ${run.lastSummary}`, columns) : liveLine(run, now, columns))
   // Last, so the card can colour it: claims its own trace does not back (orchestra/witness.mjs).
   if (run.witness?.length) lines.push(fit(`  ⚠ unwitnessed: ${run.witness.join(', ')}`, columns))
   return lines
@@ -396,11 +454,13 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
       if (isOpenNow) {
         const lines = runLines(run, now, columns - 2)
         const warnAt = run.witness?.length ? lines.length - 1 : -1
-        lines.forEach((text, j) => rows.push(j === warnAt
+        // runLines' ↳ line follows the head and, when there is one, the title/where line.
+        const loopAt = isLooping(run) && !isEnded(run.status) && run.lastSummary ? (run.title || run.where ? 2 : 1) : -1
+        lines.forEach((text, j) => rows.push(j === warnAt || j === loopAt
           ? { kind: 'text', key: `run:${runKey(run)}:${j}`, text: `  ${text}`, color: 'warning', isDim: false }
           : { kind: 'text', key: `run:${runKey(run)}:${j}`, text: `  ${text}`, color: j === 0 ? colorOf(shown[i]!) : undefined, isDim: j > 0 || isEnded(run.status) }))
       } else if (shown[i] === 'running' && run.lastSummary) {
-        rows.push({ kind: 'text', key: `live:${runKey(run)}`, text: fit(`  ↳ ${run.lastSummary}`, columns) })
+        rows.push({ kind: 'text', key: `live:${runKey(run)}`, text: liveLine(run, now, columns), ...(isLooping(run) ? { color: 'warning' } : {}) })
       }
     })
   }

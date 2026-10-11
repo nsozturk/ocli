@@ -4,7 +4,7 @@ import type { AgentInfo, EngineInterface, FsEntry, Register } from 'claude-code'
 import type { Checkpoint, OcliDir, OcliMeta, OcliPlan, OcliRun } from '../types'
 
 type OcliCheckpoint = Checkpoint & { mtimeMs: number; root: string }
-import { CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldPlan, HEADER_HEIGHT, isEnded, latestAt, parseCheckpoint, parseLines, reduce, resumePrompt, runKey } from './reduce'
+import { CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldPlan, HEADER_HEIGHT, isEnded, isLooping, latestAt, parseCheckpoint, parseLines, phaseOf, reduce, resumePrompt, runKey } from './reduce'
 import type { Card, OcliEvent, Row } from './reduce'
 
 const PANE = 'ocli'
@@ -33,6 +33,8 @@ const DATED = /^\d{4}-\d{2}-\d{2}/
 const runsAtom = atom({ plugin: 'ocli-monitor', key: 'runs' } as const, [] as OcliRun[])
 const metaAtom = atom({ plugin: 'ocli-monitor', key: 'meta' } as const, { dirs: [], lastTickAt: null, errors: 0, tooLarge: [], skipped: 0 } as OcliMeta)
 const notifiedAtom = atom({ plugin: 'ocli-monitor', key: 'notified' } as const, [] as string[])
+/** A run's "may be looping" key in notifiedAtom: `loop/` + its runKey has two `/`, an end key one. */
+const loopKey = (run: OcliRun): string => `loop/${runKey(run)}`
 const primedAtom = atom({ plugin: 'ocli-monitor', key: 'primed' } as const, false)
 const expandedAtom = atom({ plugin: 'ocli-monitor', key: 'expanded' } as const, [] as string[])
 // A list, not a record keyed by task: a task dir named `__proto__` must not reach a prototype
@@ -320,7 +322,11 @@ async function tick($: $) {
     const events = await scan($, now, meta, found)
     // Only the plans listed this tick stay: a deleted plan.json leaves the card.
     await update($, plansAtom, () => [...found.values()].filter(plan => plan !== null))
-    const runs = events.length ? await update($, runsAtom, list => reduce(list, events)) : await read($, runsAtom)
+    let runs = events.length ? await update($, runsAtom, list => reduce(list, events)) : await read($, runsAtom)
+    // A CLI killed before run.end leaves its run stale for good: its beats (already outside the
+    // 5-minute sparkline) leave $.state. The streak stays: it is small and still says what repeated.
+    const isDead = (run: OcliRun) => !!run.beats && displayStatus(run, now!) === 'stale'
+    if (runs.some(isDead)) runs = await update($, runsAtom, list => list.map(run => isDead(run) ? (({ beats: _, ...rest }) => rest)(run) : run))
 
     const notified = new Set(await read($, notifiedAtom))
     const fresh = runs.filter(run => isEnded(run.status) && !notified.has(runKey(run)))
@@ -332,6 +338,14 @@ async function tick($: $) {
       const order = [...fresh].sort((a, b) => Number(b.status === 'blocked') - Number(a.status === 'blocked'))
       for (const run of order.slice(0, MAX_TOASTS)) await announce($, run).catch(() => (meta.errors += 1))
       if (order.length > MAX_TOASTS) $.ui.toast(`ocli: +${order.length - MAX_TOASTS} more runs ended`)
+      // A loop warning shares the tick's toasts with the ends; one past them waits for the next tick,
+      // its key kept only once shown. A warning only: nothing here acts on the run.
+      const loops = runs.filter(run => isLooping(run) && displayStatus(run, now!) === 'running' && !notified.has(loopKey(run)))
+        .slice(0, Math.max(0, MAX_TOASTS - order.length))
+      if (loops.length) await update($, notifiedAtom, list => [...list, ...loops.map(loopKey)])
+      for (const run of loops) {
+        $.ui.toast(`ocli: ${run.task}/${phaseOf(run)} ${run.cli} may be looping (${run.streak!.n}× ${clean(run.streak!.sig, 60)})`)
+      }
     }
 
     // The session moved to another project (or lost its root): the old card goes now, and the new

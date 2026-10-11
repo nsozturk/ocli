@@ -170,6 +170,12 @@ A `blocked` run tries `$.ui.notify` first and falls back to a toast. On the 2.1.
 that were already there at the first tick are not announced, and a reload never repeats an
 announcement (the record of announced runs lives in `$.state`).
 
+A running run's live line leads with a heartbeat: a 10-cell event-rate sparkline (30 s bins, oldest
+left), plus `xN` on the repeated call's own row once one call has repeated three times. Eight
+identical calls (a `tool.start`, or a `tool.end` with no start open) with no successful matching end
+mark the run as looping: its live line turns `warning` and one "may be looping" toast is shown, kept
+in `$.state` so a reload does not repeat it. Nothing acts on the run.
+
 ## /ocli-digest
 
 Runs the plugin's own `node <plugin root>/../dispatcher/digest.mjs --root <project root>/orchestra` (20 s

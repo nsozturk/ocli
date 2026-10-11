@@ -31,6 +31,13 @@ export type OcliRun = {
   /** run.end's witness finding codes: claims the run's own trace does not back. Absent on a run
    * folded by an older version ($.state outlives a reload) and on a run.end without a witness. */
   witness?: string[]
+  /** Event times (ms), newest last, at most 200: the live row's sparkline. Dropped at run.end (an
+   * ended run draws none); absent on a run folded by an older version. */
+  beats?: number[]
+  /** The current run of identical tool calls (`<tool>: <detail>`), `n` long: a call is a tool.start,
+   * or a tool.end no start opened (opencode and muse emit no tool.start). `okSince` once a matching
+   * tool.end reported ok; `open` while a start awaits its end. Dropped at run.end; absent on older folds. */
+  streak?: { sig: string; n: number; okSince: boolean; open?: boolean }
   /** Highest `seq` folded in: the dedupe key with `runId`. */
   lastSeq: number
 }
@@ -58,7 +65,8 @@ declare module 'claude-code' {
     'ocli-monitor': {
       runs: OcliRun[]
       meta: OcliMeta
-      /** `<task>/<runId>` keys whose end was already announced (or was already ended at the first tick). */
+      /** `<task>/<runId>` keys whose end was already announced (or was already ended at the first tick),
+       * and `loop/<task>/<runId>` keys whose "may be looping" toast was shown (two `/`: never an end key). */
       notified: string[]
       /** True once the first tick ran: ends seen before it are not announced. */
       primed: boolean

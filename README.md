@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.0-8b5cf6" alt="Version 0.3.0">
+  <img src="https://img.shields.io/badge/version-0.3.1-8b5cf6" alt="Version 0.3.1">
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js 20+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/runtime%20deps-zero-0ea5e9" alt="Zero runtime dependencies">
@@ -53,6 +53,9 @@ What else it does:
 - **Night digest.** `/ocli-digest` (or `node dispatcher/digest.mjs`) summarizes the last 12 hours per
   task and phase: runs by status, scored passes against unscored runs, tokens, witness findings, and
   what needs a decision.
+- **Heartbeat and loop warning.** A running run's live line leads with a 10-cell event-rate sparkline
+  (30 s bins) and `xN` once one call repeats; eight identical calls with no success turn it
+  warning-coloured and raise one "may be looping" toast. Nothing acts on the run.
 - **Resume card** (optional). In a project that keeps dated checkpoint files, the first card shows the
   newest one's phase table, next action and resume command, with a `Queue resume` button.
 
