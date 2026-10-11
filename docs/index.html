@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ocli — live, workflow-style progress for headless coding CLIs in Claude Code</title>
-<meta name="description" content="ocli streams Codex, opencode, Antigravity agy and Muse runs into normalized live-event files and draws them as Workflow-style cards with phases inside Claude Code.">
+<title>ocli — Orchestrated CLI for headless coding CLIs in Claude Code</title>
+<meta name="description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.">
 <link rel="canonical" href="https://&lt;owner&gt;.github.io/ocli/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="ocli">
-<meta property="og:title" content="ocli — live progress for headless coding CLIs in Claude Code">
-<meta property="og:description" content="A dispatcher that normalizes each CLI's JSON event stream, and a Claude Code plugin that draws the runs as live Workflow-style cards.">
+<meta property="og:title" content="ocli — Orchestrated CLI">
+<meta property="og:description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.">
 <meta property="og:image" content="https://&lt;owner&gt;.github.io/ocli/assets/banner.png">
 <meta property="og:url" content="https://&lt;owner&gt;.github.io/ocli/">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="ocli — live progress for headless coding CLIs in Claude Code">
+<meta name="twitter:title" content="ocli — Orchestrated CLI">
 <meta name="twitter:description" content="Codex, opencode, agy and Muse runs as live Workflow-style cards in Claude Code.">
 <meta name="twitter:image" content="https://&lt;owner&gt;.github.io/ocli/assets/banner.png">
 <script type="application/ld+json">
@@ -21,8 +21,8 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "ocli",
-  "softwareVersion": "0.3.1",
-  "description": "Live, workflow-style progress for headless coding CLIs (Codex, opencode, Antigravity agy, Muse) inside Claude Code: a dispatcher that writes normalized live-event files and a Claude Code plugin that draws them as cards.",
+  "softwareVersion": "0.3.2",
+  "description": "ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
   "license": "https://opensource.org/licenses/MIT",
@@ -65,7 +65,7 @@ th{background:var(--card-bg)}
 </head>
 <body>
 <nav class="nav">
-  <span class="brand">ocli</span><span class="tag">v0.3.1</span><span class="tag">MIT</span>
+  <span class="brand">ocli</span><span class="tag">v0.3.2</span><span class="tag">MIT</span>
   <a class="gh" href="https://github.com/&lt;owner&gt;/ocli">GitHub</a>
 </nav>
 <div class="wrap">
@@ -75,12 +75,15 @@ th{background:var(--card-bg)}
   <a href="#overview">What it is</a>
   <a href="#card">The card</a>
   <div class="group">Use</div>
+  <a href="#requirements">Requirements</a>
   <a href="#quick-start">Quick start</a>
+  <a href="#configuration">Configuration</a>
   <a href="#flags">Dispatcher flags</a>
   <a href="#policy">Policy and routes</a>
   <a href="#permissions">Permissions</a>
   <div class="group">Architecture</div>
   <a href="#how">How it works</a>
+  <a href="#runs-reads">What it runs and reads</a>
   <a href="#contract">Live-event contract</a>
   <a href="#limitations">Limitations</a>
   <div class="group">AI agents</div>
@@ -88,12 +91,14 @@ th{background:var(--card-bg)}
 </aside>
 <main>
 <div class="banner-hero">
-  <img src="assets/banner.png" onerror="this.src='../assets/banner.png'" alt="ocli banner: live, workflow-style progress for headless coding CLIs in Claude Code">
+  <img src="assets/banner.png" onerror="this.src='../assets/banner.png'" alt="ocli banner: Orchestrated CLI, headless coding CLIs live in Claude Code">
 </div>
 
 <section id="overview">
-<h1>ocli</h1>
-<p>Live, workflow-style progress for headless coding CLIs inside Claude Code. When Claude Code
+<h1>ocli — Orchestrated CLI</h1>
+<p><strong>ocli (Orchestrated CLI)</strong>: run headless coding CLIs — Codex, opencode, Antigravity
+<code>agy</code>, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.</p>
+<p>When Claude Code
 orchestrates Codex, opencode, Antigravity <code>agy</code> or Muse as background developers, each
 one runs out of sight. ocli is a <strong>dispatcher</strong> that runs one CLI per call and turns its
 native JSON event stream into one normalized live-event file per run, and a <strong>Claude Code
@@ -116,13 +121,24 @@ plugin</strong> that draws those runs as Workflow-style cards with phases, live.
 failed). Press a phase row to expand it into its runs. Ended runs raise one toast each.</p>
 </section>
 
+<section id="requirements">
+<h2>Requirements</h2>
+<ul>
+<li>Claude Code ≥ 2.1.292 (mods need ≥ 2.1.287 in the terminal, ≥ 2.1.286 in the Desktop app).</li>
+<li>Node.js ≥ 22, for the dispatcher and <code>/ocli-digest</code>. No runtime dependencies.</li>
+<li>The developer CLIs you route to, installed and logged in with their own login.</li>
+</ul>
+</section>
+
 <section id="quick-start">
 <h2>Quick start</h2>
-<p>1. Install the plugin in a terminal session of Claude Code:</p>
-<pre><code>/plugin install ocli-monitor --marketplace &lt;owner&gt;/ocli</code></pre>
-<p>2. Get the dispatcher (Node.js 20+, no dependencies) and make the policy yours:</p>
-<pre><code>git clone https://github.com/&lt;owner&gt;/ocli.git
-cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json</code></pre>
+<p>1. Install the plugin from a local clone:</p>
+<pre><code>git clone &lt;this repository&gt; ocli
+claude plugin marketplace add "$PWD/ocli"
+claude plugin install ocli-monitor@ocli</code></pre>
+<p>Once published: <code>claude plugin install ocli-monitor --marketplace &lt;owner&gt;/ocli</code>.</p>
+<p>2. Make the dispatcher policy yours (Node.js 22+, no dependencies):</p>
+<pre><code>cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json</code></pre>
 <p>The example routes pin the models they were verified with. Set each route's <code>model</code> to
 one your CLI lists, read <a href="#permissions">Permissions and sandboxing</a>, and dispatch each
 route once by hand before you trust it.</p>
@@ -159,6 +175,17 @@ The CLI's closing claims are checked against its own trace (<code>witness.mjs</c
 show as <code>⚠ unwitnessed</code> on the run. <code>/ocli-digest</code> (or
 <code>node dispatcher/digest.mjs</code>) summarizes the last 12 hours per task and phase. Live files go to <code>&lt;cwd&gt;/orchestra/live</code>; <code>ORCHESTRA_LIVE_DIR</code>
 moves them (then set the plugin's <code>liveDirs</code> to the same absolute dir).</p>
+</section>
+
+<section id="configuration">
+<h2>Configuration</h2>
+<p>ocli reads no credentials, no keychain and no account file. One optional environment variable,
+also listed in <code>.env.example</code>:</p>
+<pre><code>export ORCHESTRA_LIVE_DIR=/absolute/path/to/orchestra/live   # default: &lt;cwd&gt;/orchestra/live</code></pre>
+<p>The plugin option <code>liveDirs</code> (comma-separated absolute paths) sets which dirs the pane
+watches. Usage counters are optional: codex limits are read by spawning <code>codex app-server</code>
+with codex's own login; Claude's come from a snapshot the lead passes in; GLM has none. Anything
+unreadable is reported as <code>unknown</code>.</p>
 </section>
 
 <section id="policy">
@@ -198,6 +225,23 @@ policy.</p>
 confirms it. No verifier means <code>score: null</code>; unknown is never written as 0.</p>
 </section>
 
+<section id="runs-reads">
+<h2>What it runs and reads</h2>
+<p><strong>Spawns</strong> one process, only on <code>/ocli-digest</code>: <code>node &lt;plugin
+root&gt;/bin/digest.mjs --root &lt;project root&gt;/orchestra</code> via <code>$.process.run</code>,
+20 s timeout. The script ships inside the plugin (a byte-identical copy of
+<code>dispatcher/digest.mjs</code>), never from your project.</p>
+<p><strong>Reads</strong> the live dirs (<code>liveDirs</code>, else <code>&lt;project
+root&gt;/orchestra/live</code>): <code>&lt;task&gt;/&lt;runId&gt;.jsonl</code> (at most 500 per tick,
+none over 4 MiB) and <code>&lt;task&gt;/plan.json</code> (at most 64 KiB, within a day); and
+<code>&lt;project root&gt;/checkpoints/YYYY-MM-DD_*.md</code> (at most 256 KiB). A file is read only
+when its resolved <code>realPath</code> lies under the resolved dir; symlinks are skipped and a path
+that moves during the read is dropped. On some builds <code>$.session.root</code> is unavailable; the
+plugin falls back to the session cwd.</p>
+<p><strong>Never</strong>: network access, writes outside its own <code>$.state</code>, or a prompt
+submitted on its own (<code>Queue resume</code> submits one fixed sentence, only when pressed).</p>
+</section>
+
 <section id="contract">
 <h2>Live-event contract</h2>
 <p>Every line carries <code>v:1</code>, <code>runId</code>, a contiguous <code>seq</code>, the
@@ -213,11 +257,11 @@ Any tool that writes this contract shows up in the pane. Full specification:
 <section id="limitations">
 <h2>Limitations</h2>
 <ul>
-<li>Claude Code 2.1.294 has no <code>$.ui.notify</code> and no <code>$.session.root</code>: blocked runs arrive as toasts, and the default live dir comes from the session cwd.</li>
+<li>On some builds <code>$.session.root</code> is unavailable; the plugin falls back to the session cwd. Where <code>$.ui.notify</code> is missing, blocked runs arrive as toasts.</li>
 <li>In the desktop app the pane appears only after the plugin was installed from a terminal session.</li>
 <li>Error event shapes for agy and Muse (and codex <code>turn.failed</code>, opencode <code>error</code>) are derived from source, not captured.</li>
 <li>Only codex exposes a local usage counter; other refusals are labelled unconfirmed.</li>
-<li><code>/ocli-digest</code> runs the checkout's <code>dispatcher/digest.mjs</code>: it works when the plugin is loaded from a checkout (<code>--plugin-dir</code>), not from a marketplace install.</li>
+<li><code>/ocli-digest</code> needs <code>node</code> on <code>PATH</code>; without it the command answers <code>ocli digest unavailable</code>.</li>
 <li>The resume card is optional: it appears only in projects with dated <code>checkpoints/YYYY-MM-DD_*.md</code> files holding a Phase/Status table.</li>
 </ul>
 </section>

@@ -1175,7 +1175,7 @@ test('/ocli-digest runs the digest script and draws its markdown, cleaned per li
   expect(ran.text).toBe('ocli digest opened.')
   // The plugin's own script, never the project's; the project's orchestra dir is only the data it reads.
   expect(h.calls.process).toHaveLength(1)
-  expect(h.calls.process[0]![1]).toMatch(/\/plugin\/\.\.\/dispatcher\/digest\.mjs$/)
+  expect(h.calls.process[0]![1]).toMatch(/\/plugin\/bin\/digest\.mjs$/)
   expect(h.calls.process[0]!.slice(2)).toEqual(['--root', '/work/orchestra'])
   expect(h.calls.open).toContainEqual({ id: 'ocli-digest', title: 'ocli digest' })
   for (const surface of SURFACES) {
@@ -1223,7 +1223,7 @@ test('/ocli-digest never runs a script from the session\'s project; with no plug
   expect(digestScript(undefined)).toBe(null)
   expect(digestScript('')).toBe(null)
   expect(digestScript('relative/dir')).toBe(null)
-  expect(digestScript('/p/ocli/plugin/')).toBe('/p/ocli/plugin/../dispatcher/digest.mjs')
+  expect(digestScript('/p/ocli/plugin/')).toBe('/p/ocli/plugin/bin/digest.mjs')
 })
 
 test('/ocli-digest says when the digest was cut, by the runtime or by the pane, instead of dropping its end silently', OPTIONS, async ($, on) => {

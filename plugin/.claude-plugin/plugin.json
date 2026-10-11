@@ -1,7 +1,7 @@
 {
   "name": "ocli-monitor",
-  "version": "0.3.1",
-  "description": "Workflow-style live cards for headless coding-CLI runs (Codex, opencode, agy, Muse) from normalized live event files.",
+  "version": "0.3.2",
+  "description": "ocli (Orchestrated CLI): run headless coding CLIs (Codex, opencode, Antigravity agy, Muse) under one lead and watch them live in Claude Code as Workflow-style cards.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "liveDirs": {

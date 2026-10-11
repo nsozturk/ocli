@@ -84,9 +84,9 @@ let lastStatus: string | undefined | null = null
 let checkpointRoot: string | null | undefined
 let checkpointSeen: string | null = null
 
-const DIGEST_CUT = '\n\n… cut: the digest is longer than this pane holds, so its end (Needs a decision) may be missing; run node dispatcher/digest.mjs for all of it'
+const DIGEST_CUT = '\n\n… cut: the digest is longer than this pane holds, so its end (Needs a decision) may be missing; run node <plugin root>/bin/digest.mjs for all of it'
 
-/** dispatcher/digest.mjs's markdown, made safe for the pane: each line cleaned on its own (clean()
+/** bin/digest.mjs's markdown, made safe for the pane: each line cleaned on its own (clean()
  * folds newlines, so the whole text through it would be one line), at most MAX_DIGEST in all. A cut
  * (by the runtime, `truncated`, or here) ends in a line that says so: the decisions come last. */
 export const digestText = (stdout: string, truncated = false): string => {
@@ -95,12 +95,12 @@ export const digestText = (stdout: string, truncated = false): string => {
   return `${text.slice(0, MAX_DIGEST - [...DIGEST_CUT].length).join('')}${DIGEST_CUT}`
 }
 
-/** The plugin's own digest script (<plugin root>/../dispatcher/digest.mjs: the plugin is plugin/ of
- * the ocli checkout), never the session's project's: a clone's code is never run. Null when the
- * runtime gives no absolute plugin root. A marketplace install caches plugin/ alone, so there the
- * script is missing and /ocli-digest answers unavailable. */
+/** The plugin's own digest script, <plugin root>/bin/digest.mjs (a byte-identical copy of the
+ * checkout's dispatcher/digest.mjs, so a marketplace install that caches plugin/ alone has it), never
+ * the session's project's: a clone's code is never run. Null when the runtime gives no absolute
+ * plugin root. */
 export const digestScript = (root: unknown): string | null =>
-  typeof root === 'string' && root.startsWith('/') ? `${root.replace(/\/+$/, '')}/../dispatcher/digest.mjs` : null
+  typeof root === 'string' && root.startsWith('/') ? `${root.replace(/\/+$/, '')}/bin/digest.mjs` : null
 
 /** /ocli-digest: run the digest script and draw what it printed in its own pane. Never submits a prompt. */
 async function runDigest($: $): Promise<{ text: string }> {

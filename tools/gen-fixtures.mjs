@@ -1,13 +1,13 @@
-// Usage: node plugin/tools/gen-fixtures.mjs <normalized live .jsonl of a real run>
+// Usage: node tools/gen-fixtures.mjs <normalized live .jsonl of a real run>
 // Builds plugin/hooks/fixtures.ts from the repo's raw CLI captures, through the
 // real normalize() and the same envelope dispatch.mjs writes, plus the given live file SCRUBBED: only
 // its shape is kept (kinds, seq, timing, tools, token counts, statuses). Ids, task, pid, every tool
 // detail and every message text are replaced, so no path, branch, commit or brief of the private run
 // can reach the fixture. The script refuses to write if a machine path survives anyway.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { normalize } from '../../dispatcher/events.mjs';
+import { normalize } from '../dispatcher/events.mjs';
 
-const root = new URL('../../', import.meta.url);
+const root = new URL('../', import.meta.url);
 const models = { codex: 'gpt-5.6-luna', opencode: 'zai-coding-plan/glm-5.3', agy: 'gemini-3.8-flash-medium', muse: 'muse' };
 const out = {};
 for (const cli of Object.keys(models)) {

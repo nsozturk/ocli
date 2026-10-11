@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/banner.png" alt="ocli — live, workflow-style progress for headless coding CLIs in Claude Code" width="100%">
+  <img src="assets/banner.png" alt="ocli (Orchestrated CLI): headless coding CLIs under one lead, live in Claude Code" width="100%">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.1-8b5cf6" alt="Version 0.3.1">
-  <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js 20+">
+  <img src="https://img.shields.io/badge/version-0.3.2-8b5cf6" alt="Version 0.3.2">
+  <img src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white" alt="Node.js 22+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/runtime%20deps-zero-0ea5e9" alt="Zero runtime dependencies">
   <a href="AGENTS.md"><img src="https://img.shields.io/badge/AI%20Agent-Native%20Ready-a78bfa" alt="AI Agent: Native Ready"></a>
@@ -15,6 +15,11 @@
   <code>claude-code</code> <code>claude-code-plugin</code> <code>codex</code> <code>opencode</code> <code>antigravity</code>
   <code>gemini</code> <code>muse</code> <code>coding-agents</code> <code>orchestration</code> <code>live-events</code>
 </p>
+
+# ocli — Orchestrated CLI
+
+> **ocli (Orchestrated CLI):** run headless coding CLIs — Codex, opencode, Antigravity `agy`, Muse —
+> under one lead and watch them live in Claude Code as Workflow-style cards.
 
 **ocli** shows what your headless coding CLIs are doing while they do it. When Claude Code
 orchestrates other agents (Codex, opencode, Antigravity `agy`, Muse) as background developers, each
@@ -59,20 +64,32 @@ What else it does:
 - **Resume card** (optional). In a project that keeps dated checkpoint files, the first card shows the
   newest one's phase table, next action and resume command, with a `Queue resume` button.
 
+## Requirements
+
+- **Claude Code ≥ 2.1.292** (installing the plugin from a shell). The pane is a mod: mods need
+  **≥ 2.1.287 in the terminal** and **≥ 2.1.286 in the Desktop app**.
+- **Node.js ≥ 22** for the dispatcher and for `/ocli-digest`. No runtime dependencies.
+- The developer CLIs you route to (`codex`, `opencode`, `agy`, `muse`), installed and logged in with
+  their own login. ocli never handles their credentials.
+
 ## Quick start
 
-**1. Install the plugin** (in a terminal session of Claude Code):
+**1. Install the plugin.** From a local clone (works before anything is published):
 
 ```sh
-/plugin install ocli-monitor --marketplace <owner>/ocli
+git clone <this repository> ocli
+claude plugin marketplace add "$PWD/ocli"   # path to the clone; registers the marketplace "ocli"
+claude plugin install ocli-monitor@ocli
 ```
 
-or from a shell: `claude plugin install ocli-monitor --marketplace <owner>/ocli`.
+or in one step: `claude plugin install ocli-monitor --marketplace "$PWD/ocli"`. Once the repository is
+on GitHub, `claude plugin install ocli-monitor --marketplace <owner>/ocli` does the same, and inside
+a terminal session `/plugin install ocli-monitor@ocli` works after the marketplace is added.
 
-**2. Get the dispatcher and make the policy yours** (Node.js 20+, no dependencies):
+**2. Make the dispatcher policy yours** (Node.js 22+, no dependencies; the dispatcher lives in the
+clone, not in the installed plugin):
 
 ```sh
-git clone https://github.com/<owner>/ocli.git
 cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json
 ```
 
@@ -106,8 +123,7 @@ node /path/to/ocli/dispatcher/dispatch.mjs --declare-phases implement,review,mer
 ```
 
 **5. Open the pane:** `/ocli`. It also opens itself at session start when the terminal is wide.
-`/ocli-digest` opens the night digest in its own pane (see [Limitations](#limitations) for where it
-runs).
+`/ocli-digest` opens the night digest in its own pane.
 
 **6. Optional: the resume card.** If your project keeps dated checkpoint files,
 `<project root>/checkpoints/YYYY-MM-DD_<slug>.md` with a Markdown table that has `Phase` and `Status`
@@ -133,8 +149,29 @@ Exit codes: `0` the run was recorded (whatever the CLI's own exit code), `1` `--
 tree as it was (contents and `HEAD`) gets `score: null` even when `--verify` passes, whatever its exit
 code: a green base says nothing about the developer.
 
-`ORCHESTRA_LIVE_DIR=<dir>` moves the live root away from `<cwd>/orchestra/live`; point the
-plugin's `liveDirs` option at the same absolute dir.
+## Configuration
+
+ocli reads no credentials, no keychain and no account file. Everything machine-specific is optional
+and set by you:
+
+| setting | where | default |
+|---|---|---|
+| `ORCHESTRA_LIVE_DIR` | environment, for `dispatch.mjs` and `digest.mjs` | `<cwd>/orchestra/live` |
+| `liveDirs` | plugin option (`/config`, or `claude plugin install … --config liveDirs=<dirs>`) | `<project root>/orchestra/live` |
+| routes and models | `dispatcher/policy.json` (gitignored; copy of `policy.example.json`) | the example routes |
+
+```sh
+export ORCHESTRA_LIVE_DIR=/absolute/path/to/orchestra/live   # optional
+```
+
+[`.env.example`](.env.example) lists the same variable; the scripts do not load it, export it in your
+shell. If you move the live dir, point the plugin's `liveDirs` at the same absolute path.
+
+**Usage counters are optional.** `dispatcher/usage.mjs` asks codex for its rate limits by spawning
+`codex app-server` (from `PATH`) and calling `account/rateLimits/read` over stdio, using codex's own
+login; it reads no file. Claude Code's limits come only from a snapshot the lead passes in, and
+GLM (opencode) has no readable quota source. Whatever cannot be read is reported as `unknown`, and
+a route capped in `BUDGET` with an unknown reading is not dispatched on an assumption.
 
 ## Permissions and sandboxing
 
@@ -153,6 +190,38 @@ write anything your user can, use the network, and push with your git credential
 Run the unsandboxed routes only where that is acceptable: a disposable VM or container, or a
 dedicated user account without your credentials. `breadth` ships `unverified` for that reason; the
 dispatcher refuses it until you set `"status": "ok"` in your own `policy.json`.
+
+## What it runs and reads
+
+The plugin (`ocli-monitor`) is everything Claude Code installs; this is all it does at run time.
+
+**Processes it spawns:** one, only when you type `/ocli-digest`:
+`node <plugin root>/bin/digest.mjs --root <project root>/orchestra`, through `$.process.run` with a
+20 s timeout. The script is the plugin's own copy (byte-identical to `dispatcher/digest.mjs`, checked
+by a test), never a script from your project. It reads `<project root>/orchestra/tree` and the live dir and
+writes nothing.
+
+**Paths it reads** (`$.fs.list`, `$.fs.stat`, `$.fs.read`):
+
+- the live dirs: each `liveDirs` entry, else `<project root>/orchestra/live`, and the
+  `<task>/<runId>.jsonl` files in them (never `*.raw.jsonl`); at most 500 files per tick, none over
+  4 MiB;
+- `<task>/plan.json` in a live dir: at most 64 KiB, dated within a day;
+- `<project root>/checkpoints/YYYY-MM-DD_*.md`: plain names only, at most 256 KiB, the ten newest;
+- this session's subagent list (`$.agent.list`), for the "Claude subagents" card.
+
+Every file is read only when its resolved `realPath` lies under the resolved dir it was listed from;
+symlinks are skipped, the path is resolved again after the read, and the text is dropped if it moved.
+The project root is `$.session.root`; on some builds `$.session.root` is unavailable, and the plugin
+falls back to the session cwd.
+
+**Never:** no network access, no writes anywhere except its own `$.state` (expanded rows, announced
+runs; the digest pane's `Copy` button puts the digest on the clipboard), and no prompt submitted on
+its own. `$.prompt.submit` runs only when you press
+`Queue resume`, and only with one fixed sentence naming the checkpoint file.
+
+Claude Code puts every plugin's `bin/` dir on the Bash tool's `PATH`; the two files there are plain
+modules, not executables.
 
 ## How it works
 
@@ -195,6 +264,8 @@ The full contract, including how another dispatcher can write compatible files, 
 |---|---|
 | `.claude-plugin/marketplace.json` | marketplace listing the `ocli-monitor` plugin |
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
+| `plugin/bin/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
+| `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
 | `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `policy.example.json` |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
@@ -210,9 +281,10 @@ claude plugin validate plugin        # the plugin manifest, types and hooks
 
 ## Limitations
 
-- **Claude Code 2.1.294** (the version this was built and tested on) has no `$.ui.notify` and no
-  `$.session.root`. A blocked run therefore lands as a toast, not a system notification, and the
-  default live dir is resolved from the session cwd.
+- **`$.ui.notify` and `$.session.root`.** On some builds (2.1.294, the version this was tested on,
+  among them) `$.session.root` is unavailable; the plugin falls back to the session cwd for the
+  default live dir and the checkpoints. Where `$.ui.notify` is missing, a blocked run lands as a
+  toast instead of a system notification.
 - **Desktop app:** the pane is a terminal mod surface. In the desktop app it appears only after the
   plugin was installed from a terminal session (or loaded with `CLAUDE_CODE_PLUGIN_DIRS`), and where
   no terminal is bound, toasts are not sent.
@@ -222,10 +294,8 @@ claude plugin validate plugin        # the plugin manifest, types and hooks
 - **Usage counters:** only codex exposes one locally. For opencode, agy and Muse a quota refusal is
   recognized from the CLI's own error event or from stderr on a failed run, and the record says the
   verdict is unconfirmed.
-- **`/ocli-digest` needs a checkout.** It runs the plugin's own `../dispatcher/digest.mjs`, never a
-  script from your project. A marketplace install caches `plugin/` alone, so there it answers
-  `ocli digest unavailable`; load the plugin with `--plugin-dir /path/to/ocli/plugin` for the pane, or
-  run `node /path/to/ocli/dispatcher/digest.mjs` from the project root.
+- **`/ocli-digest` needs Node.js on `PATH`.** It runs `node <plugin root>/bin/digest.mjs`; without
+  `node`, or where the runtime has no `$.process`, it answers `ocli digest unavailable: <reason>`.
 - **CLI flags drift.** The argv in `policy.example.json` is what each CLI accepted when it was
   verified; re-probe a route after upgrading a CLI.
 

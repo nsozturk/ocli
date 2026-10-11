@@ -11,7 +11,7 @@ import { constants } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { paneLabel } from './dispatch.mjs';
+import { paneLabel } from './pane-label.mjs';
 
 const WINDOW_MS = 12 * 3_600_000;
 
