@@ -196,7 +196,7 @@ dispatcher refuses it until you set `"status": "ok"` in your own `policy.json`.
 The plugin (`ocli-monitor`) is everything Claude Code installs; this is all it does at run time.
 
 **Processes it spawns:** one, only when you type `/ocli-digest`:
-`node <plugin root>/bin/digest.mjs --root <project root>/orchestra`, through `$.process.run` with a
+`node <plugin root>/lib/digest.mjs --root <project root>/orchestra`, through `$.process.run` with a
 20 s timeout. The script is the plugin's own copy (byte-identical to `dispatcher/digest.mjs`, checked
 by a test), never a script from your project. It reads `<project root>/orchestra/tree` and the live dir and
 writes nothing.
@@ -220,8 +220,8 @@ runs; the digest pane's `Copy` button puts the digest on the clipboard), and no 
 its own. `$.prompt.submit` runs only when you press
 `Queue resume`, and only with one fixed sentence naming the checkpoint file.
 
-Claude Code puts every plugin's `bin/` dir on the Bash tool's `PATH`; the two files there are plain
-modules, not executables.
+The bundled scripts live in `plugin/lib/`, not `bin/`, so installing the plugin adds nothing to the
+Bash tool's `PATH`.
 
 ## How it works
 
@@ -264,7 +264,7 @@ The full contract, including how another dispatcher can write compatible files, 
 |---|---|
 | `.claude-plugin/marketplace.json` | marketplace listing the `ocli-monitor` plugin |
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
-| `plugin/bin/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
+| `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
 | `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `policy.example.json` |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
@@ -294,7 +294,7 @@ claude plugin validate plugin        # the plugin manifest, types and hooks
 - **Usage counters:** only codex exposes one locally. For opencode, agy and Muse a quota refusal is
   recognized from the CLI's own error event or from stderr on a failed run, and the record says the
   verdict is unconfirmed.
-- **`/ocli-digest` needs Node.js on `PATH`.** It runs `node <plugin root>/bin/digest.mjs`; without
+- **`/ocli-digest` needs Node.js on `PATH`.** It runs `node <plugin root>/lib/digest.mjs`; without
   `node`, or where the runtime has no `$.process`, it answers `ocli digest unavailable: <reason>`.
 - **CLI flags drift.** The argv in `policy.example.json` is what each CLI accepted when it was
   verified; re-probe a route after upgrading a CLI.

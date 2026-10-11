@@ -1,5 +1,5 @@
 // paneLabel, shared by dispatch.mjs and digest.mjs. Pure: no I/O, no imports. Kept apart from
-// dispatch.mjs so the digest (copied into plugin/bin/) needs nothing that spawns.
+// dispatch.mjs so the digest (copied into plugin/lib/) needs nothing that spawns.
 
 /** Untrusted text made safe for the pane: markdown heading marks, ANSI escapes and control
  * characters removed, whitespace folded, at most `max` code points. */

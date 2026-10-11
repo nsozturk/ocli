@@ -11,9 +11,9 @@ working in this repository or using it to dispatch other CLIs.
 - `dispatcher/witness.mjs` is pure: checks a CLI's closing claims against its own `tool.end` trace.
 - `dispatcher/digest.mjs` is the read-only night digest of `orchestra/tree` and `orchestra/live`.
 - `plugin/` is the Claude Code plugin `ocli-monitor` that draws the live files as cards.
-- `plugin/bin/digest.mjs` and `plugin/bin/pane-label.mjs` are byte-identical copies of the
+- `plugin/lib/digest.mjs` and `plugin/lib/pane-label.mjs` are byte-identical copies of the
   `dispatcher/` files, so an installed plugin never reaches outside its folder. After editing either
-  source run `cp dispatcher/digest.mjs dispatcher/pane-label.mjs plugin/bin/`;
+  source run `cp dispatcher/digest.mjs dispatcher/pane-label.mjs plugin/lib/`;
   `tests/plugin-paths.test.ts` fails while they differ.
 - `docs/LIVE-EVENTS.md` is the contract between the two. Change it and both sides together.
 

@@ -15,10 +15,10 @@ it('no file of the plugin carries a home directory path', () => {
   expect(files.filter(path => /\/Users\/[A-Za-z0-9._-]+\//.test(readFileSync(path, 'utf8')))).toEqual([]);
 });
 
-// An installed plugin is its folder alone, so /ocli-digest runs plugin/bin/digest.mjs. It must stay
-// the dispatcher's digest byte for byte: `cp dispatcher/digest.mjs dispatcher/pane-label.mjs plugin/bin/`.
-it.each(['digest.mjs', 'pane-label.mjs'])('plugin/bin/%s is byte-identical to its dispatcher/ source', name => {
-  expect(readFileSync(join(repo, 'plugin', 'bin', name)).equals(readFileSync(join(repo, 'dispatcher', name)))).toBe(true);
+// An installed plugin is its folder alone, so /ocli-digest runs plugin/lib/digest.mjs. It must stay
+// the dispatcher's digest byte for byte: `cp dispatcher/digest.mjs dispatcher/pane-label.mjs plugin/lib/`.
+it.each(['digest.mjs', 'pane-label.mjs'])('plugin/lib/%s is byte-identical to its dispatcher/ source', name => {
+  expect(readFileSync(join(repo, 'plugin', 'lib', name)).equals(readFileSync(join(repo, 'dispatcher', name)))).toBe(true);
 });
 
 // No plugin file imports, reads or runs anything above plugin/ (the marketplace caches plugin/ alone).

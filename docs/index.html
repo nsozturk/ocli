@@ -228,7 +228,7 @@ confirms it. No verifier means <code>score: null</code>; unknown is never writte
 <section id="runs-reads">
 <h2>What it runs and reads</h2>
 <p><strong>Spawns</strong> one process, only on <code>/ocli-digest</code>: <code>node &lt;plugin
-root&gt;/bin/digest.mjs --root &lt;project root&gt;/orchestra</code> via <code>$.process.run</code>,
+root&gt;/lib/digest.mjs --root &lt;project root&gt;/orchestra</code> via <code>$.process.run</code>,
 20 s timeout. The script ships inside the plugin (a byte-identical copy of
 <code>dispatcher/digest.mjs</code>), never from your project.</p>
 <p><strong>Reads</strong> the live dirs (<code>liveDirs</code>, else <code>&lt;project

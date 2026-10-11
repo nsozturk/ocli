@@ -47,7 +47,7 @@ right away, and narrower ones keep it waiting until you run `/ocli`.
 
 ## What it runs and reads
 
-- **Spawns** one process, only on `/ocli-digest`: `node <plugin root>/bin/digest.mjs --root <project
+- **Spawns** one process, only on `/ocli-digest`: `node <plugin root>/lib/digest.mjs --root <project
   root>/orchestra` via `$.process.run`, 20 s timeout. Nothing else is ever run.
 - **Reads** the live dirs (`liveDirs`, else `<project root>/orchestra/live`): `<task>/<runId>.jsonl`
   (never `*.raw.jsonl`, at most 500 per tick, none over 4 MiB) and `<task>/plan.json` (at most 64 KiB,
@@ -59,8 +59,8 @@ right away, and narrower ones keep it waiting until you run `/ocli`.
   `Copy` press), or submits a prompt on its own (`$.prompt.submit` runs only on a `Queue resume` press, with fixed text).
 
 The project root is `$.session.root`; on some builds `$.session.root` is unavailable, and the plugin
-falls back to the session cwd. Claude Code puts a plugin's `bin/` on the Bash tool's `PATH`; the two
-files in `bin/` are plain modules, not executables.
+falls back to the session cwd. The bundled scripts live in `lib/`, not `bin/`, so the plugin adds
+nothing to the Bash tool's `PATH`.
 
 ## What it shows
 
@@ -205,7 +205,7 @@ in `$.state` so a reload does not repeat it. Nothing acts on the run.
 
 ## /ocli-digest
 
-Runs the plugin's own `node <plugin root>/bin/digest.mjs --root <project root>/orchestra` (20 s
+Runs the plugin's own `node <plugin root>/lib/digest.mjs --root <project root>/orchestra` (20 s
 timeout) and draws what it prints, the last 12 hours per task and phase, in a pane named
 `ocli-digest`, with a `Copy` button. Each line of the output is cleaned as every other untrusted
 string is. A digest longer than the pane holds (or cut by the runtime) ends in a `… cut:` line,
@@ -216,7 +216,7 @@ and opens nothing.
 `$.process.run`, `$.ui.copy` and `Markdown` are not yet proven on the 2.1.294 runtime: each is
 called inside a try, and without `Markdown` the pane draws one `Text` per line.
 
-`bin/digest.mjs` (with `bin/pane-label.mjs`) is a byte-identical copy of the repository's
+`lib/digest.mjs` (with `lib/pane-label.mjs`) is a byte-identical copy of the repository's
 `dispatcher/digest.mjs`, kept equal by a test, so a marketplace install, which caches `plugin/`
 alone, has it too. `node /path/to/ocli/dispatcher/digest.mjs` run from the project root prints the
 same digest.
