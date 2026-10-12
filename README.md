@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.0-8b5cf6" alt="Version 0.5.0">
+  <img src="https://img.shields.io/badge/version-0.5.1-8b5cf6" alt="Version 0.5.1">
   <img src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white" alt="Node.js 22+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/runtime%20deps-zero-0ea5e9" alt="Zero runtime dependencies">
@@ -165,6 +165,14 @@ Exit codes: `0` the run was recorded (whatever the CLI's own exit code), `1` `--
 `2` the dispatcher refused, could not start the CLI, or failed after it ran. A run that left the work
 tree as it was (contents and `HEAD`) gets `score: null` even when `--verify` passes, whatever its exit
 code: a green base says nothing about the developer.
+
+**Provider window stops.** When a run fails (non-zero exit) and the CLI's *own* error or warn event says its plan window is
+used up (ClinePass "5-hour Clinepass limit … resets in 1h 6m", ZAI "Usage limit reached for 5 hour … will reset at
+2026-10-12 09:23:37"), the tree node records `providerStop: { provider, resetsAt, evidence }`. Every route on that billing
+pool (all `cline-pass/*` routes share `cline`; opencode `zai-coding-plan/*` is `zai`) is then `excluded:budget-stop until …`
+in `--list-routes` and skipped by `--role auto` until the reset, or until a later genuinely successful run of that pool.
+An unparseable reset holds the stop until such a success. A transient 429 "rate limit" never stops a route, and limit
+wording in model text never counts. An explicit `--role` to a stopped route still runs, with one warning line.
 
 ## Configuration
 

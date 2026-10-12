@@ -15,6 +15,55 @@ export function providerForNode(node) {
   return null;
 }
 
+/** Which billing pool a recorded node can declare a window stop for. Derived from
+ * providerForNode, never from the role: cline passes through, while the budget namespace's
+ * `glm` IS the ZAI billing pool (opencode zai-coding-plan/*), so stops say `zai`. A stop
+ * needs no BUDGET row — the provider's own verdict binds uncapped pools too. */
+export function stopProviderForNode(node) {
+  const provider = providerForNode(node);
+  if (provider === 'cline') return 'cline';
+  if (provider === 'glm') return 'zai';
+  return null;
+}
+
+/**
+ * Newest provider-declared stop for a pool, or null when there is none or a later successful
+ * run of that pool cleared it. Ordering matches latestReading (max by recordedAt; the later
+ * line wins a tie; a missing recordedAt sorts oldest). A stop-bearing node only ever
+ * competes as a stop, and a failed run without one competes as neither: only a real
+ * success (exit 0 without blocked) clears — an exit-0 run the CLI itself refused stays
+ * stopped. Expiry (resetsAt vs now) is the caller's decision, not this scan's.
+ */
+export function latestProviderStop(nodes, stopProvider) {
+  if (stopProvider == null) return null;
+  let stop = null;
+  let stopAt = '';
+  let stopIndex = -1;
+  let okAt = '';
+  let okIndex = -1;
+  for (let index = 0; index < (nodes ?? []).length; index++) {
+    const node = nodes[index];
+    if (!node || typeof node !== 'object') continue;
+    if (stopProviderForNode(node) !== stopProvider) continue;
+    const at = typeof node.recordedAt === 'string' ? node.recordedAt : '';
+    if (node.providerStop && typeof node.providerStop === 'object') {
+      if (at > stopAt || (at === stopAt && index > stopIndex)) {
+        stop = node.providerStop;
+        stopAt = at;
+        stopIndex = index;
+      }
+    } else if (node.exitCode === 0 && node.blocked !== true) {
+      if (at > okAt || (at === okAt && index > okIndex)) {
+        okAt = at;
+        okIndex = index;
+      }
+    }
+  }
+  if (!stop) return null;
+  if (okIndex >= 0 && (okAt > stopAt || (okAt === stopAt && okIndex > stopIndex))) return null;
+  return { providerStop: stop, recordedAt: stopAt || null };
+}
+
 /** A regular file's text, opened with O_NOFOLLOW: a link (even one swapped in after a listing)
  * is refused, never followed. Rejects when the file cannot be read. */
 export async function readRegular(file) {

@@ -199,6 +199,12 @@ const mappings = {
     'agent_event.done': ignore,
     hook_event: ignore,
     run_result: ignore,
+    // Measured 2026-10-11 (r2-tabularium, exit 1): cline writes fatal errors as
+    // top-level {"ts","type":"error","message"} lines, never as agent events — usually to
+    // STDERR but occasionally to stdout, so this stays a CLI error event on either stream.
+    // The whole object is kept as evidence, like opencode's error, so the reset phrase
+    // survives in it.
+    error: (raw, state) => cliError(state, raw.message, raw),
   },
 };
 // unverified: only run.terminal.completed was captured. payload.text is model text, so only the
@@ -230,6 +236,19 @@ export function normalize(cli, rawLine, state = {}) {
       return event;
     });
   } catch { return unparsed(); }
+}
+
+/** The CLI's own error events as written to STDERR, for the provider-stop verdict. A stream
+ * is transport, not authorship, so this reuses normalize(): only JSON lines an error handler
+ * claims are collected. Pretty stderr text is never collected — model transcripts render
+ * there too, so it cannot carry a verdict (PS1 P1). */
+export function stderrCliErrors(cli, stderr) {
+  const state = {};
+  for (const line of String(stderr ?? '').split('\n')) {
+    if (!line.trimStart().startsWith('{')) continue;
+    normalize(cli, line, state);
+  }
+  return state.cliErrors ?? [];
 }
 
 /** Retains CR and empty lines verbatim; decodes UTF-8 even across byte boundaries. */

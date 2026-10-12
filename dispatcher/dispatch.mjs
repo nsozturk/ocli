@@ -32,7 +32,7 @@
 import { appendFile, lstat, mkdir, readFile, readlink, rename, writeFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { normalize, createLineSplitter } from './events.mjs';
+import { normalize, createLineSplitter, stderrCliErrors } from './events.mjs';
 import { claimsOf, witness } from './witness.mjs';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -40,7 +40,7 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { paneLabel } from './pane-label.mjs';
 import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor, BUDGET } from './usage.mjs';
-import { providerForNode, readNodes, latestReading } from './tree-read.mjs';
+import { providerForNode, readNodes, latestReading, stopProviderForNode, latestProviderStop } from './tree-read.mjs';
 import { aaFor, loadRanking } from './ranking.mjs';
 
 /**
@@ -343,6 +343,95 @@ export async function decideBlocked({ result, role, readUsage, usageReport = nul
   return { blocked, blockedEvidence, blockedCheck };
 }
 
+// PS1: a FAILED run carrying the provider's own limit message in a CLI error/warn EVENT is a
+// dated routing stop, recorded beside the blocked flag it does not touch. The event
+// requirement is the whole point: model text also renders on stderr, so only JSON error
+// events (stdout via normalize, stderr via stderrCliErrors) can carry this verdict. Measured
+// 2026-10-12: cline's ClinePass message matches no USAGE_LIMIT alternative, hence its arm.
+// Window limits only: a transient `rate limit` / 429 stays `blocked`, never a stop.
+const PROVIDER_STOP_LIMIT = /usage limit|clinepass limit|quota exceeded|insufficient (credit|quota)/i;
+const ABSOLUTE_RESET = /will\s+reset\s+at\s+(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/;
+const RELATIVE_RESET = /resets?\s+in\s+((?:\d+\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s*)+)/i;
+const RETRY_AFTER_RESET = /retry\s+after\s+((?:\d+\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s*)+)/i;
+
+/** The CLI's local wall time as an ISO UTC instant. Exported so tests can inject a zone. */
+export function localWallToIso(year, month, day, hour, minute, second) {
+  const at = new Date(year, month - 1, day, hour, minute, second);
+  if (!Number.isFinite(at.getTime())) throw new Error('unparseable reset time');
+  // No rollover: Feb 31 becomes Mar 3 in the Date constructor, which would invent a reset.
+  if (at.getFullYear() !== year || at.getMonth() !== month - 1 || at.getDate() !== day
+    || at.getHours() !== hour || at.getMinutes() !== minute || at.getSeconds() !== second) {
+    throw new Error('unparseable reset time');
+  }
+  return at.toISOString();
+}
+
+/**
+ * The provider-declared reset as an absolute ISO instant, or null when the text carries no
+ * parseable reset (an unknown stop, cleared only by a later successful run). Absolute ("will
+ * reset at YYYY-MM-DD HH:MM:SS", the CLI's LOCAL wall time) beats relative ("resets in 1h
+ * 6m" or "resets in 1 hour 30 minutes", and a "retry after N seconds" phrase on a window
+ * message, after runEndMs); a present-but-invalid absolute falls through to the relative phrase.
+ */
+export function parseProviderReset(text, runEndMs, localToIso = localWallToIso) {
+  const words = String(text ?? '');
+  const absolute = ABSOLUTE_RESET.exec(words);
+  if (absolute) {
+    const [, year, month, day, hour, minute, second] = absolute.map(Number);
+    const dim = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= dim && hour <= 23 && minute <= 59 && second <= 59) {
+      try {
+        return localToIso(year, month, day, hour, minute, second);
+      } catch { /* fall through to the relative phrase, if any */ }
+    }
+  }
+  const relative = RELATIVE_RESET.exec(words) ?? RETRY_AFTER_RESET.exec(words);
+  if (relative && Number.isFinite(runEndMs)) {
+    let ms = 0;
+    let found = false;
+    for (const [, amount, unit] of relative[1].matchAll(/(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)/gi)) {
+      found = true;
+      const first = unit.toLowerCase()[0];
+      const each = first === 'h' ? 3600_000 : first === 'm' ? 60_000 : 1000;
+      ms += Number(amount) * each;
+    }
+    if (found) {
+      try {
+        return new Date(runEndMs + ms).toISOString();
+      } catch { return null; } // absurd durations overflow the Date range: unparseable
+    }
+  }
+  return null;
+}
+
+/**
+ * P1-P3: only a FAILED run whose window-limit text comes from the CLI's own error/warn event
+ * text yields a stop. The exit code must be numeric nonzero — a run that never started
+ * (spawnError, code null) or was killed carries no provider verdict — and the CLI must map
+ * to a stop provider. Evidence is the FIRST limit-matching line (the whole error object,
+ * C0/C1 and bidi/isolate controls stripped, 200 code points); the full text stays in the
+ * node's stdoutTail/stderrTail.
+ */
+export function decideProviderStop({ result, cliErrorText, cli, model, runEndMs, localToIso = localWallToIso }) {
+  if (typeof result?.code !== 'number' || result.code === 0) return null;
+  const provider = stopProviderForNode({ cli, model });
+  if (!provider) return null;
+  const line = String(cliErrorText ?? '').split(/\r?\n/).find(candidate => PROVIDER_STOP_LIMIT.test(candidate));
+  if (!line) return null;
+  const evidence = [...line.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, '')].slice(0, 200).join('');
+  return { provider, resetsAt: parseProviderReset(cliErrorText, runEndMs, localToIso), evidence };
+}
+
+/** An uncleared stop still binds. Unknown (or corrupt) resets fail closed — a later success
+ * is the only way out — while a dated one ends the instant its reset passes. */
+function providerStopActive(stop, nowMs) {
+  if (!stop || typeof stop !== 'object') return false;
+  if (typeof stop.resetsAt !== 'string') return true;
+  const at = Date.parse(stop.resetsAt);
+  if (!Number.isFinite(at)) return true;
+  return at > nowMs;
+}
+
 
 // Porcelain v2 fields before the path, per entry type (1 changed, 2 renamed, u unmerged, ? untracked).
 const PATH_FIELD = { 1: 8, 2: 9, u: 10, '?': 1 };
@@ -407,8 +496,28 @@ const NON_CANDIDATE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
  * budget row (or none at all) -> deliberately uncapped -> the chosen route's live usageBefore
  * reading -> the newest recorded tree reading -> no reading anywhere, which is `unknown`, never
  * assumed room (the rotation's skip rule refuses to spend blind on a capped route). */
-function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, ranking }) {
+function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, treeStopFor, ranking, nowMs }) {
   const provider = providerForNode({ cli: route.cli, model: route.model });
+  // PS1 first: a provider-declared stop binds even where no budget row exists (cline) or the
+  // route is uncapped (glm) — the provider's own verdict beats every reading we took.
+  const stopProvider = stopProviderForNode({ cli: route.cli, model: route.model });
+  const stopEntry = stopProvider ? treeStopFor(stopProvider) : null;
+  if (stopEntry && providerStopActive(stopEntry.providerStop, nowMs)) {
+    const stopStatus = route.status ?? null;
+    return {
+      role,
+      cli: route.cli ?? null,
+      model: route.model ?? null,
+      inRotation: inRotation.has(role),
+      status: stopStatus,
+      gate: 'stop',
+      gateSource: 'provider-declared',
+      resetsAt: stopEntry.providerStop?.resetsAt ?? null,
+      eligible: false,
+      excludedBy: stopStatus !== 'ok' ? 'status' : 'budget-stop',
+      aa: aaFor(ranking, route),
+    };
+  }
   let gate;
   let gateSource;
   let gateReadAt;
@@ -461,18 +570,25 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
   const inRotation = new Set(rotation);
   const { nodes } = await readNodes(treeRoot());
   const ranking = await loadRanking();
+  const nowMs = Date.now();
   // One tree scan shared by every capped route: provider -> newest recorded reading.
   const readings = new Map();
   const treeReadingFor = provider => {
     if (!readings.has(provider)) readings.set(provider, latestReading(nodes, provider));
     return readings.get(provider);
   };
+  // One tree scan shared by every stoppable route: pool -> newest uncleared provider stop.
+  const stops = new Map();
+  const treeStopFor = stopProvider => {
+    if (!stops.has(stopProvider)) stops.set(stopProvider, latestProviderStop(nodes, stopProvider));
+    return stops.get(stopProvider);
+  };
   const routes = [];
   for (const role of Object.keys(policy?.routes ?? {})) {
     if (NON_CANDIDATE_KEYS.has(role)) continue;
     const route = policy.routes[role];
     if (!route?.argv) continue; // not dispatchable (architect): never a candidate
-    routes.push(candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, ranking }));
+    routes.push(candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, treeStopFor, ranking, nowMs }));
   }
   return {
     v: 1,
@@ -508,8 +624,14 @@ async function listRoutes(args) {
   if ('json' in args) { process.stdout.write(`${JSON.stringify(routes, null, 2)}\n`); return routes; }
   for (const r of routes) {
     const effort = policy.routes[r.role]?.effort ?? policy.routes[r.role]?.variant ?? '-';
+    // PS1: a provider-declared stop names its reset; an unknown one says so, never a time.
+    const until = r.gateSource === 'provider-declared'
+      ? (typeof r.resetsAt === 'string' && Number.isFinite(Date.parse(r.resetsAt))
+        ? ` until ${new Date(r.resetsAt).toISOString().slice(11, 16)}Z`
+        : ' (reset unknown)')
+      : '';
     process.stdout.write(`${String(r.aa ?? '-').padStart(3)}  ${r.role.padEnd(16)} ${String(r.cli).padEnd(9)} ${String(r.model).padEnd(40)} ${String(effort).padEnd(7)} `
-      + `${r.eligible ? 'eligible' : `excluded:${r.excludedBy}`}${r.inRotation ? '  [rotation]' : ''}\n`);
+      + `${r.eligible ? 'eligible' : `excluded:${r.excludedBy}`}${until}${r.inRotation ? '  [rotation]' : ''}\n`);
   }
   process.stdout.write('aa = Artificial Analysis Intelligence Index of exactly this (model, effort); - = not measured at this effort (unranked).\n');
   return routes;
@@ -586,6 +708,15 @@ export async function main(argvInput = process.argv.slice(2)) {
   } catch (error) {
     candidates = { v: 1, error: String(error?.message ?? error) };
   }
+  // PS1 P5: an explicit --role into a provider-declared stop still runs — the lead may
+  // knowingly retry — but says so once, naming the reset. (--role auto cannot land here: it
+  // only picks eligible routes. A stop racing the pick still warns, honestly late.)
+  const chosenStop = candidates.routes?.find?.(candidate => candidate.role === args.role);
+  if (chosenStop?.gateSource === 'provider-declared') {
+    const reset = typeof chosenStop.resetsAt === 'string' && Number.isFinite(Date.parse(chosenStop.resetsAt))
+      ? `until ${chosenStop.resetsAt}` : 'reset time unknown';
+    process.stderr.write(`[dispatch] warning: ${stopProviderForNode({ cli: route.cli, model: route.model })} window stopped ${reset}; explicit --role ${args.role} dispatches anyway\n`);
+  }
   const live = createLive(args, route, workspace, prefixSha);
   process.stderr.write(`[dispatch] live: ${live.liveFile}\n`);
   // Ctrl-C or a kill: the finally below never runs, and the pane would show this run as running,
@@ -612,6 +743,7 @@ export async function main(argvInput = process.argv.slice(2)) {
     const treeBefore = args.verify ? await treeState(workspace) : null;
     const cliStartedAt = Date.now();
     result = await run(route.cli, argv, workspace, live);
+    const cliEndedAt = Date.now(); // relative provider resets ("resets in 1h 6m") add to this
     // The pane cannot see the finally: run.end lands only after the usage read and the verifier
     // (minutes, with a slow test suite), so a finished CLI would look "running" until then.
     live.emit({ kind: 'step', label: `cli.exit code=${result.code} signal=${result.signal}` });
@@ -649,6 +781,13 @@ export async function main(argvInput = process.argv.slice(2)) {
 
     blocked = decision.blocked;
     const { blockedEvidence, blockedCheck } = decision;
+
+    // PS1: the provider's own window verdict, recorded beside the blocked flag it does not
+    // touch. Stdout error events plus cline's stderr JSON error lines; never model text.
+    const providerStop = decideProviderStop({
+      result, cli: route.cli, model: route.model, runEndMs: cliEndedAt,
+      cliErrorText: [...(live.state.cliErrors ?? []), ...stderrCliErrors(route.cli, result.stderr)].join('\n'),
+    });
 
     // A verifier that passes on an UNCHANGED tree proves nothing about the developer — it proves the
     // base was green (a run cut off by its quota before writing a byte would score 1 that way).
@@ -723,6 +862,9 @@ export async function main(argvInput = process.argv.slice(2)) {
       // How `blocked` was decided. A bare flag is unfalsifiable later; this says whether the
       // provider's counter confirmed the transcript or contradicted it.
       blockedCheck,
+      // PS1: the provider's own window stop ({ provider, resetsAt, evidence }), or null.
+      // Additive: older nodes lack it, and lack of it means no verdict.
+      providerStop,
       score,
       verify,
       stdoutTail: result.stdout.slice(-4000),

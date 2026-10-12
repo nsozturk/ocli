@@ -10,6 +10,7 @@ live dir, and never spawns or owns a CLI process.
 
 ## Changes
 
+- **0.5.1** — A failed run whose CLI error event says the plan window is used up (ClinePass, ZAI) records a dated `providerStop`; `--list-routes` and `--role auto` skip that billing pool until the reset. Transient 429s never stop a route.
 - **0.5.0** — Cline (Cline Pass) is a developer CLI: its `--json` stream (tool calls, usage, final text, errors) feeds the cards like the others. The dispatcher records each route's Artificial Analysis Intelligence Index (`aa`), lists routes by it (`--list-routes`) and can pick by it (`--role auto [--min-aa N]`).
 - **0.4.0** — The card's head is the toggle: it opens the card in place, with one block per run
   saying what the run was asked (`run.start.brief`, new and optional in the live contract), where it
