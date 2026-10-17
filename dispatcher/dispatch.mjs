@@ -366,7 +366,7 @@ export async function decideBlocked({ result, role, readUsage, usageReport = nul
   const cliHit = USAGE_LIMIT.exec(cliError);
   // The CLI's own error event comes first: when it decides, it must also be the stored evidence.
   const hit = cliHit ?? USAGE_LIMIT.exec(result.stderr) ?? USAGE_LIMIT.exec(result.stdout);
-  if (!hit) return { blocked: false, blockedEvidence: null, blockedCheck: 'no usage-limit text in the transcript' };
+  if (!hit) return { blocked: false, blockedEvidence: null, blockedCheck: 'no usage-limit text in the transcript', blockedBasis: null };
   const blockedEvidence = hit.input.slice(Math.max(0, hit.index - 200), hit.index + 200);
   const provider = USAGE_PROVIDER_BY_ROLE[role] ?? null;
   if (!provider) {
@@ -377,6 +377,7 @@ export async function decideBlocked({ result, role, readUsage, usageReport = nul
       blockedCheck: cliHit
         ? `no usage counter for role ${role}; CLI-emitted error event carries limit wording (exit ${result.code})`
         : `no usage counter for role ${role}; unconfirmed heuristic on stderr + exit ${result.code}`,
+      blockedBasis: cliHit ? 'cli-error-event' : stderrRefusal ? 'no-counter-heuristic' : null,
     };
   }
   // Prefer the reading dispatch already took immediately after the run: it is the same moment this
@@ -387,6 +388,7 @@ export async function decideBlocked({ result, role, readUsage, usageReport = nul
       blocked: result.code !== 0,
       blockedEvidence,
       blockedCheck: `usage unreadable (${report.status}); fell back to exit code ${result.code}`,
+      blockedBasis: result.code !== 0 ? 'counter-unreadable-exit-code' : null,
     };
   }
   const window = gateFor(provider, report).window ?? null;
@@ -402,12 +404,29 @@ export async function decideBlocked({ result, role, readUsage, usageReport = nul
   // while it delivers complete work.
   const refused = result.code !== 0;
   const blocked = exhausted || refused;
+  // No window bound to this route's pools is the same 'unknown' gateFor reports: the counter was read
+  // but says nothing about this route, so it cannot show room. The exit code decided, as when unreadable.
+  if (refused && !exhausted && !window) {
+    return { blocked, blockedEvidence, blockedBasis: 'counter-unreadable-exit-code',
+      blockedCheck: `usage read but no window matched the pools this route consumes; fell back to exit code ${result.code}` };
+  }
   let blockedCheck;
   if (exhausted) blockedCheck = `usage confirms exhaustion (${where})`;
   else if (refused) blockedCheck = `run failed with exit ${result.code} and limit wording, but the counter shows room (${where}) — a transient refusal, not exhaustion`;
   else blockedCheck = `TEXT MATCHED BUT NOTHING CONFIRMS IT: exit 0 and ${where} — treated as quoted text, not a refusal`;
-  return { blocked, blockedEvidence, blockedCheck };
+  const blockedBasis = exhausted ? 'counter-exhausted' : refused ? 'counter-transient-refusal' : null;
+  return { blocked, blockedEvidence, blockedCheck, blockedBasis };
 }
+
+// What the stderr line may claim for each blockedBasis. Only the provider's own counter showing
+// exhaustion is CONFIRMED; every other route that sets `blocked` says what it actually is.
+const BLOCKED_LABEL = {
+  'counter-exhausted': 'usage limit CONFIRMED against its counter',
+  'counter-transient-refusal': 'refused (transient; counter shows room)',
+  'counter-unreadable-exit-code': 'UNCONFIRMED: no readable counter for this route, exit code decided',
+  'no-counter-heuristic': 'UNCONFIRMED: no usage counter, heuristic',
+  'cli-error-event': "refused by the CLI's own error event",
+};
 
 // PS1: a FAILED run carrying the provider's own limit message in a CLI error/warn EVENT is a
 // dated routing stop, recorded beside the blocked flag it does not touch. The event
@@ -970,7 +989,7 @@ export async function main(argvInput = process.argv.slice(2)) {
     });
 
     blocked = decision.blocked;
-    const { blockedEvidence, blockedCheck } = decision;
+    const { blockedEvidence, blockedCheck, blockedBasis } = decision;
 
     // PS1: the provider's own window verdict, recorded beside the blocked flag it does not
     // touch. Stdout error events plus cline's stderr JSON error lines; never model text.
@@ -1065,8 +1084,11 @@ export async function main(argvInput = process.argv.slice(2)) {
       // How `blocked` was decided. A bare flag is unfalsifiable later; this says whether the
       // provider's counter confirmed the transcript or contradicted it.
       blockedCheck,
+      // Which route set `blocked` (decideBlocked); null when not blocked. Additive: older nodes
+      // lack it, and their blockedCheck text keeps its meaning.
+      blockedBasis,
       // PS1: the provider's own window stop ({ provider, resetsAt, evidence }), or null.
-      // Additive: older nodes lack it, and lack of it means no verdict.
+      // Additive like blockedBasis: older nodes lack it, and lack of it means no verdict.
       providerStop,
       score,
       verify,
@@ -1086,7 +1108,7 @@ export async function main(argvInput = process.argv.slice(2)) {
 
     nodeId = node.nodeId;
     process.stdout.write(`${live.finalText ?? '[dispatch] no assistant message'}\n`);
-    if (blocked) process.stderr.write(`\n[dispatch] ${route.cli} usage limit CONFIRMED against its counter: ${blockedCheck}\n`);
+    if (blocked) process.stderr.write(`\n[dispatch] ${route.cli} ${BLOCKED_LABEL[blockedBasis] ?? 'blocked'}: ${blockedCheck}\n`);
     else if (blockedEvidence) process.stderr.write(`\n[dispatch] ${route.cli} transcript matched usage-limit wording but it was NOT a refusal: ${blockedCheck}\n`);
     if (result.spawnError) {
       process.stderr.write(`[dispatch] could not start ${route.cli}: ${result.stderr}\n`);

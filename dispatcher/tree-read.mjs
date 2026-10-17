@@ -105,11 +105,12 @@ export async function readNodes(treeDir) {
  * the end-of-run state (usageAfter) beats the start-of-run one. A non-ok reading is a missing
  * reading, never a zero one. `expired` is true once ANY scoped window's resetsAt is <= nowMs (a
  * reset weekly window next to a current 5h one is still a stale weekly number); `expiredResetsAt`
- * names the earliest such reset.
+ * names the earliest such reset. `limitIds` defaults to the process-wide budget row; quota.mjs passes
+ * the plans it was handed instead (null = every window), so it never loads a plans file itself.
  * Exported because dispatch.mjs records the same reading as a non-chosen route's candidate gate.
  */
-export function latestReading(nodes, provider, nowMs = Date.now()) {
-  const limitIds = budgetRows()[provider]?.limitIds ?? ROUTE_LIMIT_IDS[provider] ?? null;
+export function latestReading(nodes, provider, nowMs = Date.now(),
+  limitIds = budgetRows()[provider]?.limitIds ?? ROUTE_LIMIT_IDS[provider] ?? null) {
   let best = null;
   let bestAt = '';
   for (const node of nodes) {
