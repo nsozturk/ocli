@@ -29,6 +29,8 @@
 //                     [--worktree auto <run in <repo>.worktrees/<task> on ocli/<task>; created or reused>]
 //                     [--dry-run <LAST flag, with --worktree auto: print the path, create and spawn nothing>]
 //   node dispatcher/dispatch.mjs --role auto [--min-aa 44] ...   (highest-AA eligible route in the rotation; rule aa-rank)
+//   node dispatcher/dispatch.mjs --role auto --size S|M|L [--dry-run] ...   (quota.decide narrows that pool; rule quota;
+//                     split/wait print one JSON line and exit 3; --dry-run reads the tree only, spawns nothing)
 //   node dispatcher/dispatch.mjs --list-routes [--json]           (routes by AA Intelligence Index; spawns nothing)
 //   node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task fix-parser
 //                                (writes the task's plan for the pane's card; spawns nothing, records no node)
@@ -44,10 +46,12 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { paneLabel } from './pane-label.mjs';
 import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, usageDeltas, gateFor, budget, plansError, BUDGETED } from './usage.mjs';
-import { providerForNode, readNodes, latestReading, stopProviderForNode, latestProviderStop } from './tree-read.mjs';
+import { providerForNode, readNodes, latestReading, stopProviderForNode, latestProviderStop, providerStopActive } from './tree-read.mjs';
 import { aaFor, loadRanking } from './ranking.mjs';
 import { handoff, handoffReason, handoffSync } from './handoff.mjs';
 import { resolveWorktree } from './worktree.mjs';
+import { decide, readingFresh } from './quota.mjs';
+import { loadPlans } from './plans.mjs';
 
 /**
  * Which provider's usage counter backs each route. A role absent here has no readable counter, so a
@@ -507,16 +511,6 @@ export function decideProviderStop({ result, cliErrorText, cli, model, runEndMs,
   return { provider, resetsAt: parseProviderReset(cliErrorText, runEndMs, localToIso), evidence };
 }
 
-/** An uncleared stop still binds. Unknown (or corrupt) resets fail closed — a later success
- * is the only way out — while a dated one ends the instant its reset passes. */
-function providerStopActive(stop, nowMs) {
-  if (!stop || typeof stop !== 'object') return false;
-  if (typeof stop.resetsAt !== 'string') return true;
-  const at = Date.parse(stop.resetsAt);
-  if (!Number.isFinite(at)) return true;
-  return at > nowMs;
-}
-
 
 // Porcelain v2 fields before the path, per entry type (1 changed, 2 renamed, u unmerged, ? untracked).
 const PATH_FIELD = { 1: 8, 2: 9, u: 10, '?': 1 };
@@ -668,7 +662,8 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
  * `liveReadings` (provider -> fresh usage reading) is consulted before the tree; with `refresh`
  * (--role auto only) it is first filled with ONE read per capped provider whose in-rotation, ok
  * route has no current tree reading (missing or expired). */
-async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, rule = 'lead-explicit-role', liveReadings = new Map(), refresh = false }) {
+async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, rule = 'lead-explicit-role', liveReadings = new Map(), refresh = false,
+  current = reading => reading && !reading.expired }) {
   const rotationSource = policy?.developers?.rotation?.order;
   const rotation = Array.isArray(rotationSource) ? [...rotationSource] : [];
   const inRotation = new Set(rotation);
@@ -696,7 +691,7 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
       const provider = providerForNode({ cli: route.cli, model: route.model });
       if (provider == null || budget()[provider]?.stopAtPercent == null || liveReadings.has(provider)) continue;
       const reading = treeReadingFor(provider);
-      if (reading && !reading.expired) continue;
+      if (current(reading, nowMs)) continue;
       liveReadings.set(provider, await readRouteUsage(route));
     }
   }
@@ -755,15 +750,20 @@ async function listRoutes(args) {
  * --min-aa. An unranked route is never auto-picked. No such route -> refuse; no developer CLI is spawned (a usage read may have run).
  * A capped route with no current reading is read once first; those readings are returned so the
  * recorded candidate set and the chosen route's usageBefore reuse them instead of re-reading. */
-async function pickByAA(policy, minAaRaw) {
+async function autoPool(policy, minAaRaw, refresh, current) {
   const minAA = minAaRaw === undefined ? null : Number(minAaRaw);
   if (minAA !== null && !Number.isFinite(minAA)) throw new Error(`--min-aa must be a number, got ${minAaRaw}`);
   const rotation = Array.isArray(policy?.developers?.rotation?.order) ? policy.developers.rotation.order : [];
   const liveReadings = new Map();
-  const set = await buildCandidates({ policy, chosenRole: null, reasonText: null, usageBefore: null, liveReadings, refresh: true });
+  const set = await buildCandidates({ policy, chosenRole: null, reasonText: null, usageBefore: null, liveReadings, refresh, current });
   const pool = set.routes
     .filter(r => r.eligible && r.inRotation && r.aa !== null && (minAA === null || r.aa >= minAA))
     .sort((a, b) => b.aa - a.aa || rotation.indexOf(a.role) - rotation.indexOf(b.role));
+  return { minAA, rotation, liveReadings, set, pool };
+}
+
+async function pickByAA(policy, minAaRaw) {
+  const { minAA, liveReadings, set, pool } = await autoPool(policy, minAaRaw, true);
   if (pool.length === 0) {
     const seen = set.routes.filter(r => r.inRotation).map(r => `${r.role}(aa ${r.aa ?? '-'}, ${r.eligible ? 'eligible' : r.excludedBy})`).join(', ');
     throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. No developer CLI was spawned.`);
@@ -771,6 +771,38 @@ async function pickByAA(policy, minAaRaw) {
   const [first, second] = pool;
   return { role: first.role, reason: `aa-rank: ${first.role} aa=${first.aa}${second ? ` over ${second.role} aa=${second.aa}` : ' (only ranked eligible route)'}`, liveReadings };
 }
+
+/** Q12: --role auto --size. Today's gates still bind — the routes are pickByAA's pool (eligible,
+ * ranked, in rotation, at --min-aa) — and quota.decide narrows them. `refresh` false (--dry-run) reads
+ * the tree only: no usage read, no app-server. `reasons` names every in-rotation route not chosen:
+ * first the ones the gates left out (their excludedBy, unranked, min-aa, no-plan), then decide's. */
+async function decideByQuota(policy, size, minAaRaw, { refresh }) {
+  const { plans } = loadPlans();
+  // Q12f: refresh on decide's own age rule, so a reading decide would call stale is re-read first.
+  const current = (reading, nowMs) => reading && !reading.expired && readingFresh(plans, reading.recordedAt, nowMs);
+  const { rotation, liveReadings, set, pool } = await autoPool(policy, minAaRaw, refresh, current);
+  const { nodes } = await readNodes(treeRoot());
+  const nowMs = Date.now();
+  // A live refresh is a reading decide must see too: a role-less node of that provider carrying it.
+  // No exitCode, so it neither clears a stop nor hides a blocked run.
+  for (const [provider, reading] of liveReadings) {
+    const route = set.routes.find(r => providerForNode(r) === provider);
+    if (reading?.status === 'ok' && route) nodes.push({ cli: route.cli, model: route.model, usageAfter: reading, recordedAt: new Date(nowMs).toISOString() });
+  }
+  const routes = [];
+  const skipped = [];
+  for (const c of set.routes.filter(r => r.inRotation)) {
+    const provider = providerForNode(c);
+    if (!pool.includes(c)) skipped.push({ role: c.role, why: c.excludedBy ?? (c.aa === null ? 'unranked' : 'min-aa') });
+    // decide throws on a provider the plans do not declare: such a route cannot be priced.
+    else if (provider == null || !Object.hasOwn(plans.providers, provider)) skipped.push({ role: c.role, why: 'no-plan' });
+    else routes.push({ role: c.role, provider, aa: c.aa, rotationIndex: rotation.indexOf(c.role), status: c.status });
+  }
+  const decision = decide(plans, nodes, routes, { size, nowMs });
+  return { ...decision, reasons: [...skipped, ...decision.reasons], liveReadings };
+}
+
+const AUTO_WITHOUT_SIZE = '--role auto without --size: AA only, no quota decision';
 
 const CONTINUE_CHANGED_MAX = 20;
 
@@ -834,16 +866,41 @@ export async function main(argvInput = process.argv.slice(2)) {
     process.stderr.write(`[dispatch] --worktree auto -> ${worktree.path} (${worktree.branch}, ${worktree.action})\n`);
     return worktree;
   };
+  // Q12: --role auto --size --dry-run is a quota decision (with the worktree path when asked), never Q10's path line.
+  const dryRun = 'dry-run' in args;
+  const quotaDryRun = dryRun && args.role === 'auto' && size !== null;
   if ('worktree' in args) {
     if (args.worktree !== 'auto') throw new Error(`--worktree takes only "auto" (got ${JSON.stringify(args.worktree ?? null)})`);
-    if ('dry-run' in args) { const worktree = useWorktree(true); process.stdout.write(`${worktree.path}\n`); return worktree; }
-  } else if ('dry-run' in args) {
-    throw new Error('--dry-run applies only to --worktree auto');
+    if (dryRun && !quotaDryRun) { const worktree = useWorktree(true); process.stdout.write(`${worktree.path}\n`); return worktree; }
+  } else if (dryRun && !quotaDryRun) {
+    throw new Error('--dry-run applies only to --worktree auto or --role auto --size S|M|L');
   }
   const policy = await readPolicy();
   let rule = 'lead-explicit-role';
   let liveReadings = new Map();
-  if (args.role === 'auto') {
+  let quota = null;
+  if (args.role === 'auto' && size !== null) {
+    const decision = await decideByQuota(policy, size, args['min-aa'], { refresh: !dryRun });
+    liveReadings = decision.liveReadings;
+    const line = { action: decision.action, ...(decision.route ? { role: decision.route.role } : {}),
+      ...('until' in decision ? { until: decision.until } : {}), ...(decision.reason ? { reason: decision.reason } : {}),
+      reasons: decision.reasons };
+    // split / wait (and any dry run): one JSON line, nothing spawned, no node. 3 = not run.
+    if (dryRun || decision.action !== 'run') {
+      if (dryRun && 'worktree' in args) line.worktree = useWorktree(true).path;
+      process.stdout.write(`${JSON.stringify(line)}\n`);
+      if (decision.action !== 'run') process.exitCode = 3;
+      return line;
+    }
+    const { role, aa } = decision.route;
+    quota = { action: 'run', role, size, reasons: decision.reasons };
+    args.role = role;
+    const reason = `quota: ${role} aa=${aa} size=${size}`;
+    args['pick-reason'] = args['pick-reason'] ? `${reason}; ${args['pick-reason']}` : reason;
+    rule = 'quota';
+    process.stderr.write(`[dispatch] --role auto --size ${size} -> ${role} (${reason})\n`);
+  } else if (args.role === 'auto') {
+    process.stderr.write(`[dispatch] ${AUTO_WITHOUT_SIZE}\n`);
     const picked = await pickByAA(policy, args['min-aa']);
     liveReadings = picked.liveReadings;
     args.role = picked.role;
@@ -885,6 +942,8 @@ export async function main(argvInput = process.argv.slice(2)) {
   } catch (error) {
     candidates = { v: 1, error: String(error?.message ?? error) };
   }
+  // Q12: the quota decision that picked this route, additive (absent for every other rule).
+  if (quota) candidates.quota = quota;
   // PS1 P5: an explicit --role into a provider-declared stop still runs — the lead may
   // knowingly retry — but says so once, naming the reset. (--role auto cannot land here: it
   // only picks eligible routes. A stop racing the pick still warns, honestly late.)
