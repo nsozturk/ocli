@@ -159,6 +159,9 @@ there is simply no card.
 | `--size` | `S`, `M` or `L`: the slice's size as the lead judged it, recorded on the tree node (`null` when omitted); anything else is refused |
 | `--suffix` | per-run text appended last, so the shared prompt prefix stays cache-stable |
 | `--parent` | the record id of the run this one continues |
+| `--continue` | a node id: resume that failed or signalled run's WIP hand-off (see below); exclusive with `--worktree` |
+| `--worktree` | `auto` only: run in `<repo>.worktrees/<task>` on branch `ocli/<task>`, created or reused (see below) |
+| `--dry-run` | the last flag, with `--worktree auto` only: print the worktree path, create and spawn nothing |
 | `--brief` | what the person reads in the pane's open card (default: the prompt's first heading and first task paragraph, then the `--suffix` without its worktree path; at most 600 code points). The pane shows the opening of `--prompt` unless `--brief` is given: keep secrets out of it. |
 | `--declare-phases` | with `--task` only: write the task's plan (comma-separated phase names) and exit |
 
@@ -186,6 +189,23 @@ signal the dispatcher stops the CLI (SIGKILL after 5 s), hands off within 10 s a
 re-raises the signal. A successful run (exit 0, not blocked) adds no `handoff` field. Each node also records `size`, the
 run's summed `tokens` (`metered` = input + output + reasoning; cached input is not metered; `null` when the CLI reports no
 usage) and `usageDeltas`, one per usage window (5-hour and weekly apart).
+
+**Resuming a hand-off: `--continue <nodeId>`.** Looks the node up in the tree and refuses, before anything is read or
+spawned, an unknown id, a node without a `handoff`, a hand-off naming no worktree, or a `--root` other than that worktree.
+Otherwise `--root` defaults to the hand-off worktree, `--parent` becomes the node, and one fixed note goes **after**
+`--suffix` (so the prompt prefix and `prefixSha` are a fresh run's): the previous CLI/model, the stop reason, the WIP commit
+and branch (a commit is used only if it is 7-64 lower-case hex; otherwise the note says "no commit" with `commitSkipped` and
+points at `git status`), up to 20 changed lines, each value cleaned like a pane label and capped. `finalTextTail` is never
+put in the note. The new node records `continuedFrom`.
+
+**One worktree per task: `--worktree auto`.** The CLI runs in `<dirname(top)>/<basename(top)>.worktrees/<task>` on branch
+`ocli/<task>`, where `top` is the git top of `--root` (or the cwd); the tree and live dirs stay where they were. A registered
+worktree on that branch at that path is reused; an existing `ocli/<task>` branch is checked out as it is (never `-B`, its tip
+is kept); otherwise the branch is created from `HEAD`. Anything else at the path (a foreign directory, a worktree on
+another branch, a registered worktree whose directory is gone) is refused and left alone: the dispatcher never merges,
+removes, prunes or forces. The task must be a safe path segment (no `/`, no `..`), every git call runs with
+`core.fsmonitor=false`, and the worktree is created only after the route is validated, so an unknown `--role` leaves nothing
+behind. `--dry-run` (as the last flag) prints the path and returns before any read or spawn.
 
 ## Configuration
 
@@ -353,7 +373,7 @@ The full contract, including how another dispatcher can write compatible files, 
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
 | `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
-| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `plans.mjs` + `provider-plans.example.json` (caps), `policy.example.json` |
+| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` (caps), `policy.example.json` |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
 

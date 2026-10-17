@@ -25,6 +25,9 @@
 //                     [--brief <what the person reads in the pane; default: derived from --suffix and the prompt>]
 //                     [--pick-reason <why this route; recorded on the node>]
 //                     [--size S|M|L <the slice's size as the lead judged it; recorded on the node>]
+//                     [--continue <nodeId> <resume that failed run's hand-off: its worktree, a note LAST>]
+//                     [--worktree auto <run in <repo>.worktrees/<task> on ocli/<task>; created or reused>]
+//                     [--dry-run <LAST flag, with --worktree auto: print the path, create and spawn nothing>]
 //   node dispatcher/dispatch.mjs --role auto [--min-aa 44] ...   (highest-AA eligible route in the rotation; rule aa-rank)
 //   node dispatcher/dispatch.mjs --list-routes [--json]           (routes by AA Intelligence Index; spawns nothing)
 //   node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task fix-parser
@@ -44,6 +47,7 @@ import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, usageDel
 import { providerForNode, readNodes, latestReading, stopProviderForNode, latestProviderStop } from './tree-read.mjs';
 import { aaFor, loadRanking } from './ranking.mjs';
 import { handoff, handoffReason, handoffSync } from './handoff.mjs';
+import { resolveWorktree } from './worktree.mjs';
 
 /**
  * Which provider's usage counter backs each route. A role absent here has no readable counter, so a
@@ -749,6 +753,38 @@ async function pickByAA(policy, minAaRaw) {
   return { role: first.role, reason: `aa-rank: ${first.role} aa=${first.aa}${second ? ` over ${second.role} aa=${second.aa}` : ' (only ranked eligible route)'}`, liveReadings };
 }
 
+const CONTINUE_CHANGED_MAX = 20;
+
+/** Q9: --continue <nodeId>. The node's hand-off (Q7/Q8) names the worktree and the WIP commit; the
+ * note says so to the next CLI. Refused — before any read or spawn — for an unknown id, a node with
+ * no hand-off, or a --root that is not the hand-off's worktree. Every value is tree data a CLI
+ * wrote, so each is cleaned like a pane label before it reaches argv. */
+async function continuationFor(args) {
+  const id = args.continue;
+  const { nodes } = await readNodes(treeRoot());
+  const prior = id ? nodes.findLast(n => n.nodeId === id) : undefined;
+  if (!prior) throw new Error(`--continue: no node ${JSON.stringify(id ?? null)} in the tree`);
+  const h = prior.handoff;
+  if (!h || typeof h !== 'object') throw new Error(`--continue: node ${id} has no handoff (only a failed or signalled run leaves one)`);
+  if (typeof h.worktree !== 'string' || !h.worktree) throw new Error(`--continue: node ${id}'s handoff names no worktree`);
+  const root = path.resolve(h.worktree);
+  if (args.root !== undefined && path.resolve(args.root) !== root) {
+    throw new Error(`--continue: --root ${JSON.stringify(args.root)} is not the hand-off worktree ${JSON.stringify(root)}`);
+  }
+  const clean = (value, max) => paneLabel(value, max) || 'unknown';
+  // Shape-checked, not just cleaned: the sha lands inside a `git show` the next CLI may run.
+  const sha = typeof h.commit === 'string' && /^[0-9a-f]{7,64}$/.test(h.commit) ? h.commit : '';
+  const changed = (Array.isArray(h.changed) ? h.changed : []).slice(0, CONTINUE_CHANGED_MAX)
+    .map(line => paneLabel(String(line).replace('\t', ' '), 300)).filter(Boolean);
+  const work = sha
+    ? `its work is commit ${sha} on branch ${clean(h.branch, 200)} in this worktree`
+    : `no commit — ${clean(h.commitSkipped, 200)}; any work is uncommitted in this worktree`;
+  const note = `Continuation: a previous run (${clean(prior.cli, 80)}/${clean(prior.model, 80)}, node ${clean(prior.nodeId, 80)}) `
+    + `stopped (${clean(h.reason, 40)}); ${work}; changed: ${changed.join(', ') || 'none'}; `
+    + `read \`${sha ? `git show --stat ${sha}` : 'git status'}\` and continue; do not redo finished work.`;
+  return { root, note };
+}
+
 export async function main(argvInput = process.argv.slice(2)) {
   const args = parseArgs(argvInput);
   // `in`, not `!== undefined`: the flag last with no value parses to undefined and must still be
@@ -762,7 +798,29 @@ export async function main(argvInput = process.argv.slice(2)) {
   // Q6: `in`, so a trailing --size with no value is refused, not taken as omitted.
   const size = 'size' in args ? args.size : null;
   if (size !== null && !['S', 'M', 'L'].includes(size)) throw new Error(`--size must be S, M or L, got ${JSON.stringify(size ?? null)}`);
-  const workspace = path.resolve(args.root ?? process.cwd());
+  // Q9: resolved before anything is read or spawned, so a refusal costs nothing.
+  let continuation = null;
+  if ('worktree' in args && 'continue' in args) {
+    throw new Error('--worktree and --continue are exclusive: the hand-off already names its worktree');
+  }
+  if ('continue' in args) {
+    continuation = await continuationFor(args);
+    args.root ??= continuation.root;
+    args.parent = args.continue;
+  }
+  // Q10: the task's own worktree beside the repo becomes {root}; tree and live dirs stay put. A dry
+  // run prints the path and returns before any read or spawn. Never merged or removed here.
+  const useWorktree = (dryRun) => {
+    const worktree = resolveWorktree({ root: args.root ?? process.cwd(), task: args.task, dryRun });
+    process.stderr.write(`[dispatch] --worktree auto -> ${worktree.path} (${worktree.branch}, ${worktree.action})\n`);
+    return worktree;
+  };
+  if ('worktree' in args) {
+    if (args.worktree !== 'auto') throw new Error(`--worktree takes only "auto" (got ${JSON.stringify(args.worktree ?? null)})`);
+    if ('dry-run' in args) { const worktree = useWorktree(true); process.stdout.write(`${worktree.path}\n`); return worktree; }
+  } else if ('dry-run' in args) {
+    throw new Error('--dry-run applies only to --worktree auto');
+  }
   const policy = await readPolicy();
   let rule = 'lead-explicit-role';
   let liveReadings = new Map();
@@ -783,11 +841,15 @@ export async function main(argvInput = process.argv.slice(2)) {
       + 'Re-probe it and set status to "ok" in dispatcher/policy.json before dispatching. A known-dead provider is not retried blind.',
     );
   }
+  // Created only once the route is known to run: a bad --role leaves no worktree or branch behind.
+  if ('worktree' in args) args.root = useWorktree(false).path;
+  const workspace = path.resolve(args.root ?? process.cwd());
 
   // {root} exists for CLIs that do not honour the process cwd (agy keeps its own workspace).
   // Cache discipline: providers key their prompt cache on a byte-stable PREFIX, so the shared spec
   // (--prompt) goes first and any per-dispatch text (--suffix: workdir, parent node) goes LAST.
-  const prompt = args.suffix ? `${args.prompt}\n\n${args.suffix}` : args.prompt;
+  // Q9: a --continue note goes after the suffix, so the prefix stays the spec's.
+  const prompt = [args.prompt, args.suffix, continuation?.note].filter(Boolean).join('\n\n');
   // The cache prefix's fingerprint: --prompt ONLY, never the suffix, so runs sharing a spec share it
   // and the pane can flag a phase whose prefix drifted. Recorded, never sent to the CLI.
   const prefixSha = createHash('sha256').update(args.prompt, 'utf8').digest('hex').slice(0, 12);
@@ -844,6 +906,7 @@ export async function main(argvInput = process.argv.slice(2)) {
         exitCode: null, signal, ms: null, usageBefore, usageAfter: null, size, tokens: live.tokens, candidates,
         blocked: false, providerStop: null, score: null,
         ...(handoffRecord ? { handoff: handoffRecord } : {}),
+        ...(continuation ? { continuedFrom: args.continue } : {}),
         recordedAt: new Date().toISOString(),
       };
       const treeDir = treeRoot();
@@ -1012,6 +1075,8 @@ export async function main(argvInput = process.argv.slice(2)) {
       // The CLI's claims against its own trace (witness.mjs); {v, error} when it threw.
       witness: witnessResult,
       ...(handoffRecord ? { handoff: handoffRecord } : {}),
+      // Q9: the node this run resumed (--continue); absent on a fresh run.
+      ...(continuation ? { continuedFrom: args.continue } : {}),
       recordedAt: new Date().toISOString(),
     };
 

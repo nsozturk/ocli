@@ -64,11 +64,13 @@ function fakeCli(env: string, { ignoreTerm = false, exitCode = null as number | 
   const cli = path.join(env, 'fake-cli.mjs');
   writeFileSync(cli, [
     "import { mkdirSync, writeFileSync } from 'node:fs';",
+    // The handler goes in before the pid file the test waits on: under load a SIGTERM sent between the two would
+    // kill the CLI outright and the SIGKILL-after-grace test would measure the wrong path.
+    ignoreTerm ? "process.on('SIGTERM', () => {});" : '',
     `writeFileSync(${JSON.stringify(path.join(env, 'cli.pid'))}, String(process.pid));`,
     "mkdirSync('orchestra/live', { recursive: true });",
     "writeFileSync('orchestra/live/x.jsonl', 'j\\n');",
     "writeFileSync('work.txt', 'half\\n');",
-    ignoreTerm ? "process.on('SIGTERM', () => {});" : '',
     exitCode === null ? 'setTimeout(() => {}, 30000);' : `process.exit(${exitCode});`,
   ].join('\n'));
   return cli;
@@ -143,6 +145,22 @@ it('SIGTERM mid-run: dies by SIGTERM, leaves a WIP commit and a partial node tha
   const events = run.events(node.runId);
   expect(events.filter(e => e.kind === 'run.end')).toHaveLength(1);
   expect(events.at(-1)).toMatchObject({ kind: 'run.end', status: 'failed', signal: 'SIGTERM', exitCode: null, nodeId: node.nodeId });
+}, 30_000);
+
+it('a signalled --continue run: the partial node names the node it continued (Q9)', async () => {
+  const dir = repo();
+  const env = temp('orchestra-signal-env-');
+  mkdirSync(path.join(env, 'tree'), { recursive: true });
+  writeFileSync(path.join(env, 'tree', 'hist.jsonl'), `${JSON.stringify({ schemaVersion: 1, nodeId: 'prior-1', task: 'q8',
+    role: 'fake', handoff: { v: 1, reason: 'limit', worktree: dir, commit: null, commitSkipped: 'x', changed: [] } })}\n`);
+  const run = dispatch(dir, env, fakeCli(env), { extraArgs: ['--continue', 'prior-1'] });
+  await waitFor(() => existsSync(path.join(dir, 'work.txt')) && existsSync(path.join(env, 'cli.pid')))
+    .catch(() => { throw new Error(`the fake CLI never started: ${run.stderr()}`); });
+  pids.push(readPid(path.join(env, 'cli.pid')));
+  run.child.kill('SIGTERM');
+  expect(await run.exited(15_000), run.stderr()).toEqual({ code: null, signal: 'SIGTERM' });
+  const [node] = run.nodes();
+  expect(node).toMatchObject({ partial: true, signal: 'SIGTERM', continuedFrom: 'prior-1' });
 }, 30_000);
 
 it('a CLI that ignores SIGTERM is SIGKILLed after the grace, and the hand-off still lands', async () => {
