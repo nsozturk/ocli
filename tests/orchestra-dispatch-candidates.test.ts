@@ -442,6 +442,8 @@ describe('dispatch records the candidate set (RS1)', () => {
   it('--role auto with --min-aa above every eligible ranked route refuses and spawns nothing', async () => {
     rankingWith([entry('codex', 'gpt-6-astra', 'high', 46), entry('muse', MUSE_MODEL, 'max', 44)]);
     await expect(dispatch('auto', '--min-aa', '50')).rejects.toThrow(/no eligible ranked route in the rotation at aa >= 50/);
+    // A usage read may have run before refusing, so the refusal claims only what holds (Q5f).
+    await expect(dispatch('auto', '--min-aa', '50')).rejects.toThrow(/No developer CLI was spawned\.$/);
     expect(mocks.spawn).not.toHaveBeenCalled();
     expect(mocks.appendFile).not.toHaveBeenCalled();
   });

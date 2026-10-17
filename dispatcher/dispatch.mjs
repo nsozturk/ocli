@@ -24,6 +24,7 @@
 //                     [--parent <nodeId>] [--root <dir>] [--suffix <per-run text, appended LAST for cache stability>]
 //                     [--brief <what the person reads in the pane; default: derived from --suffix and the prompt>]
 //                     [--pick-reason <why this route; recorded on the node>]
+//                     [--size S|M|L <the slice's size as the lead judged it; recorded on the node>]
 //   node dispatcher/dispatch.mjs --role auto [--min-aa 44] ...   (highest-AA eligible route in the rotation; rule aa-rank)
 //   node dispatcher/dispatch.mjs --list-routes [--json]           (routes by AA Intelligence Index; spawns nothing)
 //   node dispatcher/dispatch.mjs --declare-phases implement,review,merge --task fix-parser
@@ -34,14 +35,15 @@ import { StringDecoder } from 'node:string_decoder';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { normalize, createLineSplitter, stderrCliErrors } from './events.mjs';
 import { claimsOf, witness } from './witness.mjs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { paneLabel } from './pane-label.mjs';
-import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor, budget, plansError, BUDGETED } from './usage.mjs';
+import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, usageDeltas, gateFor, budget, plansError, BUDGETED } from './usage.mjs';
 import { providerForNode, readNodes, latestReading, stopProviderForNode, latestProviderStop } from './tree-read.mjs';
 import { aaFor, loadRanking } from './ranking.mjs';
+import { handoff, handoffReason, handoffSync } from './handoff.mjs';
 
 /**
  * Which provider's usage counter backs each route. A role absent here has no readable counter, so a
@@ -79,7 +81,8 @@ function parseArgs(argv) {
  * Cleared when it exits, so a signal never reaches a pid the OS may already have reused. */
 let currentChild = null;
 
-function run(command, args, cwd, live = null) {
+/** `timeoutMs` (optional): past it the child is SIGKILLed and the result says `timedOut: true`. */
+export function run(command, args, cwd, live = null, timeoutMs = null) {
   return new Promise(resolve => {
     const started = Date.now();
     let stdout = '';
@@ -87,9 +90,12 @@ function run(command, args, cwd, live = null) {
     let settled = false;
     const splitters = { stdout: createLineSplitter(), stderr: createLineSplitter() };
     const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
+    let timer = null;
+    let timedOut = false;
     const finish = (code, signal, error = null) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       currentChild = null;
       stdout += decoders.stdout.end();
       stderr += decoders.stderr.end();
@@ -97,7 +103,7 @@ function run(command, args, cwd, live = null) {
         for (const line of splitters[stream].end()) live?.line(stream, line);
       }
       resolve({ code, signal, stdout, stderr: error ? String(error) : stderr,
-        ms: Date.now() - started, spawnError: error !== null });
+        ms: Date.now() - started, spawnError: error !== null, timedOut });
     };
     let child;
     try {
@@ -109,6 +115,7 @@ function run(command, args, cwd, live = null) {
       return;
     }
     currentChild = child;
+    if (timeoutMs) timer = setTimeout(() => { timedOut = true; try { child.kill('SIGKILL'); } catch { /* gone */ } }, timeoutMs);
     live?.start(child.pid ?? null);
     child.stdout.on('data', chunk => {
       if (settled) return;
@@ -123,6 +130,46 @@ function run(command, args, cwd, live = null) {
     child.on('error', error => finish(null, null, error));
     child.on('close', (code, signal) => finish(code, signal));
   });
+}
+
+// Env overrides exist so the signal tests can pin the SIGKILL and git-timeout paths in a second or two.
+const SIGNAL_GRACE_MS = Number(process.env.ORCHESTRA_SIGNAL_GRACE_MS) || 5000;
+const SIGNAL_HANDOFF_MS = Number(process.env.ORCHESTRA_SIGNAL_HANDOFF_MS) || 10_000;
+const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/** Q8: whether `pid` still runs, asked synchronously. In a signal handler the event loop never runs,
+ * so Node never reaps the child: a dead child stays a zombie and kill(pid, 0) keeps succeeding
+ * (measured: 1 s after SIGTERM, ps said Z). So ps decides; a probe that cannot run counts as gone. */
+function running(pid) {
+  try { process.kill(pid, 0); } catch { return false; }
+  try {
+    const probe = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 });
+    return probe.status === 0 && !probe.stdout.trim().startsWith('Z');
+  } catch { return false; }
+}
+
+/** Q8: pass the signal to the child, wait up to 5 s for it to die, then SIGKILL. Synchronous.
+ * ponytail: kills the direct child only (a grandchild may still write during the commit) —
+ * process-group kill later. */
+function stopChildSync(child, signal) {
+  const pid = child?.pid;
+  if (!pid) return;
+  try { process.kill(pid, signal); } catch { return; }
+  const until = Date.now() + SIGNAL_GRACE_MS;
+  while (running(pid)) {
+    if (Date.now() >= until) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } return; }
+    pause(50);
+  }
+}
+
+/** Q8: git for the signal path's hand-off: spawnSync, every call inside one 10 s budget. */
+function gitSync(cwd) {
+  const deadline = Date.now() + SIGNAL_HANDOFF_MS;
+  return (args, timeoutMs) => {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: Math.max(1, Math.min(timeoutMs, deadline - Date.now())) });
+    return { code: r.status, signal: r.signal, stdout: r.stdout ?? '', stderr: r.stderr ?? '', timedOut: r.error?.code === 'ETIMEDOUT' };
+  };
 }
 
 function resolveArgv(route, values) {
@@ -243,6 +290,8 @@ function createLive(args, route, workspace, prefixSha) {
   let seq = 0;
   let errors = 0;
   let finalText = null;
+  // Q6: the run's token totals, summed from the normalized usage events. null until one arrives.
+  let tokens = null;
   // The tool.end records written, for the witness: the only kind it reads, so streamed message deltas
   // never push them out. ponytail: the newest 5000; a longer run's oldest edits and test runs fall out.
   const events = [];
@@ -266,6 +315,13 @@ function createLive(args, route, workspace, prefixSha) {
     get errors() { return errors; },
     get finalText() { return finalText; },
     get events() { return events; },
+    // metered = what the provider bills against the plan: cached input is NOT in it. A field no event
+    // carried stays null; metered is null when input or output is (reasoning null counts as 0).
+    get tokens() {
+      if (!tokens) return null;
+      const { input, output, reasoning } = tokens;
+      return { ...tokens, metered: input === null || output === null ? null : input + output + (reasoning ?? 0) };
+    },
     start(pid) {
       emit({ kind: 'run.start', model: route.model, root: workspace, parentId: args.parent ?? null, pid,
         title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role), prefixSha,
@@ -277,6 +333,12 @@ function createLive(args, route, workspace, prefixSha) {
       if (stream === 'stdout') {
         for (const event of normalize(route.cli, line, state)) {
           if (event.kind === 'message') finalText = event.text;
+          if (event.kind === 'usage') {
+            tokens ??= { input: null, output: null, cached: null, reasoning: null };
+            for (const field of ['input', 'output', 'cached', 'reasoning']) {
+              if (event[field] !== null) tokens[field] = (tokens[field] ?? 0) + event[field];
+            }
+          }
           emit(event, at);
         }
       }
@@ -627,8 +689,10 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
   };
 }
 
-/** Your own dispatcher/policy.json (gitignored) wins; without one, the shipped example is used. */
+/** ORCHESTRA_POLICY names a policy file outright (tests bring their own routes); otherwise your own
+ * dispatcher/policy.json (gitignored) wins, and without one the shipped example is used. */
 async function readPolicy() {
+  if (process.env.ORCHESTRA_POLICY) return JSON.parse(await readFile(path.resolve(process.env.ORCHESTRA_POLICY), 'utf8'));
   const text = await readFile(path.join(HERE, 'policy.json'), 'utf8').catch(error => {
     if (error?.code !== 'ENOENT') throw error;
     return readFile(path.join(HERE, 'policy.example.json'), 'utf8');
@@ -665,7 +729,7 @@ async function listRoutes(args) {
 }
 
 /** --role auto: the highest-AA eligible route IN THE ROTATION (ties: rotation order), at or above
- * --min-aa. An unranked route is never auto-picked. No such route -> refuse; no CLI is spawned.
+ * --min-aa. An unranked route is never auto-picked. No such route -> refuse; no developer CLI is spawned (a usage read may have run).
  * A capped route with no current reading is read once first; those readings are returned so the
  * recorded candidate set and the chosen route's usageBefore reuse them instead of re-reading. */
 async function pickByAA(policy, minAaRaw) {
@@ -679,7 +743,7 @@ async function pickByAA(policy, minAaRaw) {
     .sort((a, b) => b.aa - a.aa || rotation.indexOf(a.role) - rotation.indexOf(b.role));
   if (pool.length === 0) {
     const seen = set.routes.filter(r => r.inRotation).map(r => `${r.role}(aa ${r.aa ?? '-'}, ${r.eligible ? 'eligible' : r.excludedBy})`).join(', ');
-    throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. No CLI was spawned (a usage read may have run).`);
+    throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. No developer CLI was spawned.`);
   }
   const [first, second] = pool;
   return { role: first.role, reason: `aa-rank: ${first.role} aa=${first.aa}${second ? ` over ${second.role} aa=${second.aa}` : ' (only ranked eligible route)'}`, liveReadings };
@@ -695,13 +759,11 @@ export async function main(argvInput = process.argv.slice(2)) {
     if (!args[required]) throw new Error(`--${required} is required`);
   }
   checkTask(args.task);
+  // Q6: `in`, so a trailing --size with no value is refused, not taken as omitted.
+  const size = 'size' in args ? args.size : null;
+  if (size !== null && !['S', 'M', 'L'].includes(size)) throw new Error(`--size must be S, M or L, got ${JSON.stringify(size ?? null)}`);
   const workspace = path.resolve(args.root ?? process.cwd());
-  // Your own dispatcher/policy.json (gitignored) wins; without one, the shipped example is used.
-  const policyText = await readFile(path.join(HERE, 'policy.json'), 'utf8').catch(error => {
-    if (error?.code !== 'ENOENT') throw error;
-    return readFile(path.join(HERE, 'policy.example.json'), 'utf8');
-  });
-  const policy = JSON.parse(policyText);
+  const policy = await readPolicy();
   let rule = 'lead-explicit-role';
   let liveReadings = new Map();
   if (args.role === 'auto') {
@@ -754,14 +816,44 @@ export async function main(argvInput = process.argv.slice(2)) {
   const live = createLive(args, route, workspace, prefixSha);
   process.stderr.write(`[dispatch] live: ${live.liveFile}\n`);
   // Ctrl-C or a kill: the finally below never runs, and the pane would show this run as running,
-  // then stale, for a day. Write run.end, pass the signal to the CLI, then die by the same signal.
+  // then stale, for a day. Stop the child, keep its work (Q8), write a partial node and run.end,
+  // then die by the same signal. All synchronous: an await would let the child's close resume main,
+  // which would write a second node. A throw costs the node, never run.end or the re-raise.
   let ended = false;
+  let cliStarted = false;
+  // Set once the normal path starts its own Q7 hand-off and node write. A signal from then on must
+  // not kill that git commit mid-flight (index.lock) nor write a second node for the same runId.
+  // ponytail: such a signal leaves run.end but maybe no node (the git child is left to finish, not
+  // waited for) — defer the re-raise until the node lands if that window ever loses work.
+  let finishing = false;
   const onSignal = signal => {
     for (const name of SIGNALS) process.removeListener(name, onSignal);
     if (ended) return;
     ended = true;
-    if (currentChild?.pid) { try { process.kill(currentChild.pid, signal); } catch { /* already gone */ } }
-    live.emit({ kind: 'run.end', exitCode: null, signal, ms: null, status: 'failed', nodeId: null, score: null,
+    let partialId = null;
+    if (!finishing) try {
+      stopChildSync(currentChild, signal);
+      // A CLI that never started left nothing to keep (handoffReason's rule).
+      const handoffRecord = cliStarted ? handoffSync({ workspace, task: args.task, runId: live.runId, reason: 'signal',
+        exitCode: null, signal, finalText: live.finalText, git: gitSync(workspace) }) : null;
+      const node = {
+        schemaVersion: 1, partial: true, runId: live.runId, liveFile: live.liveFile, finalText: live.finalText,
+        nodeId: randomUUID(), parentId: args.parent ?? null, task: args.task, role: args.role,
+        title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role), cli: route.cli, model: route.model,
+        promptBytes: Buffer.byteLength(args.prompt, 'utf8'), prompt: args.prompt, prefixSha,
+        exitCode: null, signal, ms: null, usageBefore, usageAfter: null, size, tokens: live.tokens, candidates,
+        blocked: false, providerStop: null, score: null,
+        ...(handoffRecord ? { handoff: handoffRecord } : {}),
+        recordedAt: new Date().toISOString(),
+      };
+      const treeDir = treeRoot();
+      mkdirSync(treeDir, { recursive: true });
+      appendFileSync(path.join(treeDir, `${args.task}.jsonl`), `${JSON.stringify(node)}\n`, 'utf8');
+      partialId = node.nodeId;
+    } catch (error) {
+      try { process.stderr.write(`[dispatch] partial node not written: ${error?.message ?? error}\n`); } catch { /* closed */ }
+    }
+    live.emit({ kind: 'run.end', exitCode: null, signal, ms: null, status: 'failed', nodeId: partialId, score: null,
       dropped: live.state.dropped });
     process.kill(process.pid, signal);
   };
@@ -776,6 +868,7 @@ export async function main(argvInput = process.argv.slice(2)) {
     // Taken before the CLI runs, so a tree that was already dirty does not count as the CLI's work.
     const treeBefore = args.verify ? await treeState(workspace) : null;
     const cliStartedAt = Date.now();
+    cliStarted = true;
     result = await run(route.cli, argv, workspace, live);
     const cliEndedAt = Date.now(); // relative provider resets ("resets in 1h 6m") add to this
     // The pane cannot see the finally: run.end lands only after the usage read and the verifier
@@ -865,6 +958,13 @@ export async function main(argvInput = process.argv.slice(2)) {
     } catch (error) {
       witnessResult = { v: 1, error: String(error) };
     }
+    // Q7: a run that started and failed keeps its work as a WIP commit on the feature branch. Its
+    // git failure is recorded in the handoff, never the dispatch's; exit 0 unblocked adds no field.
+    const reason = handoffReason({ result, blocked, providerStop });
+    finishing = true;
+    const handoffRecord = reason && await handoff({ workspace, task: args.task, runId: live.runId, reason,
+      exitCode: result.code, resetsAt: providerStop?.resetsAt ?? null, finalText: live.finalText,
+      git: (gitArgs, timeoutMs) => run('git', gitArgs, workspace, null, timeoutMs) });
     const node = {
       schemaVersion: 1,
       runId: live.runId,
@@ -889,6 +989,12 @@ export async function main(argvInput = process.argv.slice(2)) {
       usageBefore,
       usageAfter,
       usageDelta: usageDelta(usageBefore, usageAfter, route.cli, result.ms),
+      // Q6, additive (older nodes lack all three): one delta per scoped window kind (5h and weekly
+      // apart), the lead's --size (null when omitted), and the run's summed token totals (null when
+      // the CLI emitted no usage events, e.g. muse).
+      usageDeltas: usageDeltas(usageBefore, usageAfter, route.cli, result.ms),
+      size,
+      tokens: live.tokens,
       // `blocked` is observed from the provider's own words, so later analysis can tell "this route
       // failed the task" apart from "this route never ran". They are not the same evidence.
       blocked,
@@ -905,6 +1011,7 @@ export async function main(argvInput = process.argv.slice(2)) {
       stderrTail: result.stderr.slice(-2000),
       // The CLI's claims against its own trace (witness.mjs); {v, error} when it threw.
       witness: witnessResult,
+      ...(handoffRecord ? { handoff: handoffRecord } : {}),
       recordedAt: new Date().toISOString(),
     };
 

@@ -257,6 +257,34 @@ export function usageDelta(before, after, provider, ms) {
     minutes, percentPerHour: percentDelta * 60 / minutes };
 }
 
+/**
+ * Q6: usageDelta's rules applied to EVERY scoped window kind (limitId + windowDurationMins), so the
+ * 5-hour and weekly codex windows each get their own delta instead of one binding window. A window
+ * that reset, decreased, is non-integer or is missing from `after` gives no entry — for itself only.
+ * [] when the pair is not comparable at all (status, provider, elapsed time).
+ */
+export function usageDeltas(before, after, provider, ms) {
+  if (before?.status !== 'ok' || after?.status !== 'ok') return [];
+  const limitIds = ROUTE_LIMIT_IDS[provider];
+  if (!limitIds || !Array.isArray(before.windows) || !Array.isArray(after.windows)) return [];
+  if (!Number.isFinite(ms) || ms <= 0) return [];
+  const minutes = ms / 60_000;
+  const out = [];
+  // ponytail: one entry per before-window; a reading with two windows of one kind (same limitId and
+  // duration, never seen in captured shapes) would emit two, both matched to the first after-window.
+  for (const first of before.windows) {
+    if (!limitIds.includes(first.limitId)) continue;
+    const last = after.windows.find(w => w.limitId === first.limitId && w.windowDurationMins === first.windowDurationMins);
+    if (!last || first.resetsAt !== last.resetsAt) continue;
+    if (!Number.isInteger(first.usedPercent) || !Number.isInteger(last.usedPercent)) continue;
+    const percentDelta = last.usedPercent - first.usedPercent;
+    if (percentDelta < 0) continue;
+    out.push({ limitId: first.limitId, windowDurationMins: first.windowDurationMins, percentDelta,
+      minutes, percentPerHour: percentDelta * 60 / minutes });
+  }
+  return out;
+}
+
 function formatWindow(w) {
   const label = w.windowDurationMins === FIVE_HOUR_MINS ? '5-hour'
     : w.windowDurationMins === WEEK_MINS ? 'weekly'
