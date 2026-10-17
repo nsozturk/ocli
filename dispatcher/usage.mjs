@@ -6,6 +6,7 @@
 // source, it says `unknown` and why — it never estimates a percentage and presents it as read.
 
 import { spawn } from 'node:child_process';
+import { loadPlans, stopAtPercentFor } from './plans.mjs';
 
 const WEEK_MINS = 10080;
 const FIVE_HOUR_MINS = 300;
@@ -152,17 +153,50 @@ export const ROUTE_LIMIT_IDS = {
 };
 
 /**
- * Spending caps. A cap is a decision, not a measurement: `stopAtPercent` says when to stop using a
- * developer, independent of how fast it is burning. Edit them to your own plan.
+ * Spending caps, derived from the provider plans (plans.mjs: ORCHESTRA_PLANS, else
+ * ~/.config/agent-rules/provider-plans.json, else the shipped provider-plans.example.json): a counter
+ * pool that refuses when unread stops at 100 − reservePercent on its limitIds; every other pool runs
+ * until the provider itself stops it. A cap is a decision, not a measurement: `stopAtPercent` says
+ * when to stop using a developer, independent of how fast it is burning.
  *
  * `null` means deliberately uncapped. Uncapped is not "unknown": `gateFor` returns `ok` for it without
  * needing a reading, which is why a provider with no readable percentage does not block dispatch.
+ *
+ * Loaded once per process, for the BUDGETED developers only. A plans file that cannot be read or
+ * parsed, or omits one of them, leaves NO row and sets plansError(): every budgeted developer then
+ * gates `unknown` — no cap can be honoured, so none is room.
  */
-export const BUDGET = {
-  codex: { stopAtPercent: 45, limitIds: ['codex'] },
-  glm: { stopAtPercent: null, note: 'uncapped' },
-  claude: { stopAtPercent: null, note: 'uncapped' },
-};
+// ponytail: gemini/cline/muse stay unmanaged here (no row, `no-budget`) until token pools are ranked;
+// widening this list changes the gateSource recorded for them.
+export const BUDGETED = ['codex', 'glm', 'claude'];
+let loaded = null;
+function load() {
+  if (loaded) return loaded;
+  try {
+    const { plans, source } = loadPlans();
+    if (source === 'example') {
+      process.stderr.write('[usage] using the shipped example plans; create ~/.config/agent-rules/provider-plans.json\n');
+    }
+    const rows = {};
+    for (const provider of BUDGETED) {
+      const stopAtPercent = stopAtPercentFor(plans, provider); // throws on a plans file without it
+      const p = plans.providers[provider];
+      rows[provider] = stopAtPercent === null
+        ? { stopAtPercent: null, note: `${p.plan}: runs until the provider stops it (metered by ${p.meteredBy}; no percent cap)` }
+        : { stopAtPercent, limitIds: p.limitIds };
+    }
+    loaded = { rows, error: null };
+  } catch (error) {
+    process.stderr.write(`[usage] ${error.message}; every budgeted developer gates unknown until the plans file is fixed\n`);
+    loaded = { rows: {}, error: error.message };
+  }
+  return loaded;
+}
+
+/** provider -> { stopAtPercent, limitIds } | { stopAtPercent: null, note }, from the plans. */
+export const budget = () => load().rows;
+/** The plans load error (a string), or null when the plans were read. */
+export const plansError = () => load().error;
 
 /**
  * Should this provider still be dispatched to? Returns one of:
@@ -173,18 +207,36 @@ export const BUDGET = {
  * changes what we do.
  */
 export function gateFor(provider, report) {
-  const budget = BUDGET[provider];
-  if (!budget) return { state: 'ok', reason: 'no budget configured' };
+  if (!BUDGETED.includes(provider)) return { state: 'ok', reason: 'no budget configured' };
+  const error = plansError();
+  if (error) return { state: 'unknown', reason: `no cap can be honoured: ${error}` };
+  const budget = load().rows[provider];
   if (budget.stopAtPercent === null) return { state: 'ok', reason: budget.note ?? 'uncapped' };
   if (report?.status !== 'ok') {
     return { state: 'unknown', reason: `capped at ${budget.stopAtPercent}% but usage is ${report?.status ?? 'missing'}` };
   }
-  const window = bindingWindow(report.windows, budget.limitIds ?? null);
-  if (!window) return { state: 'unknown', reason: 'no window matched the pools this route consumes' };
+  const { window, headroomPercent } = headroomOf(report.windows ?? [], budget.limitIds ?? null, budget.stopAtPercent);
+  if (!window) return { state: 'unknown', reason: 'no readable window (a number for every scoped window) in the pools this route consumes' };
   if (window.usedPercent >= budget.stopAtPercent) {
     return { state: 'stop', reason: `${window.limitId} at ${window.usedPercent}% has reached the ${budget.stopAtPercent}% cap`, window };
   }
-  return { state: 'ok', reason: `${window.limitId} at ${window.usedPercent}% of a ${budget.stopAtPercent}% cap`, window, headroomPercent: budget.stopAtPercent - window.usedPercent };
+  return { state: 'ok', reason: `${window.limitId} at ${window.usedPercent}% of a ${budget.stopAtPercent}% cap`, window, headroomPercent };
+}
+
+/**
+ * Room left before the cap, measured on the FULLEST scoped window of any duration. Unlike
+ * bindingWindow this has no 5-hour preference: a weekly window at the cap stops work even while the
+ * 5-hour window has room (codex reports both under limitId 'codex'). bindingWindow keeps its
+ * preference because usageDelta needs before/after bound on the same window.
+ */
+export function headroomOf(windows, limitIds, stopAtPercent) {
+  const scoped = limitIds ? windows.filter(w => limitIds.includes(w.limitId)) : windows;
+  if (!scoped.length) return { window: null, headroomPercent: null };
+  // One unreadable scoped window means the fullest one cannot be known — it may be the one without a
+  // number. Unknown, never the best of the readable rest.
+  if (scoped.some(w => !Number.isFinite(w.usedPercent))) return { window: null, headroomPercent: null };
+  const window = scoped.reduce((worst, w) => (w.usedPercent > worst.usedPercent ? w : worst));
+  return { window, headroomPercent: stopAtPercent - window.usedPercent };
 }
 
 /** Observed percentage-point change, not a token estimate. Null means no comparable pair. */

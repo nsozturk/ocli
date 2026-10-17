@@ -39,7 +39,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { paneLabel } from './pane-label.mjs';
-import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor, BUDGET } from './usage.mjs';
+import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, gateFor, budget, plansError, BUDGETED } from './usage.mjs';
 import { providerForNode, readNodes, latestReading, stopProviderForNode, latestProviderStop } from './tree-read.mjs';
 import { aaFor, loadRanking } from './ranking.mjs';
 
@@ -489,14 +489,18 @@ async function readRouteUsage(route) {
 // RS1: the candidate set at dispatch time. A node said "role: implement" and nothing about what
 // else could have taken the slice; replay cannot traverse choices nobody wrote down. Pure
 // recording: it never changes which route runs, and it spawns nothing — a gate is the chosen
-// route's own usageBefore reading, a recorded tree reading, or the absence of both.
+// route's own usageBefore reading, a recorded tree reading, or the absence of both. The one
+// exception is --role auto: a capped route with no current reading gets ONE usage read (never an
+// inference call) before the pick, and that reading is what gets recorded.
 const NON_CANDIDATE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** One route's gate and where it came from. Precedence, first match wins: the provider has no
- * budget row (or none at all) -> deliberately uncapped -> the chosen route's live usageBefore
- * reading -> the newest recorded tree reading -> no reading anywhere, which is `unknown`, never
- * assumed room (the rotation's skip rule refuses to spend blind on a capped route). */
-function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, treeStopFor, ranking, nowMs }) {
+ * budget row (or none at all) -> the plans file is unreadable (`plans-error`, unknown) ->
+ * deliberately uncapped -> the chosen route's live usageBefore reading -> --role auto's fresh usage
+ * read -> the newest recorded tree reading, unless its window has since reset (`tree-expired`,
+ * unknown) -> no reading anywhere, which is `unknown`, never assumed room (the rotation's skip rule
+ * refuses to spend blind on a capped route). */
+function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, treeStopFor, liveReadings, ranking, nowMs }) {
   const provider = providerForNode({ cli: route.cli, model: route.model });
   // PS1 first: a provider-declared stop binds even where no budget row exists (cline) or the
   // route is uncapped (glm) — the provider's own verdict beats every reading we took.
@@ -521,18 +525,30 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
   let gate;
   let gateSource;
   let gateReadAt;
-  if (provider == null || BUDGET[provider] == null) {
+  if (provider == null || !BUDGETED.includes(provider)) {
     gate = 'ok';
     gateSource = 'no-budget';
-  } else if (BUDGET[provider].stopAtPercent === null) {
+  } else if (plansError()) {
+    // Unreadable plans honour no cap, so no budgeted route is room; recorded, the explicit role still runs.
+    gate = 'unknown';
+    gateSource = 'plans-error';
+  } else if (budget()[provider].stopAtPercent === null) {
     gate = 'ok';
     gateSource = 'uncapped';
   } else if (role === chosenRole && usageBefore?.status === 'ok') {
     gate = gateFor(provider, usageBefore).state;
     gateSource = 'live';
+  } else if (liveReadings?.get(provider)?.status === 'ok') {
+    gate = gateFor(provider, liveReadings.get(provider)).state;
+    gateSource = 'live-refresh';
   } else {
     const reading = treeReadingFor(provider);
-    if (reading) {
+    if (reading?.expired) {
+      // A pre-reset 96% is not today's 96%; neither is it room.
+      gate = 'unknown';
+      gateSource = 'tree-expired';
+      gateReadAt = reading.recordedAt ?? null;
+    } else if (reading) {
       gate = gateFor(provider, reading.report).state;
       gateSource = 'tree';
       gateReadAt = reading.recordedAt ?? null;
@@ -552,7 +568,7 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
     status,
     gate,
     gateSource,
-    ...(gateSource === 'tree' ? { gateReadAt } : {}),
+    ...(gateSource === 'tree' || gateSource === 'tree-expired' ? { gateReadAt } : {}),
     eligible,
     excludedBy,
     // AA Intelligence Index of exactly this (cli, model, effort); null = unranked (not measured, or no
@@ -563,8 +579,11 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
 
 /** The full candidate set: every dispatchable route in policy key order, the rotation, the rule
  * that picked (the lead's --role; the dispatcher applies no other), and an optional cleaned
- * --pick-reason. The chosen route MAY be ineligible — that is recorded, never refused. */
-async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, rule = 'lead-explicit-role' }) {
+ * --pick-reason. The chosen route MAY be ineligible — that is recorded, never refused.
+ * `liveReadings` (provider -> fresh usage reading) is consulted before the tree; with `refresh`
+ * (--role auto only) it is first filled with ONE read per capped provider whose in-rotation, ok
+ * route has no current tree reading (missing or expired). */
+async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, rule = 'lead-explicit-role', liveReadings = new Map(), refresh = false }) {
   const rotationSource = policy?.developers?.rotation?.order;
   const rotation = Array.isArray(rotationSource) ? [...rotationSource] : [];
   const inRotation = new Set(rotation);
@@ -574,7 +593,7 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
   // One tree scan shared by every capped route: provider -> newest recorded reading.
   const readings = new Map();
   const treeReadingFor = provider => {
-    if (!readings.has(provider)) readings.set(provider, latestReading(nodes, provider));
+    if (!readings.has(provider)) readings.set(provider, latestReading(nodes, provider, nowMs));
     return readings.get(provider);
   };
   // One tree scan shared by every stoppable route: pool -> newest uncleared provider stop.
@@ -583,13 +602,21 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
     if (!stops.has(stopProvider)) stops.set(stopProvider, latestProviderStop(nodes, stopProvider));
     return stops.get(stopProvider);
   };
-  const routes = [];
-  for (const role of Object.keys(policy?.routes ?? {})) {
-    if (NON_CANDIDATE_KEYS.has(role)) continue;
-    const route = policy.routes[role];
-    if (!route?.argv) continue; // not dispatchable (architect): never a candidate
-    routes.push(candidateRoute({ role, route, chosenRole, usageBefore, inRotation, treeReadingFor, treeStopFor, ranking, nowMs }));
+  const dispatchable = Object.keys(policy?.routes ?? {})
+    .filter(role => !NON_CANDIDATE_KEYS.has(role) && policy.routes[role]?.argv); // architect: never a candidate
+  if (refresh) {
+    for (const role of dispatchable) {
+      const route = policy.routes[role];
+      if (route.status !== 'ok' || !inRotation.has(role)) continue; // could not be picked anyway
+      const provider = providerForNode({ cli: route.cli, model: route.model });
+      if (provider == null || budget()[provider]?.stopAtPercent == null || liveReadings.has(provider)) continue;
+      const reading = treeReadingFor(provider);
+      if (reading && !reading.expired) continue;
+      liveReadings.set(provider, await readRouteUsage(route));
+    }
   }
+  const routes = dispatchable.map(role => candidateRoute({ role, route: policy.routes[role], chosenRole, usageBefore,
+    inRotation, treeReadingFor, treeStopFor, liveReadings, ranking, nowMs }));
   return {
     v: 1,
     rule,
@@ -638,21 +665,24 @@ async function listRoutes(args) {
 }
 
 /** --role auto: the highest-AA eligible route IN THE ROTATION (ties: rotation order), at or above
- * --min-aa. An unranked route is never auto-picked. No such route -> refuse; nothing is spawned. */
+ * --min-aa. An unranked route is never auto-picked. No such route -> refuse; no CLI is spawned.
+ * A capped route with no current reading is read once first; those readings are returned so the
+ * recorded candidate set and the chosen route's usageBefore reuse them instead of re-reading. */
 async function pickByAA(policy, minAaRaw) {
   const minAA = minAaRaw === undefined ? null : Number(minAaRaw);
   if (minAA !== null && !Number.isFinite(minAA)) throw new Error(`--min-aa must be a number, got ${minAaRaw}`);
   const rotation = Array.isArray(policy?.developers?.rotation?.order) ? policy.developers.rotation.order : [];
-  const set = await buildCandidates({ policy, chosenRole: null, reasonText: null, usageBefore: null });
+  const liveReadings = new Map();
+  const set = await buildCandidates({ policy, chosenRole: null, reasonText: null, usageBefore: null, liveReadings, refresh: true });
   const pool = set.routes
     .filter(r => r.eligible && r.inRotation && r.aa !== null && (minAA === null || r.aa >= minAA))
     .sort((a, b) => b.aa - a.aa || rotation.indexOf(a.role) - rotation.indexOf(b.role));
   if (pool.length === 0) {
     const seen = set.routes.filter(r => r.inRotation).map(r => `${r.role}(aa ${r.aa ?? '-'}, ${r.eligible ? 'eligible' : r.excludedBy})`).join(', ');
-    throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. Nothing was spawned.`);
+    throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. No CLI was spawned (a usage read may have run).`);
   }
   const [first, second] = pool;
-  return { role: first.role, reason: `aa-rank: ${first.role} aa=${first.aa}${second ? ` over ${second.role} aa=${second.aa}` : ' (only ranked eligible route)'}` };
+  return { role: first.role, reason: `aa-rank: ${first.role} aa=${first.aa}${second ? ` over ${second.role} aa=${second.aa}` : ' (only ranked eligible route)'}`, liveReadings };
 }
 
 export async function main(argvInput = process.argv.slice(2)) {
@@ -673,8 +703,10 @@ export async function main(argvInput = process.argv.slice(2)) {
   });
   const policy = JSON.parse(policyText);
   let rule = 'lead-explicit-role';
+  let liveReadings = new Map();
   if (args.role === 'auto') {
     const picked = await pickByAA(policy, args['min-aa']);
+    liveReadings = picked.liveReadings;
     args.role = picked.role;
     args['pick-reason'] = args['pick-reason'] ? `${picked.reason}; ${args['pick-reason']}` : picked.reason;
     rule = 'aa-rank';
@@ -700,11 +732,13 @@ export async function main(argvInput = process.argv.slice(2)) {
   // Null prototype: {constructor} or {toString} must not find an inherited value.
   const argv = resolveArgv(route, Object.assign(Object.create(null), { model: route.model, effort: route.effort,
     variant: route.variant, task: args.task, root: workspace, prompt }));
-  const usageBefore = await readRouteUsage(route);
+  // A reading --role auto took moments ago is this route's usageBefore: no second app-server.
+  const refreshed = liveReadings.get(providerForNode({ cli: route.cli, model: route.model }));
+  const usageBefore = refreshed?.status === 'ok' ? refreshed : await readRouteUsage(route);
   // Recording is additive and must never prevent the selected route from running.
   let candidates;
   try {
-    candidates = await buildCandidates({ policy, chosenRole: args.role, reasonText: args['pick-reason'], usageBefore, rule });
+    candidates = await buildCandidates({ policy, chosenRole: args.role, reasonText: args['pick-reason'], usageBefore, rule, liveReadings });
   } catch (error) {
     candidates = { v: 1, error: String(error?.message ?? error) };
   }
