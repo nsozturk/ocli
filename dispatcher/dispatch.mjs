@@ -679,7 +679,7 @@ async function pickByAA(policy, minAaRaw) {
     .sort((a, b) => b.aa - a.aa || rotation.indexOf(a.role) - rotation.indexOf(b.role));
   if (pool.length === 0) {
     const seen = set.routes.filter(r => r.inRotation).map(r => `${r.role}(aa ${r.aa ?? '-'}, ${r.eligible ? 'eligible' : r.excludedBy})`).join(', ');
-    throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. Nothing was spawned.`);
+    throw new Error(`--role auto: no eligible ranked route in the rotation${minAA !== null ? ` at aa >= ${minAA}` : ''}; rotation: ${seen || 'empty'}. No CLI was spawned (a usage read may have run).`);
   }
   const [first, second] = pool;
   return { role: first.role, reason: `aa-rank: ${first.role} aa=${first.aa}${second ? ` over ${second.role} aa=${second.aa}` : ' (only ranked eligible route)'}`, liveReadings };

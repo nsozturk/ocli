@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { mkdtemp, mkdir, writeFile, symlink, readFile } from 'node:fs/promises';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { mkdtemp, mkdir, writeFile, symlink, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -97,7 +97,9 @@ describe('parsePlans', () => {
 });
 
 describe('loadPlans', () => {
-  const tmpHome = async () => mkdtemp(path.join(tmpdir(), 'plans-home-'));
+  const homes: string[] = [];
+  const tmpHome = async () => { const home = await mkdtemp(path.join(tmpdir(), 'plans-home-')); homes.push(home); return home; };
+  afterEach(async () => { await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true }))); });
   const writeGlobal = async (home: string, text: string) => {
     const dir = path.join(home, '.config', 'agent-rules');
     await mkdir(dir, { recursive: true });

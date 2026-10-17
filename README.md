@@ -146,7 +146,7 @@ there is simply no card.
 
 | flag | meaning |
 |---|---|
-| `--role` | a route in the policy (`implement` = opencode, `reason` = codex, `breadth` = agy, `muse` = Muse, `cline-*` = Cline), or `auto`: the highest-AA eligible route in `developers.rotation.order` (ties by rotation order; unranked routes are never auto-picked; none eligible = refuse, nothing spawned) |
+| `--role` | a route in the policy (`implement` = opencode, `reason` = codex, `breadth` = agy, `muse` = Muse, `cline-*` = Cline), or `auto`: the highest-AA eligible route in `developers.rotation.order` (ties by rotation order; unranked routes are never auto-picked; none eligible = refuse; no CLI is spawned, though a usage read may have run) |
 | `--min-aa` | with `--role auto`: only routes whose AA Intelligence Index is at least this |
 | `--task` | groups runs into one card; `[A-Za-z0-9][A-Za-z0-9._-]*` |
 | `--prompt` | the brief; passed as one argv element, never through a shell |

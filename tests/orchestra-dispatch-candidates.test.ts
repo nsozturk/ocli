@@ -373,6 +373,29 @@ describe('dispatch records the candidate set (RS1)', () => {
     ({ model: modelArg, effort: effortArg, aa, access: [{ cli, modelArg, effortArg }] });
   const policyWith = async (edit: (p: any) => void) => { edit(currentPolicy); };
 
+  it('--role auto with a broken plans file never live-reads codex usage: an unknown budget is no reason to spawn a read', async () => {
+    const file = path.join(treeDir, 'plans.json');
+    writeFileSync(file, '{"schemaVersion": 1, "providers": {}}');
+    vi.stubEnv('ORCHESTRA_PLANS', file);
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 46), entry('muse', MUSE_MODEL, 'max', 44)]);
+    vi.resetModules();
+    vi.doMock('../dispatcher/usage.mjs', async importOriginal => ({
+      ...await importOriginal<Record<string, unknown>>(),
+      readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
+    }));
+    try {
+      // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
+      const fresh = (await import('../dispatcher/dispatch.mjs')).main as typeof main;
+      await fresh(['--role', 'auto', '--task', 'mock-candidates', '--prompt', 'stable']);
+    } finally {
+      vi.doUnmock('../dispatcher/usage.mjs');
+      vi.resetModules();
+    }
+    expect(mocks.codex).not.toHaveBeenCalled(); // codex outranks muse, yet its gate can only be plans-error
+    expect(candidates().chosen).toBe('muse');
+    expect(routeOf('reason')).toMatchObject({ gate: 'unknown', gateSource: 'plans-error' });
+  });
+
   it('records the AA score of exactly the route (cli, model, effort); a different effort is unranked', async () => {
     rankingWith([entry('agy', BREADTH_MODEL, null, 41), entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 45),
       entry('codex', 'gpt-6-astra', 'high', 51), entry('cline', 'cline-pass/qwen3.8-max', 'high', 45)]);
