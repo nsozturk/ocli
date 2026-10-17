@@ -89,7 +89,11 @@ export async function readNodes(treeDir) {
     try { text = await readRegular(path.join(treeDir, name)); } catch { unreadableFiles += 1; continue; }
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
-      try { nodes.push(JSON.parse(line)); } catch { unreadableLines += 1; }
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { unreadableLines += 1; continue; }
+      // RS1: `null`, a scalar or an array parses but is not a node; counted like a torn line.
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) { unreadableLines += 1; continue; }
+      nodes.push(parsed);
     }
   }
   return { nodes, unreadableLines, unreadableFiles };

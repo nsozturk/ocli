@@ -23,6 +23,8 @@ vi.mock('node:fs/promises', async importOriginal => ({
 }));
 // @ts-expect-error - dispatcher tooling is plain ESM.
 import { main } from '../dispatcher/dispatch.mjs';
+// @ts-expect-error - dispatcher tooling is plain ESM.
+import { readNodes } from '../dispatcher/tree-read.mjs';
 
 const PROMPT = 'shared spec\nline two';
 const SUFFIX = 'per-run suffix';
@@ -206,6 +208,31 @@ describe('dispatch --continue (Q9)', () => {
     expect(sent).not.toContain(commit);
     expect(sent).not.toContain('git show');
     expect(sent).toContain('read `git status`');
+  });
+
+  it('refuses with its own message, not a TypeError, when the tree holds a non-object line', async () => {
+    // RS1 (senatus 65941e8): `null`, `42` and `[]` parse but are not nodes; findLast must not
+    // dereference them.
+    writeFileSync(path.join(treeDir, 'junk.jsonl'), 'null\n42\n[]\n');
+    seed(prior());
+    await expect(dispatch('--continue', 'abc')).rejects.toThrow(/--continue: no node "abc" in the tree/);
+    const { nodes, unreadableLines } = await readNodes(treeDir);
+    expect(nodes).toEqual([prior()]);
+    expect(unreadableLines).toBe(3);
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('two nodes sharing a nodeId: the later line\'s hand-off wins', async () => {
+    seed(prior({ handoff: handoffOf({ branch: 'feature/older' }) }), prior({ handoff: handoffOf({ branch: 'feature/newer' }) }));
+    await dispatch('--continue', 'prior-1');
+    expect(sentPrompt()).toContain('on branch feature/newer');
+    expect(sentPrompt()).not.toContain('feature/older');
+  });
+
+  it('an empty changed list reads "changed: none;"', async () => {
+    seed(prior({ handoff: handoffOf({ changed: [] }) }));
+    await dispatch('--continue', 'prior-1');
+    expect(sentPrompt()).toContain('; changed: none; ');
   });
 
   it('accepts a 7-digit short sha', async () => {
