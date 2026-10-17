@@ -156,6 +156,7 @@ there is simply no card.
 | `--verify` | a shell command run after the CLI; its exit code becomes `score` 1/0 |
 | `--list-routes` | print every route ordered by its AA Intelligence Index (with eligibility); add `--json`; spawns nothing |
 | `--pick-reason` | optional route-choice explanation recorded in the tree; cleaned like a pane label, capped at 200 code points |
+| `--size` | `S`, `M` or `L`: the slice's size as the lead judged it, recorded on the tree node (`null` when omitted); anything else is refused |
 | `--suffix` | per-run text appended last, so the shared prompt prefix stays cache-stable |
 | `--parent` | the record id of the run this one continues |
 | `--brief` | what the person reads in the pane's open card (default: the prompt's first heading and first task paragraph, then the `--suffix` without its worktree path; at most 600 code points). The pane shows the opening of `--prompt` unless `--brief` is given: keep secrets out of it. |
@@ -174,6 +175,18 @@ in `--list-routes` and skipped by `--role auto` until the reset, or until a late
 An unparseable reset holds the stop until such a success. A transient 429 "rate limit" never stops a route, and limit
 wording in model text never counts. An explicit `--role` to a stopped route still runs, with one warning line.
 
+**Partial work: WIP hand-off.** When the CLI started and the run ends with a non-zero exit, `blocked`, a provider stop, or a
+signal (Ctrl-C, `SIGTERM`, a closed terminal), whatever it left in `--root` becomes a commit `wip(<task>): <reason>` with a
+trailer `Ocli-Handoff: <runId>`, and the tree node gains `handoff: { reason, branch, worktree, base, commit, commitSkipped,
+changed, finalTextTail, … }` so the next developer starts from that work. It never commits on `main`, `master`, a remote's
+HEAD branch or a detached HEAD, never bypasses hooks (a refusing hook is recorded and the tree stays dirty), and leaves
+`orchestra/live`, `orchestra/tree`, `.orchestra-last.md` and `node_modules` out; any git failure lands in `commitSkipped`
+(`clean-tree`, `default-branch`, `detached`, `not-git`, `hook-refused: …`, `timeout`), never in the dispatch's outcome. On a
+signal the dispatcher stops the CLI (SIGKILL after 5 s), hands off within 10 s and appends a `partial: true` node before it
+re-raises the signal. A successful run (exit 0, not blocked) adds no `handoff` field. Each node also records `size`, the
+run's summed `tokens` (`metered` = input + output + reasoning; cached input is not metered; `null` when the CLI reports no
+usage) and `usageDeltas`, one per usage window (5-hour and weekly apart).
+
 ## Configuration
 
 ocli reads no credentials, no keychain and no account file. Everything machine-specific is optional
@@ -184,6 +197,7 @@ and set by you:
 | `ORCHESTRA_LIVE_DIR` | environment, for `dispatch.mjs` and `digest.mjs` | `<cwd>/orchestra/live` |
 | `liveDirs` | plugin option (`/config`, or `claude plugin install … --config liveDirs=<dirs>`) | `<project root>/orchestra/live` |
 | routes and models | `dispatcher/policy.json` (gitignored; copy of `policy.example.json`) | the example routes |
+| `ORCHESTRA_POLICY` | environment: path to a policy file used instead of both of the above | unset |
 | `ORCHESTRA_PLANS` | environment: path to your provider plans (see below) | `~/.config/agent-rules/provider-plans.json`, else `dispatcher/provider-plans.example.json` |
 
 ```sh
@@ -339,7 +353,7 @@ The full contract, including how another dispatcher can write compatible files, 
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
 | `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
-| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `plans.mjs` + `provider-plans.example.json` (caps), `policy.example.json` |
+| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `plans.mjs` + `provider-plans.example.json` (caps), `policy.example.json` |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
 

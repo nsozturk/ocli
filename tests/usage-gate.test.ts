@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
-import { bindingWindow, gateFor, budget, headroomOf } from '../dispatcher/usage.mjs';
+import { bindingWindow, gateFor, budget, headroomOf, usageDeltas } from '../dispatcher/usage.mjs';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
 import { EXAMPLE_PLANS } from '../dispatcher/plans.mjs';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
@@ -276,5 +276,61 @@ describe('usage.mjs Q5 — caps come from the provider plans', () => {
     const u = await freshUsage(JSON.stringify(example));
     u.gateFor('codex', codexAt([1, 300]));
     expect(stderr).not.toHaveBeenCalled();
+  });
+});
+
+describe('usage.mjs Q6 usageDeltas — one delta per scoped window kind', () => {
+  const at = (limitId: string, usedPercent: number, windowDurationMins: number, resetsAt: string) =>
+    ({ limitId, usedPercent, windowDurationMins, resetsAt, model: null });
+  const ok = (...windows: ReturnType<typeof at>[]) => ({ status: 'ok', windows });
+  const H5 = '2026-10-17T15:00:00Z';
+  const WK = '2026-10-20T00:00:00Z';
+
+  it('records the 5-hour and weekly codex windows separately, never mixed', () => {
+    const before = ok(at('codex', 10, 300, H5), at('codex', 40, 10080, WK), at('base_model_inference', 88, 10080, WK));
+    const after = ok(at('codex', 16, 300, H5), at('codex', 41, 10080, WK), at('base_model_inference', 99, 10080, WK));
+    expect(usageDeltas(before, after, 'codex', 120_000)).toEqual([
+      { limitId: 'codex', windowDurationMins: 300, percentDelta: 6, minutes: 2, percentPerHour: 180 },
+      { limitId: 'codex', windowDurationMins: 10080, percentDelta: 1, minutes: 2, percentPerHour: 30 },
+    ]);
+  });
+
+  it('matches a window by kind, not by its position in the reading', () => {
+    const before = ok(at('codex', 40, 10080, WK), at('codex', 10, 300, H5));
+    const after = ok(at('codex', 16, 300, H5), at('codex', 41, 10080, WK));
+    expect(usageDeltas(before, after, 'codex', 60_000).map((d: { windowDurationMins: number; percentDelta: number }) =>
+      [d.windowDurationMins, d.percentDelta])).toEqual([[10080, 1], [300, 6]]);
+  });
+
+  it('a reset window gives no delta for that window only', () => {
+    const before = ok(at('codex', 90, 300, H5), at('codex', 40, 10080, WK));
+    const after = ok(at('codex', 2, 300, '2026-10-17T20:00:00Z'), at('codex', 41, 10080, WK));
+    expect(usageDeltas(before, after, 'codex', 60_000)).toEqual([
+      { limitId: 'codex', windowDurationMins: 10080, percentDelta: 1, minutes: 1, percentPerHour: 60 },
+    ]);
+  });
+
+  it('a reset window that climbs back to the old value or above still gives no delta (reset, not decrease, decides)', () => {
+    const before = ok(at('codex', 2, 300, H5), at('codex', 40, 10080, WK));
+    for (const climbed of [2, 7]) {
+      const after = ok(at('codex', climbed, 300, '2026-10-17T20:00:00Z'), at('codex', 41, 10080, WK));
+      expect(usageDeltas(before, after, 'codex', 60_000)).toEqual([
+        { limitId: 'codex', windowDurationMins: 10080, percentDelta: 1, minutes: 1, percentPerHour: 60 },
+      ]);
+    }
+  });
+
+  it('applies usageDelta\'s null rules per window: non-integer, decreasing, missing in after', () => {
+    const before = ok(at('codex', 10.5, 300, H5), at('codex', 40, 10080, WK));
+    expect(usageDeltas(before, ok(at('codex', 12, 300, H5), at('codex', 39, 10080, WK)), 'codex', 60_000)).toEqual([]);
+    expect(usageDeltas(ok(at('codex', 40, 10080, WK)), ok(at('codex', 12, 300, H5)), 'codex', 60_000)).toEqual([]);
+  });
+
+  it('no comparable pair at all -> []', () => {
+    const r = ok(at('codex', 4, 10080, WK));
+    expect(usageDeltas({ ...r, status: 'unknown' }, r, 'codex', 60_000)).toEqual([]);
+    expect(usageDeltas(r, { ...r, status: 'unavailable' }, 'codex', 60_000)).toEqual([]);
+    expect(usageDeltas(r, r, 'glm', 60_000)).toEqual([]);
+    for (const ms of [0, -1, NaN, Infinity]) expect(usageDeltas(r, r, 'codex', ms)).toEqual([]);
   });
 });

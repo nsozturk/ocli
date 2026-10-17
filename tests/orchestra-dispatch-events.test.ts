@@ -278,6 +278,21 @@ it('marks an opencode quota error event as blocked and unscored on an untouched 
     expect(JSON.parse(mocks.append.mock.calls[0][1])).toMatchObject({blocked:true, score:null});
   }
 });
+// Q7 wiring: blocked alone, and a provider stop, each hand off (git is mocked here, so not-git).
+it('a run that exits 0 but is blocked hands off with reason blocked', async () => {
+  opencodeRun(['{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"APIError","data":{"message":"quota exceeded"}}}'], 0);
+  await dispatch('--role','implement');
+  const node = JSON.parse(mocks.append.mock.calls[0][1]);
+  expect(node).toMatchObject({ exitCode: 0, blocked: true, providerStop: null });
+  expect(node.handoff).toMatchObject({ reason: 'blocked', exitCode: 0, commitSkipped: 'not-git' });
+});
+it('a provider stop hands off with reason limit and carries its resetsAt', async () => {
+  opencodeRun(['{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"APIError","data":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-10-12 09:23:37"}}}'], 1);
+  await dispatch('--role','implement');
+  const node = JSON.parse(mocks.append.mock.calls[0][1]);
+  expect(node.providerStop?.resetsAt).toEqual(expect.any(String));
+  expect(node.handoff).toMatchObject({ reason: 'limit', exitCode: 1, resetsAt: node.providerStop.resetsAt });
+});
 it('does not treat model-authored limit wording from opencode as a refusal', async () => {
   opencodeRun(['{"type":"text","part":{"text":"the docs say: quota exceeded"}}'], 1);
   await dispatch('--role','implement');
@@ -516,7 +531,8 @@ it('a failed CLI whose tree git could not read before the run is unscored, whate
     return proc;
   });
   await dispatch('--verify','true');
-  expect(gitCalls).toBe(2);
+  // Two treeState reads, then the Q7 hand-off's rev-parse, which reads not-git and stops there.
+  expect(gitCalls).toBe(3);
   expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:null});
 });
 // Review finding: mutant `treeAfter === null ||` removed survived all 74 dispatch tests.
@@ -531,7 +547,8 @@ it('a failed CLI whose tree git cannot read after the run is unscored, whatever 
     return proc;
   });
   await dispatch('--verify','true');
-  expect(gitCalls).toBe(2);
+  // Two treeState reads, then the Q7 hand-off's rev-parse, which reads not-git and stops there.
+  expect(gitCalls).toBe(3);
   expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', score:null});
 });
 it('the tree node records the run title and its phase: --phase, else the role', async () => {
@@ -852,4 +869,55 @@ it('run.start carries the brief: derived from the prompt and --suffix, or --brie
   });
   await main(['--role', 'reason', '--task', 'mock-live', '--brief', 'Own words', '--prompt', SPEC]);
   expect(events()[0].brief).toBe('Own words');
+});
+
+// Q6: the run's token totals, summed from the normalized usage events createLive already sees.
+const runWith = (cli: string) => {
+  const captured = readFileSync(new URL(`./fixtures/orchestra-events/${cli}.jsonl`, import.meta.url), 'utf8');
+  mocks.spawn.mockImplementation(() => {
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {proc.stdout.emit('data', captured); proc.emit('close',0,null);});
+    return proc;
+  });
+};
+const firstNode = () => JSON.parse(mocks.append.mock.calls[0][1]);
+it('Q6: sums the codex turn.completed usage into tokens; cached is never metered', async () => {
+  await dispatch();
+  // fixture: input 115922 (cached 64768), output 59, reasoning 0
+  expect(firstNode().tokens).toEqual({ input: 115922, output: 59, cached: 64768, reasoning: 0, metered: 115981 });
+});
+it('Q6: sums every opencode step_finish into tokens, reasoning included in metered', async () => {
+  runWith('opencode');
+  await dispatch('--role','implement');
+  // two steps: input 59632+115, output 21+3, reasoning 41+0, cache.read 128+59712
+  expect(firstNode().tokens).toEqual({ input: 59747, output: 24, cached: 59840, reasoning: 41, metered: 59812 });
+});
+it('Q6: a CLI that emits no usage events (muse) records tokens: null', async () => {
+  runWith('muse');
+  await dispatch('--role','muse');
+  expect(firstNode()).toHaveProperty('tokens', null);
+});
+it('Q6: a field no event carried stays null; reasoning null -> metered = input + output', async () => {
+  mocks.spawn.mockImplementation(() => {
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {
+      proc.stdout.emit('data', '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}\n{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":1}}\n');
+      proc.emit('close',0,null);
+    });
+    return proc;
+  });
+  await dispatch();
+  expect(firstNode().tokens).toEqual({ input: 13, output: 6, cached: null, reasoning: null, metered: 19 });
+});
+it('Q6: output missing from every usage event -> output null and metered null, never a partial count', async () => {
+  mocks.spawn.mockImplementation(() => {
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {
+      proc.stdout.emit('data', '{"type":"turn.completed","usage":{"input_tokens":10,"reasoning_output_tokens":4}}\n');
+      proc.emit('close',0,null);
+    });
+    return proc;
+  });
+  await dispatch();
+  expect(firstNode().tokens).toEqual({ input: 10, output: null, cached: null, reasoning: 4, metered: null });
 });
