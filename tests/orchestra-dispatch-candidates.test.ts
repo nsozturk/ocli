@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 
 // RS1: every dispatch node records the candidate set. These tests go through main() with the
@@ -295,12 +295,17 @@ describe('dispatch records the candidate set (RS1)', () => {
     writeFileSync(file, JSON.stringify({ schemaVersion: 1, source: 'test', observedAt: '2026-10-11', entries }));
     vi.stubEnv('ORCHESTRA_RANKING_FILE', file);
   };
+  // The route's model comes from the shipped policy, never a literal: a model switch in policy.json
+  // must not silently unrank these tests' entries.
+  const shippedPolicy = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+  const MUSE_MODEL: string = shippedPolicy.routes.muse.model;
+  const BREADTH_MODEL: string = shippedPolicy.routes.breadth.model;
   const entry = (cli: string, modelArg: string, effortArg: string | null, aa: number) =>
     ({ model: modelArg, effort: effortArg, aa, access: [{ cli, modelArg, effortArg }] });
   const policyWith = async (edit: (p: any) => void) => { edit(currentPolicy); };
 
   it('records the AA score of exactly the route (cli, model, effort); a different effort is unranked', async () => {
-    rankingWith([entry('agy', 'gemini-3.8-flash-high', null, 41), entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 45),
+    rankingWith([entry('agy', BREADTH_MODEL, null, 41), entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 45),
       entry('codex', 'gpt-6-astra', 'high', 51), entry('cline', 'cline-pass/qwen3.8-max', 'high', 45)]);
     await dispatch();
     expect(routeOf('breadth').aa).toBe(41);
@@ -321,7 +326,7 @@ describe('dispatch records the candidate set (RS1)', () => {
 
   it('--role auto picks the highest-AA eligible route in the rotation and records rule aa-rank', async () => {
     rankingWith([entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 40), entry('codex', 'gpt-6-astra', 'high', 46),
-      entry('muse', 'muse-spark-1.3-contributor', 'max', 44), entry('agy', 'gemini-3.8-flash-high', null, 99),
+      entry('muse', MUSE_MODEL, 'max', 44), entry('agy', BREADTH_MODEL, null, 99),
       entry('cline', 'cline-pass/qwen3.8-max', null, 98)]);
     // auto calls no provider: a capped route is eligible only on a recorded reading under its cap.
     seedTree(codexHistory(Math.max(0, CAP - 10), '2026-10-11T09:00:00.000Z'));
@@ -334,7 +339,7 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto breaks an AA tie by rotation order and never picks an unranked route', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 44), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 44), entry('muse', MUSE_MODEL, 'max', 44)]);
     seedTree(codexHistory(Math.max(0, CAP - 10), '2026-10-11T09:00:00.000Z'));
     await policyWith(p => { p.developers.rotation.order = ['muse', 'implement', 'reason']; });
     await dispatch('auto');
@@ -342,21 +347,21 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto with --min-aa above every eligible ranked route refuses and spawns nothing', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 46), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 46), entry('muse', MUSE_MODEL, 'max', 44)]);
     await expect(dispatch('auto', '--min-aa', '50')).rejects.toThrow(/no eligible ranked route in the rotation at aa >= 50/);
     expect(mocks.spawn).not.toHaveBeenCalled();
     expect(mocks.appendFile).not.toHaveBeenCalled();
   });
 
   it('--role auto treats a capped route with no reading as ineligible (no blind spend, no provider call)', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
     expect(mocks.codex).not.toHaveBeenCalled();
   });
 
   it('--role auto never picks an ineligible route however high its AA', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     seedTree(codexHistory(CAP, '2026-10-11T09:00:00.000Z')); // codex at its cap in the tree -> budget-stop
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');

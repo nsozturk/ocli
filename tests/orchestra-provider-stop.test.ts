@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -328,7 +328,9 @@ describe('PS1 provider-declared window stops', () => {
   });
 
   it('--role auto skips a stopped provider for the next ranked eligible route', async () => {
-    rankingWith([entry('cline', 'cline-pass/mimo-v2.6-pro', null, 46), entry('muse', 'muse-spark-1.3-contributor', 'max', 44)]);
+    // The muse route's model comes from the shipped policy, never a literal (a switch must not unrank it).
+    const museModel: string = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8')).routes.muse.model;
+    rankingWith([entry('cline', 'cline-pass/mimo-v2.6-pro', null, 46), entry('muse', museModel, 'max', 44)]);
     await main(['--role', 'auto', '--task', 'ps1-auto', '--prompt', 'stable']);
     expect(JSON.parse(mocks.appendFile.mock.calls[0][1]).candidates.chosen).toBe('cline-mimo'); // control: no stop
     mocks.appendFile.mockClear();

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "source": "Artificial Analysis Intelligence Index",
-  "observedAt": "2026-10-11",
-  "_source": "EXAMPLE. Artificial Analysis Intelligence Index scores recorded 2026-10-11 for (model, reasoning level) pairs one machine could reach. Copy to dispatcher/model-ranking.json (gitignored) and keep only what YOUR CLIs can reach; refresh the scores from artificialanalysis.ai yourself — nothing here fetches them.",
+  "observedAt": "2026-10-17",
+  "_source": "Fetched from https://artificialanalysis.ai/leaderboards/models on 2026-10-17 (WebFetch); all 47 entries listed on 2026-10-11 re-checked, none changed; two added (gemini-4-argon high 53, muse-wonder-1.0 max 52). Only (model, reasoning level) pairs this machine can reach are listed: access checked against codex's model cache, `agy models`, a headless muse run, the Cline Pass catalogue of 2026-10-11 and Claude Code. New AA rows with unverified access (GPT-6.1 Sol, GPT-6 Luna, Grok 4.7, Muse Wonder Full, new Cline-hosted models) are deliberately not listed.",
   "_rules": "One entry per (model, effort) exactly as AA measured it. effort null = AA published a single score with no reasoning level; it matches only a route that sets no effort. A route whose (cli, model, effort) is not listed is UNRANKED (aa null) — never the nearest neighbour. aa is stored, rank is derived at read time over the set being compared. access[].effortArg is the value the route's effort (or opencode variant) must equal; null = the route sets none (agy encodes the level in the model id).",
   "entries": [
     {
@@ -102,6 +102,19 @@
       ]
     },
     {
+      "model": "gemini-4-argon",
+      "effort": "high",
+      "aa": 53,
+      "creator": "Google",
+      "access": [
+        {
+          "cli": "agy",
+          "modelArg": "gemini-4-argon-high",
+          "effortArg": null
+        }
+      ]
+    },
+    {
       "model": "claude-sonnet-5.5",
       "effort": "xhigh",
       "aa": 52,
@@ -126,6 +139,20 @@
           "effortArg": "xhigh"
         }
       ]
+    },
+    {
+      "model": "muse-wonder-1.0",
+      "effort": "max",
+      "aa": 52,
+      "creator": "Meta",
+      "access": [
+        {
+          "cli": "muse",
+          "modelArg": "muse-wonder-1.0",
+          "effortArg": "max"
+        }
+      ],
+      "note": "AA lists 'Muse Wonder (max)' 52 and a separate 'Muse Wonder Full (max)' 56; muse-wonder-1.0 resolves to muse-wonder-1.0-contributor (measured 2026-10-17), so it is mapped to the non-Full row. Full is not reachable here."
     },
     {
       "model": "claude-fable-5.1",

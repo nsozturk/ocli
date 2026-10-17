@@ -9,16 +9,19 @@ describe('model ranking (AA Intelligence Index)', () => {
   it('the real file parses, carries its source and date, and holds one entry per (model, effort)', () => {
     const r = parseRanking(real);
     expect(r.source).toBe('Artificial Analysis Intelligence Index');
-    expect(r.observedAt).toBe('2026-10-11');
+    expect(r.observedAt).toBe('2026-10-17');
     const keys = r.entries.map((e: any) => `${e.model}@${e.effort}`);
     expect(new Set(keys).size).toBe(keys.length);
-    // Spot values the user pasted from AA.
+    // Spot values from AA (pasted 2026-10-11, re-fetched 2026-10-17).
     const aa = (model: string, effort: string | null) => r.entries.find((e: any) => e.model === model && e.effort === effort)?.aa;
     expect(aa('claude-opus-5.5', 'max')).toBe(58);
     expect(aa('gpt-6-astra', 'high')).toBe(51);
     expect(aa('muse-spark-1.3', 'max')).toBe(48);
     expect(aa('mimo-v2.6-pro', null)).toBe(46);
     expect(aa('deepseek-v4.1-flash', 'max')).toBe(39);
+    // Added from the 2026-10-17 fetch.
+    expect(aa('gemini-4-argon', 'high')).toBe(53);
+    expect(aa('muse-wonder-1.0', 'max')).toBe(52);
   });
 
   it('matches exactly (cli, model, effort): another effort, CLI or model is unranked, never a neighbour', () => {
