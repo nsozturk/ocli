@@ -64,11 +64,13 @@ function fakeCli(env: string, { ignoreTerm = false, exitCode = null as number | 
   const cli = path.join(env, 'fake-cli.mjs');
   writeFileSync(cli, [
     "import { mkdirSync, writeFileSync } from 'node:fs';",
+    // The handler goes in before the pid file the test waits on: under load a SIGTERM sent between the two would
+    // kill the CLI outright and the SIGKILL-after-grace test would measure the wrong path.
+    ignoreTerm ? "process.on('SIGTERM', () => {});" : '',
     `writeFileSync(${JSON.stringify(path.join(env, 'cli.pid'))}, String(process.pid));`,
     "mkdirSync('orchestra/live', { recursive: true });",
     "writeFileSync('orchestra/live/x.jsonl', 'j\\n');",
     "writeFileSync('work.txt', 'half\\n');",
-    ignoreTerm ? "process.on('SIGTERM', () => {});" : '',
     exitCode === null ? 'setTimeout(() => {}, 30000);' : `process.exit(${exitCode});`,
   ].join('\n'));
   return cli;
