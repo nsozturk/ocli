@@ -397,7 +397,9 @@ describe('PS1 helpers', () => {
     expect(stopProviderForNode({ role: 'implement', cli: 'opencode', model: 'zai-coding-plan/glm-5.3' })).toBe('zai');
     expect(stopProviderForNode({ role: 'implement', cli: 'opencode', model: 'anthropic/claude-sonnet' })).toBeNull();
     expect(stopProviderForNode({ role: 'reason', cli: 'codex', model: 'gpt-6-astra' })).toBeNull();
-    expect(stopProviderForNode({ role: 'breadth', cli: 'agy', model: 'gemini-3.8-flash-high' })).toBeNull();
+    // Q12: gemini and muse stops reach their plans pools (google, meta); codex stays counter-backed.
+    expect(stopProviderForNode({ role: 'breadth', cli: 'agy', model: 'gemini-3.8-flash-high' })).toBe('google');
+    expect(stopProviderForNode({ role: 'muse', cli: 'muse', model: 'muse-wonder-1.0' })).toBe('meta');
     expect(stopProviderForNode({ role: 'lead-correction', cli: 'cline' })).toBeNull();
     expect(stopProviderForNode({})).toBeNull();
   });

@@ -3,7 +3,7 @@
 // nodes, nowMs) — no file, no spawn, no clock. Unknown is a value here (null), never room: a number
 // this module cannot back with a reading, a calibration or a declaration is not printed.
 
-import { providerForNode, stopProviderForNode, latestReading, latestProviderStop } from './tree-read.mjs';
+import { providerForNode, stopProviderForNode, latestReading, latestProviderStop, providerStopActive } from './tree-read.mjs';
 import { headroomOf } from './usage.mjs';
 
 const KIND_MINS = { '5h': 300, weekly: 10080 };
@@ -73,6 +73,14 @@ function counterWindow(plans, nodes, provider, kind, nowMs) {
   return { window: headroomOf(ofKind, p.limitIds, 0).window, readAt: reading?.recordedAt ?? null };
 }
 
+/** Q12f: whether a counter reading recorded at `readAt` is still young enough to decide on —
+ * within decision.readingMaxAgeMins. The one age rule: windowUsage applies it per window, and
+ * dispatch's sized --role auto refreshes a reading it fails (or one already expired). */
+export function readingFresh(plans, readAt, nowMs) {
+  const readMs = msOf(readAt);
+  return Number.isFinite(readMs) && nowMs - readMs <= plans.decision.readingMaxAgeMins * MIN_MS;
+}
+
 /**
  * Use of one window kind. Counter providers: the newest ok reading's scoped window of that kind,
  * `fresh` only when it was read within decision.readingMaxAgeMins AND its resetsAt is still ahead —
@@ -86,10 +94,7 @@ export function windowUsage(plans, nodes, provider, kind, nowMs) {
   const mins = KIND_MINS[kind];
   if (p.meteredBy === 'counter') {
     const { window, readAt } = counterWindow(plans, nodes, provider, kind, nowMs);
-    const readMs = msOf(readAt);
-    const fresh = window != null && Number.isFinite(readMs)
-      && nowMs - readMs <= plans.decision.readingMaxAgeMins * MIN_MS
-      && msOf(window.resetsAt) > nowMs;
+    const fresh = window != null && readingFresh(plans, readAt, nowMs) && msOf(window.resetsAt) > nowMs;
     return { usedPercent: fresh ? window.usedPercent : null, source: 'counter', readAt, fresh };
   }
   const pool = poolNodes(plans, nodes, provider);
@@ -234,11 +239,7 @@ function check(plans, nodes, route, size, nowMs, atMs) {
   const p = providerOf(plans, route.provider);
   const pool = poolNodes(plans, nodes, route.provider);
   const stopPool = pool.map(stopProviderForNode).find(Boolean) ?? null;
-  const stop = latestProviderStop(pool, stopPool)?.providerStop;
-  if (stop) {
-    const resetMs = msOf(stop.resetsAt);
-    if (!Number.isFinite(resetMs) || resetMs > atMs) return { why: 'provider-stop' }; // undatable ⇒ active
-  }
+  if (providerStopActive(latestProviderStop(pool, stopPool)?.providerStop, atMs)) return { why: 'provider-stop' };
   if (!fitsSize(size, p.maxSize)) return { why: 'size' };
   // The route's last run (stop-bearing runs excluded: their reset governs them) ended blocked, and no
   // later ok run of the provider has cleared it.

@@ -11,19 +11,29 @@ export function providerForNode(node) {
   if (node?.cli === 'opencode' && String(node.model ?? '').startsWith('zai-coding-plan/')) return 'glm';
   if (node?.cli === 'claude' || node?.cli === 'claude-agent' || node?.cli === 'claude-code') return 'claude';
   if (node?.cli === 'agy') return 'gemini';
+  if (node?.cli === 'muse') return 'muse';
   if (node?.cli === 'cline') return 'cline'; // Cline Pass: no budget row, no readable counter yet
   return null;
 }
 
 /** Which billing pool a recorded node can declare a window stop for. Derived from
- * providerForNode, never from the role: cline passes through, while the budget namespace's
- * `glm` IS the ZAI billing pool (opencode zai-coding-plan/*), so stops say `zai`. A stop
- * needs no budget row — the provider's own verdict binds uncapped pools too. */
+ * providerForNode, never from the role, and named as the plans pools are: cline passes through,
+ * the budget namespace's `glm` IS the ZAI pool (opencode zai-coding-plan/*), gemini (agy) is
+ * `google`, muse is `meta`. A stop needs no budget row — the provider's own verdict binds uncapped
+ * pools too. codex and claude stay null: counter-backed / the lead. */
+const STOP_POOL = { cline: 'cline', glm: 'zai', gemini: 'google', muse: 'meta' };
 export function stopProviderForNode(node) {
-  const provider = providerForNode(node);
-  if (provider === 'cline') return 'cline';
-  if (provider === 'glm') return 'zai';
-  return null;
+  return STOP_POOL[providerForNode(node)] ?? null;
+}
+
+/** An uncleared stop still binds. Unknown (or corrupt) resets fail closed — a later success
+ * is the only way out — while a dated one ends the instant its reset passes. */
+export function providerStopActive(stop, nowMs) {
+  if (!stop || typeof stop !== 'object') return false;
+  if (typeof stop.resetsAt !== 'string') return true;
+  const at = Date.parse(stop.resetsAt);
+  if (!Number.isFinite(at)) return true;
+  return at > nowMs;
 }
 
 /**

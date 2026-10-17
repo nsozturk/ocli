@@ -146,7 +146,7 @@ there is simply no card.
 
 | flag | meaning |
 |---|---|
-| `--role` | a route in the policy (`implement` = opencode, `reason` = codex, `breadth` = agy, `muse` = Muse, `cline-*` = Cline), or `auto`: the highest-AA eligible route in `developers.rotation.order` (ties by rotation order; unranked routes are never auto-picked; none eligible = refuse; no CLI is spawned, though a usage read may have run) |
+| `--role` | a route in the policy (`implement` = opencode, `reason` = codex, `breadth` = agy, `muse` = Muse, `cline-*` = Cline), or `auto`: the highest-AA eligible route in `developers.rotation.order` (ties by rotation order; unranked routes are never auto-picked; none eligible = refuse; no CLI is spawned, though a usage read may have run). With `--size` the quota decision picks instead (see below); without it one stderr notice says `--role auto without --size: AA only, no quota decision` |
 | `--min-aa` | with `--role auto`: only routes whose AA Intelligence Index is at least this |
 | `--task` | groups runs into one card; `[A-Za-z0-9][A-Za-z0-9._-]*` |
 | `--prompt` | the brief; passed as one argv element, never through a shell |
@@ -156,24 +156,25 @@ there is simply no card.
 | `--verify` | a shell command run after the CLI; its exit code becomes `score` 1/0 |
 | `--list-routes` | print every route ordered by its AA Intelligence Index (with eligibility); add `--json`; spawns nothing |
 | `--pick-reason` | optional route-choice explanation recorded in the tree; cleaned like a pane label, capped at 200 code points |
-| `--size` | `S`, `M` or `L`: the slice's size as the lead judged it, recorded on the tree node (`null` when omitted); anything else is refused |
+| `--size` | `S`, `M` or `L`: the slice's size as the lead judged it, recorded on the tree node (`null` when omitted); anything else is refused. With `--role auto` it also turns on the quota decision |
 | `--suffix` | per-run text appended last, so the shared prompt prefix stays cache-stable |
 | `--parent` | the record id of the run this one continues |
 | `--continue` | a node id: resume that failed or signalled run's WIP hand-off (see below); exclusive with `--worktree` |
 | `--worktree` | `auto` only: run in `<repo>.worktrees/<task>` on branch `ocli/<task>`, created or reused (see below) |
-| `--dry-run` | the last flag, with `--worktree auto` only: print the worktree path, create and spawn nothing |
+| `--dry-run` | the last flag, with `--worktree auto` (print the worktree path) or `--role auto --size S\|M\|L` (print the decision line, plus `worktree` when `--worktree auto` is also given); creates and spawns nothing. Anything else is refused |
 | `--brief` | what the person reads in the pane's open card (default: the prompt's first heading and first task paragraph, then the `--suffix` without its worktree path; at most 600 code points). The pane shows the opening of `--prompt` unless `--brief` is given: keep secrets out of it. |
 | `--declare-phases` | with `--task` only: write the task's plan (comma-separated phase names) and exit |
 
 Exit codes: `0` the run was recorded (whatever the CLI's own exit code), `1` `--verify` failed,
-`2` the dispatcher refused, could not start the CLI, or failed after it ran. A run that left the work
+`2` the dispatcher refused, could not start the CLI, or failed after it ran, `3` the quota decision was
+`split` or `wait` (nothing spawned, no node written). A run that left the work
 tree as it was (contents and `HEAD`) gets `score: null` even when `--verify` passes, whatever its exit
 code: a green base says nothing about the developer.
 
 **Provider window stops.** When a run fails (non-zero exit) and the CLI's *own* error or warn event says its plan window is
 used up (ClinePass "5-hour Clinepass limit … resets in 1h 6m", ZAI "Usage limit reached for 5 hour … will reset at
 2026-10-12 09:23:37"), the tree node records `providerStop: { provider, resetsAt, evidence }`. Every route on that billing
-pool (all `cline-pass/*` routes share `cline`; opencode `zai-coding-plan/*` is `zai`) is then `excluded:budget-stop until …`
+pool (all `cline-pass/*` routes share `cline`; opencode `zai-coding-plan/*` is `zai`; agy is `google`; Muse is `meta`) is then `excluded:budget-stop until …`
 in `--list-routes` and skipped by `--role auto` until the reset, or until a later genuinely successful run of that pool.
 An unparseable reset holds the stop until such a success. A transient 429 "rate limit" never stops a route, and limit
 wording in model text never counts. An explicit `--role` to a stopped route still runs, with one warning line.
@@ -206,6 +207,18 @@ another branch, a registered worktree whose directory is gone) is refused and le
 removes, prunes or forces. The task must be a safe path segment (no `/`, no `..`), every git call runs with
 `core.fsmonitor=false`, and the worktree is created only after the route is validated, so an unknown `--role` leaves nothing
 behind. `--dry-run` (as the last flag) prints the path and returns before any read or spawn.
+
+**Quota-routed auto: `--role auto --size S|M|L`.** The candidate gates bind as for plain `--role auto` (eligible, ranked,
+in the rotation, at `--min-aa`; a capped route whose reading is expired or older than the plans'
+`decision.readingMaxAgeMins` is re-read once), then `quota.mjs` `decide` narrows that pool against the provider plans and
+the tree. `run` dispatches the decided role with rule `quota` and records `candidates.quota = { action, role, size, reasons }`
+on the node. `split` (the task only fits once cut smaller) or `wait` (nothing has room until a reset) prints ONE JSON line to
+stdout, `{"action":"wait","until":"<ISO reset>","reasons":[{"role":"reason","why":"headroom"}]}` (`until` only on `wait`; `null`
+with `"reason":"unknown"` when no reset can be dated), exits `3`, spawns nothing and writes no node. `reasons` lists every in-rotation route not chosen: first those the gates left
+out (`excludedBy`, `unranked`, `min-aa`, `no-plan` for a provider the plans do not declare), then `decide`'s own. With
+`--dry-run` the decision comes from the tree only (no usage read, no app-server): the same line, with `role` on `run` and
+`worktree` when `--worktree auto` is given, exit `0` for `run` and `3` for `split`/`wait`; nothing is created or spawned.
+Without `--size`, `--role auto` is exactly the AA pick above.
 
 ## Configuration
 
@@ -373,7 +386,7 @@ The full contract, including how another dispatcher can write compatible files, 
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
 | `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
-| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` (caps), `quota.mjs` (pure headroom + `decide` run/split/wait, not wired yet), `policy.example.json` |
+| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` (caps), `quota.mjs` (pure headroom + `decide` run/split/wait, used by `--role auto --size`), `policy.example.json` |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
 
