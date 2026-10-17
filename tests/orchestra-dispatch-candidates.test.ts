@@ -249,7 +249,7 @@ describe('dispatch records the candidate set (RS1)', () => {
     const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
     currentPolicy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
     await dispatch();
-    expect(candidates().rotation).toEqual(['implement', 'reason', 'muse', 'cline-mimo', 'cline-qwen']);
+    expect(candidates().rotation).toEqual(['implement', 'reason', 'muse', 'breadth', 'cline-mimo', 'cline-qwen']);
   });
 
   it('prefers later equal timestamps, ignores missing timestamps and malformed/non-object lines', async () => {

@@ -80,6 +80,8 @@
         "{model}",
         "-c",
         "model_reasoning_effort=\"{effort}\"",
+        "-c",
+        "mcp_servers.hf-mcp-server.enabled=false",
         "-o",
         "{root}/.orchestra-last.md",
         "{prompt}"
@@ -109,6 +111,8 @@
         "{model}",
         "-c",
         "model_reasoning_effort=\"{effort}\"",
+        "-c",
+        "mcp_servers.hf-mcp-server.enabled=false",
         "-o",
         "{root}/.orchestra-last.md",
         "{prompt}"
@@ -192,6 +196,7 @@
         "implement",
         "reason",
         "muse",
+        "breadth",
         "cline-mimo",
         "cline-qwen"
       ],
