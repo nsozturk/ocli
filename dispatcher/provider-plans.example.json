@@ -1,0 +1,240 @@
+{
+  "schemaVersion": 1,
+  "decision": {
+    "headroomFactor": 1.5,
+    "minLearnedSamples": 3,
+    "costHistory": 10,
+    "readingMaxAgeMins": 30
+  },
+  "lead": {
+    "provider": "claude",
+    "snapshotFile": "~/.claude/usage-snapshot.json",
+    "throttle": {
+      "leanBelowPercent": 25,
+      "closeBelowPercent": 10
+    }
+  },
+  "providers": {
+    "codex": {
+      "pool": "openai",
+      "plan": "chatgpt-pro",
+      "meteredBy": "counter",
+      "limitIds": [
+        "codex"
+      ],
+      "reservePercent": 5,
+      "onUnknown": "refuse",
+      "uncalibratedMaxSize": null,
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    },
+    "glm": {
+      "pool": "zai",
+      "plan": "glm-coding-lite",
+      "meteredBy": "tokens",
+      "limitIds": null,
+      "reservePercent": 15,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": "M",
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        }
+      ]
+    },
+    "gemini": {
+      "pool": "google",
+      "plan": "google-ai-pro",
+      "meteredBy": "tokens",
+      "limitIds": null,
+      "reservePercent": 15,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": "M",
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        }
+      ]
+    },
+    "muse": {
+      "pool": "meta",
+      "plan": "meta-contributor",
+      "meteredBy": "ms",
+      "limitIds": null,
+      "reservePercent": 0,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": "M",
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        }
+      ]
+    },
+    "cline": {
+      "pool": "cline",
+      "plan": "cline-pass",
+      "meteredBy": "tokens",
+      "limitIds": null,
+      "reservePercent": 10,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": null,
+      "overflow": true,
+      "maxSize": "S",
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "unknown",
+            "value": null
+          },
+          "source": "learned",
+          "priorCost": null
+        }
+      ]
+    },
+    "claude": {
+      "pool": "anthropic",
+      "plan": "claude-max-5x",
+      "meteredBy": "counter",
+      "limitIds": [
+        "5-hour limit",
+        "Weekly · all models"
+      ],
+      "reservePercent": 20,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": null,
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    }
+  }
+}

@@ -27,21 +27,25 @@ vi.mock('node:fs/promises', async importOriginal => ({
 // @ts-expect-error - orchestra tooling is plain ESM, outside the typed src build.
 import { main } from '../dispatcher/dispatch.mjs';
 // @ts-expect-error - orchestra tooling is plain ESM, outside the typed src build.
-import { BUDGET } from '../dispatcher/usage.mjs';
+import { budget } from '../dispatcher/usage.mjs';
 // The real gateFor, NOT the mock this file installs (importing it from the mocked module would
 // make the default delegation recurse into itself).
 const realGateFor = (await vi.importActual<Record<string, unknown>>('../dispatcher/usage.mjs')).gateFor as (...a: unknown[]) => { state: string };
 
 // The cap is policy the user changes (35% -> 45% once already); read it, do not pin it.
-const CAP: number = BUDGET.codex.stopAtPercent;
-const windowAt = (usedPercent: number) =>
-  ({ limitId: 'codex', usedPercent, windowDurationMins: 10080, resetsAt: '2026-10-18T00:00:00Z' });
-const okReading = (usedPercent: number) => ({ status: 'ok', windows: [windowAt(usedPercent)] });
+const CAP: number = budget().codex.stopAtPercent;
+// Q3: a reading whose window has reset is expired, so the default reset is RELATIVE to the run — a
+// pinned date turns every tree-gate test below red the day it passes.
+const FUTURE_RESET = new Date(Date.now() + 7 * 86_400_000).toISOString();
+const PAST_RESET = '2026-10-01T00:00:00.000Z';
+const windowAt = (usedPercent: number, resetsAt: string = FUTURE_RESET) =>
+  ({ limitId: 'codex', usedPercent, windowDurationMins: 10080, resetsAt });
+const okReading = (usedPercent: number, resetsAt?: string) => ({ status: 'ok', windows: [windowAt(usedPercent, resetsAt)] });
 
 /** A recorded codex node as latestReading reads it: usageAfter wins, recordedAt becomes gateReadAt. */
-const codexHistory = (usedPercent: number, recordedAt: string) => ({
+const codexHistory = (usedPercent: number, recordedAt: string, resetsAt?: string) => ({
   schemaVersion: 1, role: 'reason', cli: 'codex', model: 'gpt-6-astra',
-  usageAfter: okReading(usedPercent), recordedAt,
+  usageAfter: okReading(usedPercent, resetsAt), recordedAt,
 });
 
 describe('dispatch records the candidate set (RS1)', () => {
@@ -80,6 +84,7 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
   afterEach(() => {
     process.exitCode = exitCode;
+    vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
     rmSync(treeDir, { recursive: true, force: true });
@@ -90,6 +95,11 @@ describe('dispatch records the candidate set (RS1)', () => {
   const node = () => JSON.parse(mocks.appendFile.mock.calls[0][1]);
   const candidates = () => node().candidates;
   const routeOf = (role: string) => candidates().routes.find((r: { role: string }) => r.role === role);
+  /** codex usage reads before the CLI spawned: the gate/usageBefore reads. usageAfter comes later. */
+  const codexReadsBeforeSpawn = () => {
+    const spawnedAt = mocks.spawn.mock.invocationCallOrder[0] ?? Infinity;
+    return mocks.codex.mock.invocationCallOrder.filter((order: number) => order < spawnedAt).length;
+  };
   const seedTree = (...nodes: Record<string, unknown>[]) =>
     writeFileSync(path.join(treeDir, 'hist.jsonl'), `${nodes.map(n => JSON.stringify(n)).join('\n')}\n`);
 
@@ -135,7 +145,7 @@ describe('dispatch records the candidate set (RS1)', () => {
   it('classifies uncapped and budget-less providers without any reading', async () => {
     await dispatch('reason');
     expect(routeOf('implement')).toMatchObject({ gate: 'ok', gateSource: 'uncapped', eligible: true }); // glm: uncapped
-    expect(routeOf('breadth')).toMatchObject({ gate: 'ok', gateSource: 'no-budget', eligible: false, excludedBy: 'status' }); // gemini: no BUDGET row
+    expect(routeOf('breadth')).toMatchObject({ gate: 'ok', gateSource: 'no-budget', eligible: false, excludedBy: 'status' }); // gemini: no budget row
     expect(routeOf('muse')).toMatchObject({ gate: 'ok', gateSource: 'no-budget', eligible: true }); // no provider at all
   });
 
@@ -289,6 +299,65 @@ describe('dispatch records the candidate set (RS1)', () => {
     expect(candidates().routes.map((r: { role: string }) => r.role))
       .toEqual(['breadth', 'implement', 'reason', 'easy', 'muse', 'cline-mimo', 'cline-qwen']);
   });
+
+  // --- Q3: a reading whose window has reset is not room -----------------------------------------
+  it('a tree reading whose window has reset is unknown/tree-expired, never stop', async () => {
+    seedTree(codexHistory(CAP, '2026-09-30T09:00:00.000Z', PAST_RESET));
+    await dispatch('implement'); // reason is the non-chosen capped route
+    expect(routeOf('reason')).toMatchObject({
+      gate: 'unknown', gateSource: 'tree-expired', gateReadAt: '2026-09-30T09:00:00.000Z',
+      eligible: false, excludedBy: 'budget-unknown',
+    });
+  });
+
+  it('a reset exactly at now is expired (the boundary is <=); one ms later is still current', async () => {
+    const now = Date.parse('2026-10-17T12:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] }); // Date only: the spawn mock and run() keep real timers
+    vi.setSystemTime(now);
+    seedTree(codexHistory(CAP, '2026-10-17T11:00:00.000Z', new Date(now).toISOString()));
+    await dispatch('implement');
+    expect(routeOf('reason')).toMatchObject({ gate: 'unknown', gateSource: 'tree-expired' });
+    mocks.appendFile.mockClear();
+    seedTree(codexHistory(CAP, '2026-10-17T11:00:00.000Z', new Date(now + 1).toISOString()));
+    await dispatch('implement');
+    expect(routeOf('reason')).toMatchObject({ gate: 'stop', gateSource: 'tree' });
+  });
+
+  it('--list-routes never live-reads a missing or expired capped reading', async () => {
+    const listJson = () => main(['--list-routes', 'x', '--json', 'x']) as Promise<Array<Record<string, unknown>>>;
+    let routes = await listJson(); // empty tree: codex reading missing
+    expect(routes.find(r => r.role === 'reason')).toMatchObject({ gate: 'unknown', gateSource: 'none' });
+    seedTree(codexHistory(CAP, '2026-09-30T09:00:00.000Z', PAST_RESET));
+    routes = await listJson();
+    expect(routes.find(r => r.role === 'reason')).toMatchObject({ gate: 'unknown', gateSource: 'tree-expired' });
+    expect(mocks.codex).not.toHaveBeenCalled();
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  // --- Q5: a plans file that cannot be read honours no cap ----------------------------------------
+  it('a broken plans file -> codex gates unknown (plans-error), and the explicit role still dispatches', async () => {
+    const file = path.join(treeDir, 'plans.json');
+    writeFileSync(file, '{"schemaVersion": 1, "providers": {}}');
+    vi.stubEnv('ORCHESTRA_PLANS', file);
+    vi.resetModules(); // budget() memoizes per process: load a fresh usage.mjs reading the broken file
+    vi.doMock('../dispatcher/usage.mjs', async importOriginal => ({
+      ...await importOriginal<Record<string, unknown>>(),
+      readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
+    }));
+    try {
+      // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
+      const fresh = (await import('../dispatcher/dispatch.mjs')).main as typeof main;
+      await fresh(['--role', 'reason', '--task', 'mock-candidates', '--prompt', 'stable']);
+    } finally {
+      vi.doUnmock('../dispatcher/usage.mjs');
+      vi.resetModules();
+    }
+    expect(routeOf('reason')).toMatchObject({ gate: 'unknown', gateSource: 'plans-error', eligible: false, excludedBy: 'budget-unknown' });
+    expect(routeOf('implement')).toMatchObject({ gate: 'unknown', gateSource: 'plans-error' }); // glm: no "uncapped" either
+    expect(mocks.spawn.mock.calls[0][0]).toBe('codex'); // recorded, never refused: the slice ran
+    expect(candidates().routes.every((r: { gate: string; gateSource: string }) => r.gate !== 'ok' || r.gateSource === 'no-budget')).toBe(true);
+  });
+
   // --- model ranking (AA Intelligence Index) ---------------------------------------------------
   const rankingWith = (entries: unknown[]) => {
     const file = path.join(treeDir, 'ranking.json');
@@ -328,7 +397,7 @@ describe('dispatch records the candidate set (RS1)', () => {
     rankingWith([entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 40), entry('codex', 'gpt-6-astra', 'high', 46),
       entry('muse', MUSE_MODEL, 'max', 44), entry('agy', BREADTH_MODEL, null, 99),
       entry('cline', 'cline-pass/qwen3.8-max', null, 98)]);
-    // auto calls no provider: a capped route is eligible only on a recorded reading under its cap.
+    // An unexpired recorded reading under the cap makes the capped route eligible with no extra read.
     seedTree(codexHistory(Math.max(0, CAP - 10), '2026-10-11T09:00:00.000Z'));
     await dispatch('auto');
     // breadth (99) and cline-qwen (98, eligible) are not in the rotation: never auto-picked.
@@ -336,6 +405,7 @@ describe('dispatch records the candidate set (RS1)', () => {
     expect(candidates().rule).toBe('aa-rank');
     expect(candidates().reason).toBe('aa-rank: reason aa=46 over muse aa=44');
     expect(mocks.spawn.mock.calls[0][0]).toBe('codex');
+    expect(codexReadsBeforeSpawn()).toBe(1); // unexpired reading: only the chosen route's usageBefore
   });
 
   it('--role auto breaks an AA tie by rotation order and never picks an unranked route', async () => {
@@ -353,11 +423,73 @@ describe('dispatch records the candidate set (RS1)', () => {
     expect(mocks.appendFile).not.toHaveBeenCalled();
   });
 
-  it('--role auto treats a capped route with no reading as ineligible (no blind spend, no provider call)', async () => {
+  // Q3 replaces the old "no reading -> no provider call" rule: --role auto reads a capped route with
+  // no reading ONCE (a usage read, never an inference call) and the fresh reading decides.
+  it('--role auto live-reads a capped route with no reading once; the fresh reading decides', async () => {
     rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    await dispatch('auto'); // default mock: CAP - 10 -> room
+    expect(candidates().chosen).toBe('reason');
+    expect(codexReadsBeforeSpawn()).toBe(1); // the refresh doubles as the chosen route's usageBefore
+    expect(node().usageBefore).toMatchObject({ status: 'ok' });
+    expect(mocks.glm).not.toHaveBeenCalled(); // GLM is uncapped: auto never refreshes it
+  });
+
+  it('--role auto with an unreadable refresh keeps the capped route ineligible (no blind spend)', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    mocks.codex.mockResolvedValue({ status: 'unknown', reason: 'app-server silent', windows: [] });
+    await dispatch('auto');
+    expect(candidates().chosen).toBe('muse');
+    expect(mocks.codex).toHaveBeenCalledTimes(1);
+    // A non-ok refresh is no reading: it falls through to the (empty) tree, never 'live-refresh'.
+    expect(routeOf('reason')).toMatchObject({ gate: 'unknown', gateSource: 'none', eligible: false });
+    expect(mocks.glm).not.toHaveBeenCalled();
+  });
+
+  it('--role auto reads a capped provider ONCE however many of its routes are in rotation', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    await policyWith(p => { p.routes.easy.status = 'ok'; p.developers.rotation.order = ['reason', 'easy', 'muse']; });
+    await dispatch('auto');
+    expect(candidates().chosen).toBe('reason');
+    expect(codexReadsBeforeSpawn()).toBe(1);
+    expect(routeOf('easy')).toMatchObject({ gate: 'ok', gateSource: 'live-refresh' });
+  });
+
+  // A route that could not be picked is never refreshed: one test per half of that skip.
+  it('--role auto never refreshes a capped route outside the rotation', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    await policyWith(p => { p.developers.rotation.order = ['muse', 'implement']; }); // reason ok, out of rotation
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
     expect(mocks.codex).not.toHaveBeenCalled();
+  });
+
+  it('--role auto never refreshes a capped route whose status is not ok', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    await policyWith(p => { p.routes.reason.status = 'slug-confirmed'; }); // in rotation, not ok
+    await dispatch('auto');
+    expect(candidates().chosen).toBe('muse');
+    expect(mocks.codex).not.toHaveBeenCalled();
+  });
+
+  it('--role auto with an EXPIRED codex reading reads once; fresh room picks codex', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    seedTree(codexHistory(CAP, '2026-09-30T09:00:00.000Z', PAST_RESET)); // pre-reset cap: stale
+    await dispatch('auto');
+    expect(codexReadsBeforeSpawn()).toBe(1);
+    expect(candidates().chosen).toBe('reason');
+    expect(routeOf('reason')).toMatchObject({ gate: 'ok', eligible: true });
+    expect(mocks.spawn.mock.calls[0][0]).toBe('codex');
+  });
+
+  it('--role auto with an EXPIRED codex reading reads once; a fresh stop is recorded, muse picked', async () => {
+    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    seedTree(codexHistory(Math.max(0, CAP - 30), '2026-09-30T09:00:00.000Z', PAST_RESET)); // stale room
+    mocks.codex.mockResolvedValue(okReading(CAP));
+    await dispatch('auto');
+    expect(mocks.codex).toHaveBeenCalledTimes(1);
+    expect(candidates().chosen).toBe('muse');
+    // The node records the evidence the pick used: the fresh stop, not the stale tree reading.
+    expect(routeOf('reason')).toMatchObject({ gate: 'stop', gateSource: 'live-refresh', excludedBy: 'budget-stop' });
   });
 
   it('--role auto never picks an ineligible route however high its AA', async () => {
@@ -365,5 +497,6 @@ describe('dispatch records the candidate set (RS1)', () => {
     seedTree(codexHistory(CAP, '2026-10-11T09:00:00.000Z')); // codex at its cap in the tree -> budget-stop
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
+    expect(mocks.codex).not.toHaveBeenCalled(); // an unexpired reading is never refreshed
   });
 });

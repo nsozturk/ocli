@@ -184,6 +184,7 @@ and set by you:
 | `ORCHESTRA_LIVE_DIR` | environment, for `dispatch.mjs` and `digest.mjs` | `<cwd>/orchestra/live` |
 | `liveDirs` | plugin option (`/config`, or `claude plugin install … --config liveDirs=<dirs>`) | `<project root>/orchestra/live` |
 | routes and models | `dispatcher/policy.json` (gitignored; copy of `policy.example.json`) | the example routes |
+| `ORCHESTRA_PLANS` | environment: path to your provider plans (see below) | `~/.config/agent-rules/provider-plans.json`, else `dispatcher/provider-plans.example.json` |
 
 ```sh
 export ORCHESTRA_LIVE_DIR=/absolute/path/to/orchestra/live   # optional
@@ -196,7 +197,18 @@ shell. If you move the live dir, point the plugin's `liveDirs` at the same absol
 `codex app-server` (from `PATH`) and calling `account/rateLimits/read` over stdio, using codex's own
 login; it reads no file. Claude Code's limits come only from a snapshot the lead passes in, and
 GLM (opencode) has no readable quota source. Whatever cannot be read is reported as `unknown`, and
-a route capped in `BUDGET` with an unknown reading is not dispatched on an assumption.
+a capped route with an unknown reading is not dispatched on an assumption.
+
+**Provider plans set the caps.** What each subscription allows lives in one strict JSON file (schema
+v1, `dispatcher/plans.mjs`), read from `ORCHESTRA_PLANS`, else `~/.config/agent-rules/provider-plans.json`,
+else the shipped [`dispatcher/provider-plans.example.json`](dispatcher/provider-plans.example.json) (with
+one stderr warning per process). A counter pool whose `onUnknown` is `refuse` stops at
+`100 − reservePercent` on its `limitIds` (codex in the example: 95%), on **every** window it reports,
+weekly as well as 5-hour; every other pool (`until-stop`, claude included for now) runs until the
+provider itself stops it. A file that exists but fails to parse, or is a symlink, is an error, never a
+fall-through: every capped route then gates `unknown`. A recorded reading whose window has since reset
+is `tree-expired` (unknown, not room); `--role auto` re-reads such a capped route once (a usage read,
+never an inference call) before it picks, and `--list-routes` never reads.
 
 ## Permissions and sandboxing
 
@@ -327,7 +339,7 @@ The full contract, including how another dispatcher can write compatible files, 
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
 | `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
-| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `policy.example.json` |
+| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `plans.mjs` + `provider-plans.example.json` (caps), `policy.example.json` |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
 

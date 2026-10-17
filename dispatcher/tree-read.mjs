@@ -2,7 +2,7 @@
 import { constants } from 'node:fs';
 import { open, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
-import { BUDGET, ROUTE_LIMIT_IDS, bindingWindow } from './usage.mjs';
+import { budget as budgetRows, ROUTE_LIMIT_IDS, bindingWindow } from './usage.mjs';
 
 /** Which budget row a recorded node belongs to. `null` = not a developer dispatch we account for. */
 export function providerForNode(node) {
@@ -11,14 +11,14 @@ export function providerForNode(node) {
   if (node?.cli === 'opencode' && String(node.model ?? '').startsWith('zai-coding-plan/')) return 'glm';
   if (node?.cli === 'claude' || node?.cli === 'claude-agent' || node?.cli === 'claude-code') return 'claude';
   if (node?.cli === 'agy') return 'gemini';
-  if (node?.cli === 'cline') return 'cline'; // Cline Pass: no BUDGET row, no readable counter yet
+  if (node?.cli === 'cline') return 'cline'; // Cline Pass: no budget row, no readable counter yet
   return null;
 }
 
 /** Which billing pool a recorded node can declare a window stop for. Derived from
  * providerForNode, never from the role: cline passes through, while the budget namespace's
  * `glm` IS the ZAI billing pool (opencode zai-coding-plan/*), so stops say `zai`. A stop
- * needs no BUDGET row — the provider's own verdict binds uncapped pools too. */
+ * needs no budget row — the provider's own verdict binds uncapped pools too. */
 export function stopProviderForNode(node) {
   const provider = providerForNode(node);
   if (provider === 'cline') return 'cline';
@@ -99,11 +99,13 @@ export async function readNodes(treeDir) {
  * Newest usable reading for a provider, from recorded nodes only (max by recordedAt; equal
  * values prefer the later line, which preserves execution order within one file). Within a node
  * the end-of-run state (usageAfter) beats the start-of-run one. A non-ok reading is a missing
- * reading, never a zero one.
+ * reading, never a zero one. `expired` is true once ANY scoped window's resetsAt is <= nowMs (a
+ * reset weekly window next to a current 5h one is still a stale weekly number); `expiredResetsAt`
+ * names the earliest such reset.
  * Exported because dispatch.mjs records the same reading as a non-chosen route's candidate gate.
  */
-export function latestReading(nodes, provider) {
-  const limitIds = BUDGET[provider]?.limitIds ?? ROUTE_LIMIT_IDS[provider] ?? null;
+export function latestReading(nodes, provider, nowMs = Date.now()) {
+  const limitIds = budgetRows()[provider]?.limitIds ?? ROUTE_LIMIT_IDS[provider] ?? null;
   let best = null;
   let bestAt = '';
   for (const node of nodes) {
@@ -121,6 +123,23 @@ export function latestReading(nodes, provider) {
       recordedAt: node.recordedAt ?? null,
       task: node.task ?? null,
     };
+  }
+  // A reading taken before its window reset says nothing about the window now open. Still returned
+  // (it is what was recorded), flagged so no gate reads it as current. A missing or unparseable
+  // resetsAt cannot be dated: not expired.
+  if (best) {
+    const windows = best.report.windows ?? [];
+    const scoped = limitIds ? windows.filter(w => limitIds.includes(w.limitId)) : windows;
+    let expiredMs = Infinity;
+    for (const w of scoped) {
+      const resetMs = Date.parse(w?.resetsAt ?? '');
+      if (Number.isFinite(resetMs) && resetMs <= nowMs && resetMs < expiredMs) {
+        expiredMs = resetMs;
+        best.expiredResetsAt = w.resetsAt;
+      }
+    }
+    best.expired = expiredMs !== Infinity;
+    if (!best.expired) best.expiredResetsAt = null;
   }
   return best;
 }
