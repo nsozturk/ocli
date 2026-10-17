@@ -71,6 +71,27 @@ describe('dispatch usage recording — Q6 size and per-window deltas on the node
   const dispatch = (role = 'reason') => main(['--role', role, '--task', 'mock-usage', '--prompt', 'stable', '--verify', 'true']);
   const recorded = () => JSON.parse(mocks.appendFile.mock.calls[0][1]);
 
+  // R0 #4: the stderr label names the basis; only counter-exhausted may say CONFIRMED.
+  const failWith = (stderr: string, code: number) => mocks.spawn.mockImplementation(() => {
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    queueMicrotask(() => { now += 120_000; child.stderr.emit('data', stderr); child.emit('close', code, null); });
+    return child;
+  });
+  const stderrText = () => vi.mocked(process.stderr.write).mock.calls.map(call => String(call[0])).join('');
+  it('labels a counter-confirmed exhaustion CONFIRMED and records counter-exhausted on the node', async () => {
+    mocks.codex.mockResolvedValue(sample(100));
+    failWith('usage limit reached', 1);
+    await main(['--role', 'reason', '--task', 'mock-usage', '--prompt', 'stable']);
+    expect(recorded()).toHaveProperty('blockedBasis', 'counter-exhausted');
+    expect(stderrText()).toContain('[dispatch] codex usage limit CONFIRMED against its counter: usage confirms exhaustion');
+  });
+  it('labels a failed run against a counter with room a transient refusal, never CONFIRMED', async () => {
+    failWith('quota exceeded', 9);
+    await main(['--role', 'reason', '--task', 'mock-usage', '--prompt', 'stable']);
+    expect(recorded()).toHaveProperty('blockedBasis', 'counter-transient-refusal');
+    expect(stderrText()).toContain('[dispatch] codex refused (transient; counter shows room): run failed with exit 9');
+    expect(stderrText()).not.toMatch(/(?<!UN)CONFIRMED/);
+  });
   it('records --size S|M|L on the node, null when omitted', async () => {
     for (const size of ['S', 'M', 'L']) {
       mocks.appendFile.mockClear();

@@ -373,7 +373,7 @@ The full contract, including how another dispatcher can write compatible files, 
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
 | `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
-| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` (caps), `policy.example.json` |
+| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` (caps), `quota.mjs` (pure headroom + `decide` run/split/wait, not wired yet), `policy.example.json` |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
 

@@ -124,6 +124,7 @@ describe('usage.mjs Q1 — the gate binds on EVERY scoped window, weekly include
     const decision = await decideBlocked({ result: { code: 0, stdout: quoted, stderr: '' }, role: 'reason', readUsage: weeklyOut });
     expect(decision.blocked).toBe(true);
     expect(decision.blockedCheck).toMatch(/confirms exhaustion \(codex at 99%\)/);
+    expect(decision.blockedBasis).toBe('counter-exhausted');
   });
 });
 
@@ -332,5 +333,79 @@ describe('usage.mjs Q6 usageDeltas — one delta per scoped window kind', () => 
     expect(usageDeltas(r, { ...r, status: 'unavailable' }, 'codex', 60_000)).toEqual([]);
     expect(usageDeltas(r, r, 'glm', 60_000)).toEqual([]);
     for (const ms of [0, -1, NaN, Infinity]) expect(usageDeltas(r, r, 'codex', ms)).toEqual([]);
+  });
+});
+
+describe('dispatch.mjs decideBlocked — blockedBasis names which route set blocked (R0 #4)', () => {
+  const codexAt = (usedPercent: number, exhausted = false) => async () => ({ status: 'ok', exhausted,
+    windows: [{ limitId: 'codex', usedPercent, windowDurationMins: 10080, resetsAt: null, model: null }] });
+  const noReader = async () => { throw new Error('a no-counter role must not read usage'); };
+
+  it('counter-exhausted: the provider counter shows exhaustion', async () => {
+    for (const readUsage of [codexAt(100), codexAt(40, true)]) {
+      const decision = await decideBlocked({ result: { code: 1, stdout: '', stderr: 'usage limit reached' }, role: 'reason', readUsage });
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedBasis).toBe('counter-exhausted');
+    }
+  });
+
+  it('counter-transient-refusal: failed run with limit wording while the counter shows room', async () => {
+    const decision = await decideBlocked({ result: { code: 1, stdout: '', stderr: 'rate limit' }, role: 'reason', readUsage: codexAt(6) });
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedBasis).toBe('counter-transient-refusal');
+  });
+
+  it('counter-unreadable-exit-code: counter role, counter unreadable, the exit code decided', async () => {
+    const unreadable = async () => ({ status: 'unavailable', reason: 'app-server refused', windows: [] });
+    const failed = await decideBlocked({ result: { code: 1, stdout: '', stderr: 'rate limit' }, role: 'reason', readUsage: unreadable });
+    expect(failed.blockedBasis).toBe('counter-unreadable-exit-code');
+    const survived = await decideBlocked({ result: { code: 0, stdout: '', stderr: 'rate limit' }, role: 'reason', readUsage: unreadable });
+    expect(survived.blockedBasis).toBeNull();
+  });
+
+  it('counter-unreadable-exit-code: the counter read ok but no window is bound to this route (review F1)', async () => {
+    // gateFor calls this state 'unknown': another pool at 100% says nothing about this route's pool.
+    const otherPoolOnly = (exhausted: boolean) => async () => ({ status: 'ok', exhausted,
+      windows: [{ limitId: 'other', usedPercent: 100, windowDurationMins: 10080, resetsAt: null, model: null }] });
+    const failed = await decideBlocked({ result: { code: 1, stdout: '', stderr: 'rate limit' }, role: 'reason', readUsage: otherPoolOnly(false) });
+    expect(failed.blocked).toBe(true);
+    expect(failed.blockedBasis).toBe('counter-unreadable-exit-code');
+    expect(failed.blockedCheck).not.toMatch(/shows room/);
+    // A clean exit is still not blocked, so it carries no basis (killed survivor M12).
+    const clean = await decideBlocked({ result: { code: 0, stdout: '', stderr: 'rate limit' }, role: 'reason', readUsage: otherPoolOnly(false) });
+    expect(clean.blocked).toBe(false);
+    expect(clean).toHaveProperty('blockedBasis', null);
+    // The provider's own exhausted flag needs no window: that stays a confirmed exhaustion.
+    const providerSaysOut = await decideBlocked({ result: { code: 1, stdout: '', stderr: 'rate limit' }, role: 'reason', readUsage: otherPoolOnly(true) });
+    expect(providerSaysOut.blocked).toBe(true);
+    expect(providerSaysOut.blockedBasis).toBe('counter-exhausted');
+  });
+
+  it('no-counter-heuristic: no-counter role, stderr limit wording on a failed run', async () => {
+    const decision = await decideBlocked({ result: { code: 1, stdout: '', stderr: 'quota exceeded' }, role: 'implement', readUsage: noReader });
+    expect(decision.blocked).toBe(true);
+    expect(decision.blockedBasis).toBe('no-counter-heuristic');
+  });
+
+  it('cli-error-event: a CLI-emitted error event decides, even over a stderr refusal', async () => {
+    for (const stderr of ['', 'quota exceeded']) {
+      const decision = await decideBlocked({ result: { code: 1, stdout: '', stderr }, role: 'implement',
+        readUsage: noReader, cliError: '{"name":"APIError","data":{"message":"Usage limit reached"}}' });
+      expect(decision.blocked).toBe(true);
+      expect(decision.blockedBasis).toBe('cli-error-event');
+    }
+  });
+
+  it('null whenever not blocked', async () => {
+    const cases = [
+      { result: { code: 0, stdout: 'all tests pass', stderr: '' }, role: 'reason', readUsage: codexAt(6) },
+      { result: { code: 0, stdout: 'quoted: rate limit', stderr: '' }, role: 'reason', readUsage: codexAt(6) },
+      { result: { code: 1, stdout: 'the agent says: quota exceeded', stderr: '' }, role: 'implement', readUsage: noReader },
+    ];
+    for (const args of cases) {
+      const decision = await decideBlocked(args);
+      expect(decision.blocked).toBe(false);
+      expect(decision).toHaveProperty('blockedBasis', null);
+    }
   });
 });

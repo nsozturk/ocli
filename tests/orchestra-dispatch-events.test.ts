@@ -298,6 +298,38 @@ it('does not treat model-authored limit wording from opencode as a refusal', asy
   await dispatch('--role','implement');
   expect(events().at(-1)).toMatchObject({kind:'run.end', status:'failed', exitCode:1});
 });
+// R0 #4: one label per basis that this harness reaches; only counter-exhausted may say CONFIRMED.
+const stderrText = () => vi.mocked(process.stderr.write).mock.calls.map(call => String(call[0])).join('');
+const nodeWritten = () => JSON.parse(mocks.append.mock.calls[0][1]);
+const failWith = (stderr: string, code: number) => mocks.spawn.mockImplementation(() => {
+  const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+  queueMicrotask(() => {proc.stderr.emit('data',stderr);proc.emit('close',code,null);}); return proc;
+});
+it('labels a no-counter stderr refusal UNCONFIRMED heuristic and records no-counter-heuristic', async () => {
+  failWith('quota exceeded', 2);
+  await dispatch('--role','muse');
+  expect(nodeWritten()).toHaveProperty('blockedBasis', 'no-counter-heuristic');
+  expect(stderrText()).toContain('UNCONFIRMED: no usage counter, heuristic: no usage counter for role muse');
+  expect(stderrText()).not.toMatch(/(?<!UN)CONFIRMED/);
+});
+it('labels an opencode error event as the CLI refusing in its own words and records cli-error-event', async () => {
+  opencodeRun(['{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"APIError","data":{"message":"quota exceeded"}}}'], 1);
+  await dispatch('--role','implement');
+  expect(nodeWritten()).toHaveProperty('blockedBasis', 'cli-error-event');
+  expect(stderrText()).toContain("[dispatch] opencode refused by the CLI's own error event: no usage counter for role implement; CLI-emitted error event");
+  expect(stderrText()).not.toMatch(/(?<!UN)CONFIRMED/);
+});
+it('labels a failed run whose counter could not be read UNCONFIRMED and records counter-unreadable-exit-code', async () => {
+  failWith('rate limit', 1);
+  await dispatch();
+  expect(nodeWritten()).toHaveProperty('blockedBasis', 'counter-unreadable-exit-code');
+  expect(stderrText()).toContain('[dispatch] codex UNCONFIRMED: no readable counter for this route, exit code decided: usage unreadable (unknown)');
+  expect(stderrText()).not.toMatch(/(?<!UN)CONFIRMED/);
+});
+it('records blockedBasis null on a run that was not blocked', async () => {
+  await dispatch();
+  expect(nodeWritten()).toHaveProperty('blockedBasis', null);
+});
 it('rejects a task name that could leave the live and tree directories before touching anything', async () => {
   for (const task of ['../tree', '..', '.', 'a/b', 'a\\b', '', '--share', '--continue', '-c', '.hidden', '_x']) {
     await expect(main(['--role','reason','--task',task,'--prompt','p'])).rejects.toThrow(/task/);
