@@ -53,6 +53,13 @@ import { handoff, handoffReason, handoffSync } from './handoff.mjs';
 import { resolveWorktree } from './worktree.mjs';
 import { decide, readingFresh } from './quota.mjs';
 import { loadPlans, scopedLimitIds } from './plans.mjs';
+import { liveRoot, treeRoot, writeUsageSnapshot, policyRoutes } from './usage-snapshot.mjs';
+
+/** Quota cards: keep the readings this dispatch just took in <live root>/usage/latest.json. Never fails a
+ * dispatch (the writer never throws; the catch is belt and braces). */
+async function snapshot(policy, readings) {
+  try { await writeUsageSnapshot({ readings, routes: policyRoutes(policy) }); } catch { /* never fails a dispatch */ }
+}
 
 /**
  * Which provider's usage counter backs each route. A role absent here has no readable counter, so a
@@ -250,12 +257,8 @@ export function runPhase(phase, role) {
   return paneLabel(phase, 40) || role;
 }
 
-// ORCHESTRA_LIVE_DIR (read per call, so tests can point it at a temp dir) moves the live root.
-const liveRoot = () => (process.env.ORCHESTRA_LIVE_DIR ? path.resolve(process.env.ORCHESTRA_LIVE_DIR) : path.resolve('orchestra', 'live'));
-
-// Shared by candidate reads and node appends; preserve the package cwd-relative default.
-const treeRoot = () => process.env.ORCHESTRA_TREE_DIR
-  ? path.resolve(process.env.ORCHESTRA_TREE_DIR) : path.resolve('orchestra', 'tree');
+// liveRoot (ORCHESTRA_LIVE_DIR) and treeRoot (ORCHESTRA_TREE_DIR) live in usage-snapshot.mjs: the snapshot is
+// written under the same live root the pane scans. Both read per call, so tests can point them at temp dirs.
 
 // --task becomes a path segment under orchestra/live/ and orchestra/tree/,
 // and a CLI argv value ({task} -> opencode --title). A leading alphanumeric rules out '.', '..' and
@@ -807,6 +810,8 @@ async function autoPool(policy, minAaRaw, refresh, current) {
   const rotation = Array.isArray(policy?.developers?.rotation?.order) ? policy.developers.rotation.order : [];
   const liveReadings = new Map();
   const set = await buildCandidates({ policy, chosenRole: null, reasonText: null, usageBefore: null, liveReadings, refresh, current });
+  // Written before any refusal below; --dry-run (refresh false) read nothing and writes nothing.
+  if (refresh) await snapshot(policy, Object.fromEntries(liveReadings));
   const pool = set.routes
     .filter(r => r.eligible && r.inRotation && r.aa !== null && (minAA === null || r.aa >= minAA))
     .sort((a, b) => b.aa - a.aa || rotation.indexOf(a.role) - rotation.indexOf(b.role));
@@ -986,6 +991,8 @@ export async function main(argvInput = process.argv.slice(2)) {
   // A reading --role auto took moments ago is this route's usageBefore: no second app-server.
   const refreshed = liveReadings.get(providerForNode({ cli: route.cli, model: route.model }));
   const usageBefore = refreshed?.status === 'ok' ? refreshed : await readRouteUsage(route);
+  const routeProvider = providerForNode({ cli: route.cli, model: route.model });
+  if (routeProvider && usageBefore !== refreshed) await snapshot(policy, { [routeProvider]: usageBefore });
   // Recording is additive and must never prevent the selected route from running.
   let candidates;
   try {
@@ -1217,6 +1224,8 @@ export async function main(argvInput = process.argv.slice(2)) {
     const treeDir = treeRoot();
     await mkdir(treeDir, { recursive: true });
     await appendFile(path.join(treeDir, `${args.task}.jsonl`), `${JSON.stringify(node)}\n`, 'utf8');
+    // After the append: the stop this run recorded (or the success that cleared one) is in the tree now.
+    if (routeProvider) await snapshot(policy, { [routeProvider]: usageAfter });
 
     nodeId = node.nodeId;
     process.stdout.write(`${live.finalText ?? '[dispatch] no assistant message'}\n`);

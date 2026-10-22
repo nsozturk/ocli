@@ -1,6 +1,8 @@
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
-import { describe, it, expect } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { describe, it, expect, vi } from 'vitest';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
 import * as usage from '../dispatcher/usage.mjs';
 
@@ -26,7 +28,16 @@ const readings = () => ({
 
 async function run(argv: string[]) {
   let out = '';
-  await usage.runUsageCli({ argv, readAllImpl: async () => readings(), policyFile: POLICY, claudeConsent: true, write: (s: string) => { out += s; } });
+  // The CLI writes its usage snapshot under the live root: a temp dir, never a real orchestra/.
+  const dir = mkdtempSync(path.join(tmpdir(), 'ocli-usage-cli-'));
+  vi.stubEnv('ORCHESTRA_LIVE_DIR', path.join(dir, 'live'));
+  vi.stubEnv('ORCHESTRA_TREE_DIR', path.join(dir, 'tree'));
+  try {
+    await usage.runUsageCli({ argv, readAllImpl: async () => readings(), policyFile: POLICY, claudeConsent: true, write: (s: string) => { out += s; } });
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(dir, { recursive: true, force: true });
+  }
   return out;
 }
 

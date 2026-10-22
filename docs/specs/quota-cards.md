@@ -23,11 +23,16 @@ Schema v1:
       "readAt": "ISO", "status": "ok|unknown|unavailable", "source": "native:codex|plugin:zai|lead|…",
       "reason": "short reason or null",
       "windows": [{ "limitId": "…", "usedPercent": 0, "windowDurationMins": 300, "resetsAt": "ISO|null" }],
-      "gate": { "state": "ok|stop|unknown", "reason": "…", "headroomPercent": 95 },
-      "routes": [{ "role": "breadth", "model": "gemini-4-argon-high", "gate": { "state": "stop", "reason": "…" } }],
+      "gate": { "state": "ok|stop|unknown", "reason": "…", "headroomPercent": 95,
+                "window": { "limitId": "…", "windowDurationMins": 10080, "usedPercent": 39, "resetsAt": "ISO|null" } | null },
+      "routes": [{ "role": "breadth", "model": "gemini-4-argon-high",
+                   "gate": { "state": "stop", "reason": "…", "window": { "limitId": "…", … } | null } }],
       "stop": { "until": "ISO", "reason": "…" } | null,
       "setup": "one short line: which setting is missing (no value)" | null } } }
 ```
+- `gate.window` = the window the gate actually binds on (gateFor's scoped window for that provider / route model),
+  copied at the gate seam, never re-derived; null when the gate binds none (unknown / until-stop / uncapped).
+  The pane bolds `gate.window`, and a gate STOP's `until` is `gate.window.resetsAt`.
 - `routes` only for providers with scoped buckets (Q19); `stop` = the active provider stop from the tree (latestProviderStop).
 - Identity (email/org/account), secrets and absolute home paths NEVER appear (filter at the writer seam; test it).
 - Merge, don't clobber: each write updates only the providers it read now and keeps the others with their own
