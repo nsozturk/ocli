@@ -890,10 +890,15 @@ function providerChip(p: QuotaProvider, now: number): Chip {
   return p.status === 'unavailable' ? '?' : chipOf(p.gate)
 }
 const untilAt = (ms: number | null, now: number): string => (ms === null ? 'until reset unknown' : `until ${clockOf(ms)} (${rel(ms - now)})`)
-/** When a STOP ends: an active stop's own end (`until reset unknown` when it has none); else, for a stop gate,
- * the reset of the window it bound on. '' when neither applies or the snapshot names no window. */
+/** When a STOP ends: an active stop's own end (`until reset unknown` when it has none, an endless stop can always
+ * be the longest); when a stop gate overlaps it, the later of that end and the gate window's reset; else, for a stop
+ * gate alone, the reset of the window it bound on. '' when neither applies or the snapshot names no window. */
 function untilOf(p: QuotaProvider, now: number, gate: QuotaState, bound: QuotaWindow | null): string {
-  if (isStopActive(p, now)) return untilAt(p.stop!.until, now)
+  if (isStopActive(p, now)) {
+    const end = p.stop!.until
+    const reset = gate === 'stop' ? bound?.resetsAt ?? null : null
+    return untilAt(end !== null && reset !== null && reset > end ? reset : end, now)
+  }
   return gate === 'stop' && bound ? untilAt(bound.resetsAt, now) : ''
 }
 
@@ -968,7 +973,7 @@ function providerRows(p: QuotaProvider, now: number, columns: number, isBars: bo
       const state: QuotaState = isStopped ? 'stop' : gate
       sub.push({ text: `${i ? ' · ' : ''}${label} ` }, { text: chipOf(state), color: CHIP_COLOR.get(chipOf(state)) })
       if (bound) sub.push({ text: ' ' }, { text: `${windowLabel(bound.mins)} ${pct(bound.usedPercent)}`, isBold: true })
-      const until = state === 'stop' ? untilOf(p, now, state, bound) : ''
+      const until = state === 'stop' ? untilOf(p, now, gate, bound) : ''
       if (until) sub.push({ text: ` ${until}` })
     })
     rows.push({ kind: 'segs', key: `quota:routes:${p.name}`, segs: fitSegs(sub, columns) })

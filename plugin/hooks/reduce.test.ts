@@ -1218,6 +1218,31 @@ describe('quota card: gate.window, the binding window (fix B)', () => {
     expect(quotaLine([runOf('agy', 'gemini-4-argon-high')], unknown, T)?.text).toBe('quota: gemini STOP until reset unknown')
   })
 
+  test('U1 a provider stop and a gate STOP overlap: the row, sub-row and task line show the later end', () => {
+    const q = gemini({ stop: { until: at(T + 6 * H), reason: 'quota exhausted' } })
+    const later = `until ${hm(T + 48 * H)} (2d0h)`
+    expect(rowText(rowsOf(q)[0]!)).toContain(`STOP ${later}`)
+    expect(rowText(rowsOf(q)[1]!)).toContain(`argon STOP wk 90% ${later}`)
+    expect(quotaLine([runOf('agy', 'gemini-4-argon-high')], q, T)?.text).toBe(`quota: gemini argon STOP ${later}`)
+    // The ok flash route has no gate STOP of its own: only the provider stop's end applies.
+    expect(rowText(rowsOf(q)[1]!)).toContain(`flash STOP wk 39% until ${hm(T + 6 * H)} (6h00m)`)
+    expect(quotaLine([runOf('agy', 'gemini-3.8-flash-high')], q, T)?.text).toBe(`quota: gemini flash STOP until ${hm(T + 6 * H)} (6h00m)`)
+  })
+
+  test('U2 the provider stop ends later than the gate reset, or the reset is unknown: the stop end stays', () => {
+    const sooner = gemini({ gate: { state: 'stop', window: w('x', 90, 10080, T + H) }, stop: { until: at(T + 6 * H), reason: 'x' } })
+    expect(rowText(rowsOf(sooner)[0]!)).toContain(`STOP until ${hm(T + 6 * H)} (6h00m)`)
+    const unknown = gemini({ gate: { state: 'stop', window: { ...ARGON, resetsAt: null } }, stop: { until: at(T + 6 * H), reason: 'x' } })
+    expect(rowText(rowsOf(unknown)[0]!)).toContain(`STOP until ${hm(T + 6 * H)} (6h00m)`)
+  })
+
+  test('U3 a provider stop with no end stays until reset unknown even when the gate STOP has a reset', () => {
+    const q = gemini({ stop: { until: null, reason: 'x' } })
+    expect(rowText(rowsOf(q)[0]!)).toContain('STOP until reset unknown')
+    expect(rowText(rowsOf(q)[1]!)).toContain('argon STOP wk 90% until reset unknown')
+    expect(quotaLine([runOf('agy', 'gemini-4-argon-high')], q, T)?.text).toBe('quota: gemini argon STOP until reset unknown')
+  })
+
   test('P6/D2 more windows than the row draws: the binding one is chosen first and always drawn', () => {
     const ws = [1, 2, 3, 4].map(i => w(`p${i}`, i, 300))
     ws.push(w('codex', 80, 10080))
