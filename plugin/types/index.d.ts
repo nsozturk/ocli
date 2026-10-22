@@ -83,6 +83,29 @@ export type OcliPlan = { task: string; phases: string[]; at: number }
 /** The newest project checkpoint (`<root>/checkpoints/*.md`) as the pane draws it; every string cleaned. */
 export type Checkpoint = { name: string; rows: { n: string; phase: string; status: string }[]; next: string; resume: string }
 
+/** A provider's quota state: a gate or route verdict as the dispatcher's snapshot names it. */
+export type QuotaState = 'ok' | 'stop' | 'unknown'
+
+/** One provider of `<live dir>/usage/latest.json` (schema v1), checked and cleaned; times in ms. */
+export type QuotaProvider = {
+  /** One of codex, claude, glm, gemini, muse, cline. */
+  name: string
+  readAt: number | null
+  status: 'ok' | 'unknown' | 'unavailable'
+  reason: string
+  windows: { limitId: string; usedPercent: number | null; mins: number | null; resetsAt: number | null }[]
+  gate: QuotaState
+  /** Scoped buckets (gemini's argon/flash): each route's own gate. */
+  routes: { role: string; model: string; gate: QuotaState }[]
+  stop: { until: number | null; reason: string } | null
+  /** Which setting is missing ('' when none). */
+  setup: string
+}
+
+/** The dispatcher's usage snapshot as the pane draws it: providers in the fixed order, a list (a
+ * provider key named `__proto__` must not reach a prototype). */
+export type OcliQuota = { writtenAt: number | null; providers: QuotaProvider[] }
+
 export type OcliDir = { path: string; isMissing: boolean }
 
 export type OcliMeta = {
@@ -116,6 +139,10 @@ declare module 'claude-code' {
       checkpoint: (Checkpoint & { mtimeMs: number; root: string }) | null
       /** The last /ocli-digest output (dispatcher/digest.mjs markdown, each line cleaned); '' before the first. */
       digest: string
+      /** The last usage snapshot read from `<live dir>/usage/latest.json`; null when none or malformed. */
+      quota: OcliQuota | null
+      /** Whether the Quota card is open (it starts open). */
+      quotaOpen: boolean
     }
   }
 }

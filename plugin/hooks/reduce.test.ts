@@ -2,7 +2,9 @@ import { test, expect, describe } from 'claude-code/testing'
 
 import { AGY, CODEX, GLM_LIVE, MUSE, OPENCODE } from './fixtures'
 import { addHistory, card, cardVariants, cells, checkpointCard, checkpointDrift, clean, colorOf, displayStatus, fitCards, foldHistory, foldPlan, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isLooping, latestAt, parseCheckpoint, parseLines, resumePrompt, phasesOf, reduce, runDetail, runLine, sparkline, taskSpan, taskStatus, tokensOf, wrap } from './reduce'
+import { foldQuota, quotaLine } from './reduce'
 import type { Card } from './reduce'
+import { SNAPSHOT } from './quota-fixtures'
 import type { OcliRun } from '../types'
 
 const file = (lines: readonly string[]) => lines.join('\n') + '\n'
@@ -226,7 +228,7 @@ const rowText = (row: Card['rows'][number]): string =>
   row.kind === 'head' ? row.label + row.pad + row.right + (row.dismiss ? ' ×' : '')
     : row.kind === 'press' ? row.label + row.text
       : row.kind === 'text' ? row.text : row.kind === 'split' ? row.left + row.right : row.kind === 'button' ? row.label
-        : row.prefix + row.dots.map(() => '●').join('') + row.tail + row.right
+        : row.kind === 'segs' ? row.segs.map(seg => seg.text).join('') : row.prefix + row.dots.map(() => '●').join('') + row.tail + row.right
 const texts = (c: Card) => c.rows.map(rowText)
 
 test('a card: header, status, runs and tokens, description, phases with dots, done/total and LLMs', () => {
@@ -1077,4 +1079,35 @@ test('the History card: closed is one ▸ row with the count; open lists newest 
   expect(rowText(many.rows.at(-1)!)).toBe('+5 older')
   expect(many.height).toBe(many.rows.length + 2)
   for (const row of many.rows) expect(cells(rowText(row))).toBeLessThanOrEqual(60)
+})
+
+describe('foldQuota: the usage snapshot, checked and cleaned', () => {
+  test('known providers only, in the fixed order, every string cleaned, unknown fields never kept', () => {
+    const hostile = structuredClone(SNAPSHOT) as Record<string, any>
+    hostile.providers = {
+      gemini: hostile.providers.gemini, codex: { ...hostile.providers.codex, email: 'someone@example.com', token: 'sk-SECRET', reason: '\u001b[31mred\u001b[0m‮' },
+      unknownco: hostile.providers.codex, ['__proto__']: hostile.providers.codex, constructor: hostile.providers.codex,
+    }
+    const q = foldQuota(JSON.stringify(hostile))!
+    expect(q.providers.map(p => p.name)).toEqual(['codex', 'gemini'])
+    expect(q.providers[0]!.reason).toBe('red')
+    expect(JSON.stringify(q)).not.toMatch(/example\.com|SECRET|unknownco/)
+    expect(q.providers[1]!.routes.map(r => [r.model, r.gate])).toEqual([['gemini-4-argon-high', 'stop'], ['gemini-4-argon-medium', 'stop'], ['gemini-3.8-flash-high', 'ok']])
+    expect(q.providers[0]!.windows[0]).toEqual({ limitId: 'primary', usedPercent: 42, mins: 300, resetsAt: Date.parse(SNAPSHOT.providers.codex.windows[0]!.resetsAt) })
+  })
+
+  test('anything that is not schema v1 with a providers object, or names no known provider, is null', () => {
+    for (const text of ['', 'null', '[]', '{', '{"v":2,"providers":{"codex":{}}}', '{"v":1}', '{"v":1,"providers":[]}', '{"v":1,"providers":{"x":{}}}', '{"v":1,"providers":{"codex":7}}']) {
+      expect(foldQuota(text), text).toBe(null)
+    }
+  })
+
+  test('odd values fall back to unknown, never to ok', () => {
+    const q = foldQuota(JSON.stringify({ v: 1, providers: { codex: { status: 'great', gate: { state: 'fine' }, windows: [{ usedPercent: 'x' }], routes: 'no', stop: 5 } } }))!
+    expect(q.providers[0]).toMatchObject({ status: 'unknown', gate: 'unknown', routes: [], stop: null, windows: [{ usedPercent: null, mins: null, resetsAt: null }] })
+  })
+
+  test('quotaLine: no snapshot or no run, no line', () => {
+    expect(quotaLine([], foldQuota(JSON.stringify(SNAPSHOT)), 0)).toBe(null)
+  })
 })
