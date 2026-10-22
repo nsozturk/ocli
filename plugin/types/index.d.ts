@@ -97,10 +97,12 @@ export type QuotaProvider = {
   reason: string
   windows: QuotaWindow[]
   gate: QuotaState
-  /** The window the dispatcher's gate bound on (gate.window); null when the snapshot names none. */
+  /** The window the dispatcher's gate bound on (gate.window); null when it binds none. A snapshot
+   * older than gate.window (no `window` key) gets the fullest window. */
   window: QuotaWindow | null
-  /** Scoped buckets (gemini's argon/flash): each route's own gate and the window it bound on. */
-  routes: { role: string; model: string; gate: QuotaState; window: QuotaWindow | null }[]
+  /** Scoped buckets (gemini's argon/flash): each route's own gate and the window it bound on (null:
+   * binds none; absent: an older snapshot that names none, the task line then takes the fullest). */
+  routes: { role: string; model: string; gate: QuotaState; window?: QuotaWindow | null }[]
   stop: { until: number | null; reason: string } | null
   /** Which setting is missing ('' when none). */
   setup: string

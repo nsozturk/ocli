@@ -1646,7 +1646,7 @@ const QUOTA_ROWS = (until: string) => [
   'codex  OK   ██░░░ 5h 42% wk 18% · resets 2h10m',
   'claude OK   stale 2h ██░░░ 5h 30% wk 20% · resets 1h00m',
   `glm    STOP until ${until} (40m) █████ 5h 96% · resets 40m`,
-  'gemini OK   ██░░░ 5h 10% wk 39% · resets 2d3h',
+  'gemini OK   ██░░░ wk 39% 5h 10% · resets 2d3h', // the binding window is drawn first (fix round 2, D3)
   '       argon high/medium STOP · flash OK',
   'muse   ?    no reader',
   '       setup: usage.muse is not set in the ocli config',

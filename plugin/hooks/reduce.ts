@@ -828,9 +828,16 @@ const list = (value: unknown, max: number): Record<string, unknown>[] =>
 
 const windowOf = (w: Record<string, unknown>): QuotaWindow =>
   ({ limitId: clean(w.limitId, 80), usedPercent: num(w.usedPercent), mins: num(w.windowDurationMins), resetsAt: time(w.resetsAt) })
-/** A gate's `window`: the one the dispatcher's gate bound on, as written; null when it names none. */
-const boundOf = (gate: unknown): QuotaWindow | null => {
-  const w = record(record(gate)?.window)
+const byMins = (a: QuotaWindow, b: QuotaWindow): number => (a.mins ?? Infinity) - (b.mins ?? Infinity)
+/** The most used window (the shorter on a tie); null when none has a percentage. */
+const fullestOf = (windows: readonly QuotaWindow[]): QuotaWindow | null =>
+  [...windows].sort(byMins).reduce<QuotaWindow | null>((best, w) => w.usedPercent !== null && (best === null || w.usedPercent > best.usedPercent!) ? w : best, null)
+/** A gate's `window`: the one the dispatcher's gate bound on, as written; null (or not a window)
+ * binds none; undefined when the gate has no `window` key at all (a snapshot older than gate.window). */
+const boundOf = (gate: unknown): QuotaWindow | null | undefined => {
+  const g = record(gate)
+  if (!g || !Object.hasOwn(g, 'window')) return undefined
+  const w = record(g.window)
   return w && windowOf(w)
 }
 
@@ -852,15 +859,19 @@ export function foldQuota(text: string): OcliQuota | null {
     const p = Object.hasOwn(all, name) ? record(all[name]) : null
     if (!p) continue
     const stop = record(p.stop)
+    const windows = list(p.windows, Infinity).map(windowOf)
     providers.push({
       name,
       readAt: time(p.readAt),
       status: (QUOTA_STATUSES as readonly unknown[]).includes(p.status) ? (p.status as QuotaProvider['status']) : 'unknown',
       reason: clean(p.reason, 120),
-      windows: list(p.windows, Infinity).map(windowOf),
+      windows,
       gate: stateOf(record(p.gate)?.state),
-      window: boundOf(p.gate),
-      routes: list(p.routes, MAX_ROUTES).map(x => ({ role: clean(x.role, 40), model: clean(x.model, 80), gate: stateOf(record(x.gate)?.state), window: boundOf(x.gate) })).filter(x => x.model),
+      window: boundOf(p.gate) === undefined ? fullestOf(windows) : boundOf(p.gate)!,
+      routes: list(p.routes, MAX_ROUTES).map(x => {
+        const window = boundOf(x.gate)
+        return { role: clean(x.role, 40), model: clean(x.model, 80), gate: stateOf(record(x.gate)?.state), ...(window === undefined ? {} : { window }) }
+      }).filter(x => x.model),
       stop: stop && { until: time(stop.until), reason: clean(stop.reason, 120) },
       setup: clean(p.setup, 160),
     })
@@ -879,10 +890,10 @@ function providerChip(p: QuotaProvider, now: number): Chip {
   return p.status === 'unavailable' ? '?' : chipOf(p.gate)
 }
 const untilAt = (ms: number | null, now: number): string => (ms === null ? 'until reset unknown' : `until ${clockOf(ms)} (${rel(ms - now)})`)
-/** When a STOP ends: an active stop's own end (none named when it has no end); else, for a stop gate,
+/** When a STOP ends: an active stop's own end (`until reset unknown` when it has none); else, for a stop gate,
  * the reset of the window it bound on. '' when neither applies or the snapshot names no window. */
 function untilOf(p: QuotaProvider, now: number, gate: QuotaState, bound: QuotaWindow | null): string {
-  if (isStopActive(p, now)) return p.stop!.until === null ? '' : untilAt(p.stop!.until, now)
+  if (isStopActive(p, now)) return untilAt(p.stop!.until, now)
   return gate === 'stop' && bound ? untilAt(bound.resetsAt, now) : ''
 }
 
@@ -898,16 +909,13 @@ const windowLabel = (mins: number | null): string =>
   mins === null ? '?' : mins === 10080 ? 'wk' : mins >= 1440 ? `${Math.round(mins / 1440)}d` : mins >= 60 ? `${Math.round(mins / 60)}h` : `${mins}m`
 const pct = (n: number | null): string => (n === null ? '?%' : `${Math.round(n)}%`)
 
-const byMins = (a: QuotaWindow, b: QuotaWindow): number => (a.mins ?? Infinity) - (b.mins ?? Infinity)
-/** The binding window: the gate's own (`bound`, matched in the list by limitId and length), else the
- * most used (the shorter on a tie), none when no window has a percentage. Chosen over every window;
- * only then are the drawn ones cut to MAX_WINDOWS, the binding one always among them, shortest first. */
+/** The binding window: the gate's own (`bound`, matched in the list by limitId and length); none
+ * when the gate binds none. Drawn first, so a narrow row cuts the other windows (shortest first,
+ * MAX_WINDOWS in all) before it. */
 function windowsOf(windows: readonly QuotaWindow[], bound: QuotaWindow | null) {
   const sorted = [...windows].sort(byMins)
-  const binding = bound
-    ? (sorted.find(w => w.limitId === bound.limitId && w.mins === bound.mins) ?? bound)
-    : sorted.reduce<QuotaWindow | null>((best, w) => w.usedPercent !== null && (best === null || w.usedPercent > best.usedPercent!) ? w : best, null)
-  const shown = (binding ? [binding, ...sorted.filter(w => w !== binding)] : sorted).slice(0, MAX_WINDOWS).sort(byMins)
+  const binding = bound && (sorted.find(w => w.limitId === bound.limitId && w.mins === bound.mins) ?? bound)
+  const shown = (binding ? [binding, ...sorted.filter(w => w !== binding)] : sorted).slice(0, MAX_WINDOWS)
   return { shown, binding }
 }
 
@@ -954,10 +962,14 @@ function providerRows(p: QuotaProvider, now: number, columns: number, isBars: bo
   const rows: Row[] = [{ kind: 'segs', key: `quota:row:${p.name}`, segs: fitSegs(segs, columns), ...(isStale(p, now) ? { isDim: true } : {}) }]
   if (isSub && p.routes.length) {
     const sub: Seg[] = [{ text: INDENT }]
-    routeGroups(p).forEach(([label, state, bound], i) => {
+    // An active provider stop refuses every route (the dispatcher's budget-stop), whatever its gate.
+    const isStopped = isStopActive(p, now)
+    routeGroups(p).forEach(([label, gate, bound], i) => {
+      const state: QuotaState = isStopped ? 'stop' : gate
       sub.push({ text: `${i ? ' · ' : ''}${label} ` }, { text: chipOf(state), color: CHIP_COLOR.get(chipOf(state)) })
       if (bound) sub.push({ text: ' ' }, { text: `${windowLabel(bound.mins)} ${pct(bound.usedPercent)}`, isBold: true })
-      if (state === 'stop' && bound) sub.push({ text: ` ${untilAt(bound.resetsAt, now)}` })
+      const until = state === 'stop' ? untilOf(p, now, state, bound) : ''
+      if (until) sub.push({ text: ` ${until}` })
     })
     rows.push({ kind: 'segs', key: `quota:routes:${p.name}`, segs: fitSegs(sub, columns) })
   }
@@ -976,7 +988,7 @@ function routeName(model: string): { family: string; effort: string } {
 /** Routes grouped by family, state and bound window, in first-seen order: `argon high/medium`,
  * `flash`. Efforts are named only for a family with more than one route. */
 function routeGroups(p: QuotaProvider): [string, QuotaState, QuotaWindow | null][] {
-  const names = p.routes.map(r => ({ ...routeName(r.model), gate: r.gate, window: r.window }))
+  const names = p.routes.map(r => ({ ...routeName(r.model), gate: r.gate, window: r.window ?? null }))
   const groups = new Map<string, { family: string; efforts: string[]; gate: QuotaState; window: QuotaWindow | null }>()
   for (const n of names) {
     const key = [n.family, n.gate, n.window && JSON.stringify(n.window)].join('\u0000')
@@ -1017,10 +1029,11 @@ export function quotaLine(runs: readonly OcliRun[], q: OcliQuota | null, now: nu
   const route = p.routes.find(r => r.model.split('/').pop() === model)
   // The route's gate and window when the snapshot scopes one; an active provider stop overrides it.
   const gate = route ? route.gate : p.gate
-  const bound = route ? route.window : p.window
+  const bound = route ? (route.window === undefined ? fullestOf(p.windows) : route.window) : p.window
   const chip = route ? (isStopActive(p, now) ? 'STOP' : chipOf(gate)) : providerChip(p, now)
   const label = `quota: ${p.name}${route ? ` ${routeName(route.model).family}` : ''} ${chip}`
   if (chip === 'STOP') return { text: [label, untilOf(p, now, gate, bound)].filter(Boolean).join(' '), color: 'warning' }
   const { binding } = windowsOf(p.windows, bound)
-  return { text: binding ? `${label} · ${windowLabel(binding.mins)} ${pct(binding.usedPercent)}` : label }
+  if (binding) return { text: `${label} · ${windowLabel(binding.mins)} ${pct(binding.usedPercent)}` }
+  return { text: chip === 'OK' ? `${label} · no cap` : label }
 }
