@@ -350,15 +350,16 @@ export function scopedBucketLines(provider, report, routes) {
 export async function runUsageCli({ argv = process.argv, readAllImpl = readAll, policyFile,
   claudeConsent = claudeConsentGiven(), write = s => process.stdout.write(s) } = {}) {
   const all = await readAllImpl();
-  // Dynamic: tree-read.mjs statically imports this module, so a static/top-level import deadlocks when this is main.
-  const { providerForNode } = await import('./tree-read.mjs');
+  // Dynamic: tree-read.mjs (and usage-snapshot.mjs through it) statically imports this module, so a
+  // static/top-level import deadlocks when this is main.
+  const { writeUsageSnapshot, policyRoutes } = await import('./usage-snapshot.mjs');
   // Q19: the policy routes per provider, for the scoped-bucket lines.
   const policy = policyFile
     ? JSON.parse(readFileSync(policyFile, 'utf8'))
     : await (await import('./dispatch.mjs')).readPolicy();
-  const providerRoutes = Object.entries(policy.routes ?? {})
-    .filter(([, r]) => r?.argv)
-    .map(([role, r]) => ({ role, model: r.model, provider: providerForNode({ cli: r.cli, model: r.model }) }));
+  const providerRoutes = policyRoutes(policy);
+  // Quota cards: every run keeps its readings in <live root>/usage/latest.json for the pane. Never fails the CLI.
+  await writeUsageSnapshot({ readings: all, routes: providerRoutes, now: Date.parse(all.readAt) || Date.now(), claudeConsent });
   const setup = Object.fromEntries(Object.entries(all).map(([n, r]) => [n, n === 'readAt' ? null : setupHint(n, r, { claudeConsent })]).filter(([, h]) => h));
   if (argv.includes('--json')) {
     write(`${JSON.stringify(Object.keys(setup).length ? { ...all, setup } : all, null, 2)}\n`);

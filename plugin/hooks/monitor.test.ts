@@ -1,6 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 
 import { GLM_LIVE } from './fixtures'
+import { GLM_UNTIL, SNAPSHOT, snapshotText } from './quota-fixtures'
 import { harness, NOW, OPTIONS, PANE_PROPS, ROOT, runLines } from './harness'
 import { digestScript } from './register'
 import { cells, parseLines, reduce } from './reduce'
@@ -1608,4 +1609,267 @@ test('the open card says what each run was asked: run.start.brief, else the titl
     expect(open).toContain('    RK2 older dispatcher')
     for (const row of open) expect(row).not.toMatch(CONTROL)
   }
+})
+
+// --- the quota card: <live dir>/usage/latest.json ------------------------------------------------
+
+const QUOTA = `${ROOT}/usage/latest.json`
+const mountAt = ($: unknown, surface: (typeof SURFACES)[number], columns: number, bodyRows = 30) => ($ as Mountable).ui.mount({
+  plugin: 'ocli-monitor', surface, component: 'Pane', requestId: 'ocli',
+  props: { ...PANE_PROPS, bodyColumns: columns, scroll: { offset: 0, bodyRows } },
+  viewport: { columns, rows: bodyRows },
+} as never)
+async function drawnAt($: unknown, surface: (typeof SURFACES)[number], columns = 100, bodyRows = 30) {
+  const ui = await mountAt($, surface, columns, bodyRows)
+  const tree = await ui.drawn()
+  await ui.unmount()
+  return tree
+}
+/** The node keyed `key` anywhere in the tree. */
+function nodeOf(node: El | string, key: string): El | null {
+  if (typeof node === 'string') return null
+  if (String(node.props?.key ?? node.key ?? '') === key) return node
+  for (const child of node.children ?? []) {
+    const found = nodeOf(child, key)
+    if (found) return found
+  }
+  return null
+}
+/** Every Text under `node`: its text and the props that style it. */
+function textsOf(node: El | string | null, out: { text: string; bold: boolean; dim: boolean; color: unknown }[] = []) {
+  if (!node || typeof node === 'string') return out
+  if (node.type === 'Text') out.push({ text: flat(node), bold: node.props?.bold === true, dim: node.props?.dimColor === true, color: node.props?.color })
+  else for (const child of node.children ?? []) textsOf(child, out)
+  return out
+}
+const QUOTA_ROWS = (until: string) => [
+  'codex  OK   ██░░░ 5h 42% wk 18% · resets 2h10m',
+  'claude OK   stale 2h ██░░░ 5h 30% wk 20% · resets 1h00m',
+  `glm    STOP until ${until} (40m) █████ 5h 96% · resets 40m`,
+  'gemini OK   ██░░░ wk 39% 5h 10% · resets 2d3h', // the binding window is drawn first (fix round 2, D3)
+  '       argon high/medium STOP · flash OK',
+  'muse   ?    no reader',
+  '       setup: usage.muse is not set in the ocli config',
+]
+
+test('the Quota card leads the pane, above the checkpoint: one row per provider in the fixed order, on terminal AND desktop', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  expect(h.calls.read).toContain(QUOTA)
+  for (const surface of SURFACES) {
+    const tree = await drawnAt($, surface)
+    const cards = cardsOf(tree)
+    expect([...cards.keys()].slice(0, 2)).toEqual(['quota', 'checkpoint'])
+    const drawn = cards.get('quota')!
+    expect(drawn[1]).toMatch(/^▾ Quota +3\/5 OK$/)
+    expect(drawn.slice(2, -2)).toEqual(QUOTA_ROWS(hhmm(GLM_UNTIL)))
+    expect(rowsOf(tree).join('\n')).toMatch(/errors 0/)
+  }
+})
+
+test('the binding window is bold, the others are not; STOP, OK and ? chips take the pane status colours', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const texts = textsOf(nodeOf(await drawnAt($, surface), 'quota'))
+    expect(texts.filter(t => t.bold).map(t => t.text)).toEqual(['5h 42%', '5h 30%', '5h 96%', 'wk 39%'])
+    for (const plain of ['wk 18%', 'wk 20%', '5h 10%']) expect(texts.find(t => t.text === plain)?.bold).toBe(false)
+    const chips = texts.filter(t => /^(OK|STOP|\?) *$/.test(t.text))
+    expect(chips.map(t => [t.text.trim(), t.color])).toEqual([
+      ['OK', 'success'], ['OK', 'success'], ['STOP', 'warning'], ['OK', 'success'], ['STOP', 'warning'], ['OK', 'success'], ['?', undefined],
+    ])
+  }
+})
+
+test('a reading older than 30 minutes draws its row dim with its age; a fresh one is not dim', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const tree = await drawnAt($, surface)
+    const claude = textsOf(nodeOf(tree, 'quota:row:claude'))
+    expect(claude.map(t => t.text).join('')).toContain('stale 2h')
+    expect(claude.every(t => t.dim)).toBe(true)
+    const codex = textsOf(nodeOf(tree, 'quota:row:codex'))
+    expect(codex.some(t => t.dim)).toBe(false)
+    expect(codex.map(t => t.text).join('')).not.toContain('stale')
+  }
+  // 29 minutes old: still fresh.
+  const fresh = structuredClone(SNAPSHOT)
+  fresh.providers.claude.readAt = new Date(NOW - 29 * 60_000).toISOString()
+  h.put(QUOTA, snapshotText(fresh), { mtimeMs: NOW + 1 })
+  await h.tick()
+  const claude = textsOf(nodeOf(await drawnAt($, 'terminal'), 'quota:row:claude'))
+  expect(claude.some(t => t.dim)).toBe(false)
+  expect(claude.map(t => t.text).join('')).not.toContain('stale')
+})
+
+test('the setup line is dim under the unavailable provider; scoped routes get one sub-row', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const tree = await drawnAt($, surface)
+    const setup = textsOf(nodeOf(tree, 'quota')).filter(t => t.text.includes('setup:'))
+    expect(setup.map(t => t.text)).toEqual(['       setup: usage.muse is not set in the ocli config'])
+    expect(setup.every(t => t.dim)).toBe(true)
+    expect(rowsOf(nodeOf(tree, 'quota:routes:gemini')!)).toEqual(['       argon high/medium STOP · flash OK'])
+    // Only gemini has routes.
+    expect(cardsOf(tree).get('quota')!.filter(row => row.includes('·') && row.startsWith('       ') && !row.includes('setup'))).toHaveLength(1)
+  }
+})
+
+test('a malformed snapshot draws no Quota card, never throws out of the tick, and costs one error per change', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [START]))
+  h.put(QUOTA, ['{"v":1,"providers":'])
+  await h.start($)
+  await h.tick()
+  await h.tick()
+  for (const surface of SURFACES) {
+    const tree = await drawnAt($, surface)
+    expect(cardsOf(tree).has('quota')).toBe(false)
+    expect(cardsOf(tree).has('task:task-a')).toBe(true)
+    expect(rowsOf(tree).join('\n')).toMatch(/errors 1$/)
+  }
+  // Valid JSON of the wrong shape is malformed too; a fixed file brings the card back.
+  h.put(QUOTA, ['{"v":2,"providers":{}}'], { mtimeMs: NOW + 5000 })
+  await h.tick()
+  expect(cardsOf(await drawnAt($, 'terminal')).has('quota')).toBe(false)
+  h.put(QUOTA, snapshotText(), { mtimeMs: NOW + 7000 })
+  await h.tick()
+  const tree = await drawnAt($, 'terminal')
+  expect(cardsOf(tree).has('quota')).toBe(true)
+  expect(rowsOf(tree).join('\n')).toMatch(/errors 2/)
+})
+
+test('no snapshot: no Quota card and no error; a file over 64 KiB or a link is never read', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(`${ROOT}/task-a/r1.jsonl`, runLines('r1', [START]))
+  await h.start($)
+  await h.tick()
+  let tree = await drawnAt($, 'terminal')
+  expect(cardsOf(tree).has('quota')).toBe(false)
+  expect(rowsOf(tree).join('\n')).toMatch(/errors 0/)
+  h.put(QUOTA, snapshotText(), { size: 65 * 1024 })
+  await h.tick()
+  tree = await drawnAt($, 'terminal')
+  expect(cardsOf(tree).has('quota')).toBe(false)
+  expect(rowsOf(tree)).toContain('⚠ usage/latest.json too large')
+  h.put(QUOTA, snapshotText(), { isLink: true, realPath: '/elsewhere/latest.json' })
+  await h.tick()
+  expect(cardsOf(await drawnAt($, 'terminal')).has('quota')).toBe(false)
+  expect(h.calls.read).not.toContain(QUOTA)
+  // No task card is made of the usage dir.
+  expect([...cardsOf(tree).keys()].filter(key => key.includes('usage'))).toEqual([])
+})
+
+test('an unchanged snapshot is read once; a changed one is read again', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  await h.tick()
+  await h.tick()
+  expect(h.calls.read.filter(p => p === QUOTA)).toHaveLength(1)
+  h.put(QUOTA, snapshotText(), { mtimeMs: NOW + 9000 })
+  await h.tick()
+  expect(h.calls.read.filter(p => p === QUOTA)).toHaveLength(2)
+})
+
+test("a task card names its newest run's provider quota: the route for gemini, STOP until for a stopped one, nothing for a provider the snapshot lacks", OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  h.put(`${ROOT}/task-g/r1.jsonl`, runLines('r1', [{ kind: 'run.start', model: 'gpt-5.6-luna' }], NOW - 60_000, { task: 'task-g' }))
+  h.put(`${ROOT}/task-g/r2.jsonl`, runLines('r2', [{ kind: 'run.start', model: 'gemini-3.8-flash-high' }], NOW, { task: 'task-g', cli: 'agy' }))
+  h.put(`${ROOT}/task-z/r3.jsonl`, runLines('r3', [{ kind: 'run.start', model: 'zai-coding-plan/glm-5.3' }], NOW, { task: 'task-z', cli: 'opencode' }))
+  h.put(`${ROOT}/task-c/r4.jsonl`, runLines('r4', [{ kind: 'run.start', model: 'mimo-v2.6-pro' }], NOW, { task: 'task-c', cli: 'cline' }))
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const tree = await drawnAt($, surface, 100, 60)
+    const cards = cardsOf(tree)
+    expect(cards.get('task:task-g')![3]).toBe('quota: gemini flash OK · wk 39%')
+    expect(cards.get('task:task-z')![3]).toBe(`quota: glm STOP until ${hhmm(GLM_UNTIL)} (40m)`)
+    expect(textsOf(nodeOf(tree, 'task:task-z')).find(t => t.text.startsWith('quota:'))?.color).toBe('warning')
+    expect(cards.get('task:task-c')!.some(row => row.startsWith('quota:'))).toBe(false)
+  }
+})
+
+test('narrow panes drop the bars first, then the sub-rows; shorter still the card closes, then hides', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  for (const surface of SURFACES) {
+    const narrow = cardsOf(await drawnAt($, surface, 50)).get('quota')!
+    expect(narrow[2]).toBe('codex  OK   5h 42% wk 18% · resets 2h10m')
+    expect(narrow.join('\n')).not.toMatch(/[█░]/)
+    expect(narrow).toContain('       argon high/medium STOP · flash OK')
+    for (const row of narrow) expect(cells(row)).toBeLessThanOrEqual(46)
+    // 12 rows: the full card (10 and its gap) does not fit, the one without sub-rows does.
+    const short = cardsOf(await drawnAt($, surface, 100, 12)).get('quota')!
+    expect(short.slice(2, -2)).toEqual(QUOTA_ROWS(hhmm(GLM_UNTIL)).filter(row => !row.startsWith(' ')))
+    const closed = cardsOf(await drawnAt($, surface, 100, 8)).get('quota')!
+    expect(closed).toEqual(['╭', expect.stringMatching(/^▸ Quota +3\/5 OK$/), '╰', ''])
+    const hidden = await drawnAt($, surface, 100, 4)
+    expect(cardsOf(hidden).has('quota')).toBe(false)
+    expect(rowsOf(hidden).join('\n')).toContain('quota hidden')
+    for (let rows = 4; rows <= 30; rows++) expect((await paneText($, surface, rows)).length).toBeLessThanOrEqual(rows)
+  }
+})
+
+test('the Quota card collapses from its head and stays collapsed across drawings', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'quota:toggle' })
+  await ui.unmount()
+  for (const surface of SURFACES) {
+    expect(cardsOf(await drawnAt($, surface)).get('quota')).toEqual(['╭', expect.stringMatching(/^▸ Quota +3\/5 OK$/), '╰', ''])
+  }
+  const again = await mount($, 'desktop')
+  await again.press({ key: 'quota:toggle' })
+  await again.unmount()
+  expect(cardsOf(await drawnAt($, 'terminal')).get('quota')!.length).toBe(11)
+})
+
+test('the more-line names exactly the cards it cut: quota and checkpoint each by their own index, never counted as tasks (u4 review pin)', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  let isCheckpointOnlyCut = false
+  for (const surface of SURFACES) {
+    for (let rows = 4; rows <= 30; rows++) {
+      const tree = await drawnAt($, surface, 100, rows)
+      const cards = cardsOf(tree)
+      const text = rowsOf(tree).join('\n')
+      expect(text.includes('quota hidden'), `${surface} ${rows}`).toBe(!cards.has('quota'))
+      expect(text.includes('checkpoint hidden'), `${surface} ${rows}`).toBe(!cards.has('checkpoint'))
+      expect(text, `${surface} ${rows}`).not.toMatch(/more task/)
+      if (cards.has('quota') && !cards.has('checkpoint')) isCheckpointOnlyCut = true
+    }
+  }
+  // The case the old hardcoded index 0 got wrong is actually drawn.
+  expect(isCheckpointOnlyCut).toBe(true)
+})
+
+test('a run file under usage/ is never a task: the dir holds the quota snapshot only (u4 review pin)', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  h.put(`${ROOT}/usage/r9.jsonl`, runLines('r9', [START], NOW, { task: 'usage' }))
+  await h.start($)
+  await h.tick()
+  expect([...cardsOf(await drawnAt($, 'terminal')).keys()].filter(key => key.startsWith('task:'))).toEqual([])
 })

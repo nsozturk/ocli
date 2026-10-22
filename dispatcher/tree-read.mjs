@@ -21,7 +21,7 @@ export function providerForNode(node) {
  * the budget namespace's `glm` IS the ZAI pool (opencode zai-coding-plan/*), gemini (agy) is
  * `google`, muse is `meta`. A stop needs no budget row — the provider's own verdict binds uncapped
  * pools too. codex and claude stay null: counter-backed / the lead. */
-const STOP_POOL = { cline: 'cline', glm: 'zai', gemini: 'google', muse: 'meta' };
+export const STOP_POOL = { cline: 'cline', glm: 'zai', gemini: 'google', muse: 'meta' };
 export function stopProviderForNode(node) {
   return STOP_POOL[providerForNode(node)] ?? null;
 }

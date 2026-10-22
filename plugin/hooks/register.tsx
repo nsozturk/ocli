@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, FsEntry, Register } from 'claude-code'
 
-import type { Checkpoint, OcliDir, OcliHistory, OcliMeta, OcliPlan, OcliRun } from '../types'
+import type { Checkpoint, OcliDir, OcliHistory, OcliMeta, OcliPlan, OcliQuota, OcliRun } from '../types'
 
 type OcliCheckpoint = Checkpoint & { mtimeMs: number; root: string }
-import { addHistory, CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldHistory, foldPlan, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isEnded, isLooping, latestAt, parseCheckpoint, parseLines, phaseOf, reduce, resumePrompt, runKey, taskStatus } from './reduce'
+import { addHistory, CHECKPOINT_NAME, checkpointCard, checkpointDrift, cardVariants, clean, displayStatus, fit, fitCards, foldHistory, foldPlan, foldQuota, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isEnded, isLooping, latestAt, parseCheckpoint, parseLines, phaseOf, quotaLine, quotaVariants, reduce, resumePrompt, runKey, taskStatus } from './reduce'
 import type { Card, OcliEvent, Row } from './reduce'
 
 const PANE = 'ocli'
@@ -28,6 +28,9 @@ const HISTORY_KEY = 'history'
 // A plan is at most 50 names of 40 code points: 64 KiB is room to spare.
 const MAX_PLAN_BYTES = 64 * 1024
 const MAX_CHECKPOINT_BYTES = 256 * 1024
+// The dispatcher's usage snapshot: six providers fit in a few KiB.
+const MAX_QUOTA_BYTES = 64 * 1024
+const QUOTA_FILE = 'usage/latest.json'
 // Dated checkpoints read, newest first, to find one with a resume command.
 const MAX_CHECKPOINTS = 10
 // The checkpoint is read on the first tick and every 30th after it: about once a minute.
@@ -48,6 +51,8 @@ const checkpointAtom = atom({ plugin: 'ocli-monitor', key: 'checkpoint' } as con
 const digestAtom = atom({ plugin: 'ocli-monitor', key: 'digest' } as const, '')
 const historyAtom = atom({ plugin: 'ocli-monitor', key: 'history' } as const, [] as OcliHistory[])
 const historyOpenAtom = atom({ plugin: 'ocli-monitor', key: 'historyOpen' } as const, false)
+const quotaAtom = atom({ plugin: 'ocli-monitor', key: 'quota' } as const, null as OcliQuota | null)
+const quotaOpenAtom = atom({ plugin: 'ocli-monitor', key: 'quotaOpen' } as const, true)
 
 /** Each listed plan by task as one tick saw it; null when unreadable or malformed (not drawn). */
 type Found = Map<string, OcliPlan | null>
@@ -103,6 +108,8 @@ let checkpointSeen: string | null = null
 // Whether this module load has read History back from $.store: set only once a read succeeded, so a
 // failed read is tried again next tick and nothing is written over a store not yet read.
 let historyLoaded = false
+// `<path>\n<size>:<mtimeMs>` of the snapshot last read (null: read again): an unchanged one is not re-read.
+let quotaSeen: string | null = null
 
 /** History's scope: the dirs the pane watches, as the last tick resolved them (the project). */
 const scopeOf = (meta: OcliMeta): string => meta.dirs.map(dir => dir.path).join(',')
@@ -223,7 +230,8 @@ async function scan($: $, now: number, meta: Omit<OcliMeta, 'lastTickAt'>, plans
     const tasks = await list(dir)
     if (tasks === null) carry(`${dir}/`)
     for (const task of tasks ?? []) {
-      if (task.kind !== 'dir' || task.isLink) continue
+      // usage/ holds the dispatcher's quota snapshot (loadQuota), not a task.
+      if (task.kind !== 'dir' || task.isLink || task.name === 'usage') continue
       const taskName = clean(task.name, 120)
       const entries = await list(`${dir}/${task.name}`)
       if (entries === null) {
@@ -338,6 +346,46 @@ async function loadCheckpoint($: $, meta: { errors: number }, root: string | nul
   }
 }
 
+/** The usage snapshot of the first live dir that has one into its atom. No usage dir or no file: no
+ * card, silently. Too large: no card, marked too large. A link or a file outside the dir is not
+ * read; a malformed one draws no card and costs one error per change of the file; a failed read
+ * keeps the last card and is tried again next tick. Never throws: a bad snapshot must not make the
+ * tick re-read every live file. */
+async function loadQuota($: $, meta: { errors: number; tooLarge: string[] }) {
+  try {
+    for (const dir of dirs) {
+      // ponytail: a usage dir that cannot be listed reads as none; its message is never parsed.
+      const entries = await $.fs.list(`${dir}/usage`).catch(() => null)
+      const file = entries?.find(f => f.name === 'latest.json')
+      if (!file) continue
+      if (file.kind !== 'file' || file.isLink) break
+      if (file.size > MAX_QUOTA_BYTES) {
+        meta.tooLarge.push(QUOTA_FILE)
+        break
+      }
+      const path = `${dir}/${QUOTA_FILE}`
+      const signature = `${path}\n${file.size}:${file.mtimeMs}`
+      if (signature === quotaSeen) return
+      try {
+        const root = (await $.fs.stat(dir, { resolve: true })).realPath
+        const text = root === undefined ? null : await readUnder($, path, root)
+        const quota = text === null ? null : foldQuota(text)
+        if (text !== null && quota === null) meta.errors += 1
+        quotaSeen = signature
+        await update($, quotaAtom, () => quota)
+      } catch {
+        meta.errors += 1
+        quotaSeen = null
+      }
+      return
+    }
+    quotaSeen = null
+    await update($, quotaAtom, () => null)
+  } catch {
+    meta.errors += 1
+  }
+}
+
 async function tick($: $) {
   if (isBusy) return
   isBusy = true
@@ -358,11 +406,13 @@ async function tick($: $) {
           await update($, primedAtom, () => false)
         }
         seen.clear()
+        quotaSeen = null
         dirs = next
       }
     }
     const found: Found = new Map()
     const events = await scan($, now, meta, found)
+    await loadQuota($, meta)
     // Only the plans listed this tick stay: a deleted plan.json leaves the card.
     await update($, plansAtom, () => [...found.values()].filter(plan => plan !== null))
     let runs = events.length ? await update($, runsAtom, list => reduce(list, events)) : await read($, runsAtom)
@@ -423,6 +473,7 @@ export const register: Register = (on, options) => {
   checkpointRoot = undefined
   checkpointSeen = null
   historyLoaded = false
+  quotaSeen = null
 
   on('session.start', async ($, e, next) => {
     // The timer first: nothing after it can stop the pane from ticking.
@@ -475,6 +526,8 @@ export const register: Register = (on, options) => {
     const checkpoint = await read($, checkpointAtom)
     const history = await read($, historyAtom)
     const isHistoryOpen = await read($, historyOpenAtom)
+    const quota = await read($, quotaAtom)
+    const isQuotaOpen = await read($, quotaOpenAtom)
     const now = await $.clock.now()
     const columns = Math.max(20, e.props.bodyColumns)
     const rows = Math.max(3, e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 24)
@@ -518,9 +571,12 @@ export const register: Register = (on, options) => {
     // tasks drawn expanded. Built lazily: only the cards whose header form could still fit are built.
     const cards: (Card[] | (() => Card[]))[] = []
     const taskCards = (open: readonly string[]) =>
-      order.map(([, task, list]) => () => spaced(cardVariants(task, list, now, inner, open, plans.get(task)?.phases ?? [])))
+      order.map(([, task, list]) => () => spaced(cardVariants(task, list, now, inner, open, plans.get(task)?.phases ?? [], quotaLine(list, quota, now))))
 
-    // The checkpoint leads: a reset lead (or the person in the morning) starts from it.
+    // Quota leads: whether a developer can be dispatched at all comes before what to dispatch.
+    const quotaAt = quota ? cards.push(spaced(quotaVariants(quota, now, inner, isQuotaOpen))) - 1 : -1
+    // The checkpoint next: a reset lead (or the person in the morning) starts from it.
+    const checkpointAt = checkpoint ? cards.length : -1
     if (checkpoint) {
       // The checkpoint's own write is a sign of life too: a lead whose subagents never write to the
       // live dir still rewrites it. ponytail: any live run counts, even one unrelated to the
@@ -564,10 +620,11 @@ export const register: Register = (on, options) => {
     }
     const isAgentsCut = fitted.cut.includes(agentsAt)
     const isHistoryCut = fitted.cut.includes(historyAt)
-    const isCheckpointCut = checkpoint !== null && fitted.cut.includes(0)
-    const cutTasks = fitted.cut.length - (isAgentsCut ? 1 : 0) - (isCheckpointCut ? 1 : 0) - (isHistoryCut ? 1 : 0)
+    const isCheckpointCut = fitted.cut.includes(checkpointAt)
+    const isQuotaCut = fitted.cut.includes(quotaAt)
+    const cutTasks = fitted.cut.length - (isAgentsCut ? 1 : 0) - (isCheckpointCut ? 1 : 0) - (isHistoryCut ? 1 : 0) - (isQuotaCut ? 1 : 0)
     const more = [
-      isCheckpointCut ? 'checkpoint hidden' : '', cutTasks ? `+${cutTasks} more task${cutTasks === 1 ? '' : 's'}` : '', isAgentsCut ? 'subagents hidden' : '',
+      isQuotaCut ? 'quota hidden' : '', isCheckpointCut ? 'checkpoint hidden' : '', cutTasks ? `+${cutTasks} more task${cutTasks === 1 ? '' : 's'}` : '', isAgentsCut ? 'subagents hidden' : '',
       isHistoryCut ? 'history hidden' : '',
     ].filter(Boolean).join(' · ')
 
@@ -598,6 +655,7 @@ export const register: Register = (on, options) => {
     }
     const press = (key: string, isDrawnOpen = false) => {
       if (key === 'history:toggle') return void update($, historyOpenAtom, () => !isDrawnOpen)
+      if (key === 'quota:toggle') return void update($, quotaOpenAtom, () => !isDrawnOpen)
       const at = key.indexOf(':')
       const [verb, task] = [key.slice(0, at), key.slice(at + 1)]
       if (verb === 'card') return void toggle(task, isDrawnOpen)
@@ -625,6 +683,13 @@ export const register: Register = (on, options) => {
     const row = (r: Row) => {
       if (r.kind === 'text') return text(r)
       if (r.kind === 'button') return <Button key={r.key} label={r.label} onPress={queueResume} />
+      if (r.kind === 'segs') {
+        return (
+          <Box key={r.key} flexDirection="row">
+            {r.segs.map((seg, i) => <Text key={`seg:${i}`} color={seg.color} bold={seg.isBold} dimColor={r.isDim} wrap="truncate-end">{seg.text}</Text>)}
+          </Box>
+        )
+      }
       if (r.kind === 'split') {
         return (
           <Box key={r.key} flexDirection="row">

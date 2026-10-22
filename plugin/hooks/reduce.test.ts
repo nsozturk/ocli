@@ -2,8 +2,10 @@ import { test, expect, describe } from 'claude-code/testing'
 
 import { AGY, CODEX, GLM_LIVE, MUSE, OPENCODE } from './fixtures'
 import { addHistory, card, cardVariants, cells, checkpointCard, checkpointDrift, clean, colorOf, displayStatus, fitCards, foldHistory, foldPlan, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isLooping, latestAt, parseCheckpoint, parseLines, resumePrompt, phasesOf, reduce, runDetail, runLine, sparkline, taskSpan, taskStatus, tokensOf, wrap } from './reduce'
+import { foldQuota, quotaLine, quotaVariants } from './reduce'
 import type { Card } from './reduce'
-import type { OcliRun } from '../types'
+import { SNAPSHOT } from './quota-fixtures'
+import type { OcliQuota, OcliRun } from '../types'
 
 const file = (lines: readonly string[]) => lines.join('\n') + '\n'
 const fold = (lines: readonly string[]) => reduce([], parseLines(file(lines)))
@@ -226,7 +228,7 @@ const rowText = (row: Card['rows'][number]): string =>
   row.kind === 'head' ? row.label + row.pad + row.right + (row.dismiss ? ' ×' : '')
     : row.kind === 'press' ? row.label + row.text
       : row.kind === 'text' ? row.text : row.kind === 'split' ? row.left + row.right : row.kind === 'button' ? row.label
-        : row.prefix + row.dots.map(() => '●').join('') + row.tail + row.right
+        : row.kind === 'segs' ? row.segs.map(seg => seg.text).join('') : row.prefix + row.dots.map(() => '●').join('') + row.tail + row.right
 const texts = (c: Card) => c.rows.map(rowText)
 
 test('a card: header, status, runs and tokens, description, phases with dots, done/total and LLMs', () => {
@@ -1077,4 +1079,354 @@ test('the History card: closed is one ▸ row with the count; open lists newest 
   expect(rowText(many.rows.at(-1)!)).toBe('+5 older')
   expect(many.height).toBe(many.rows.length + 2)
   for (const row of many.rows) expect(cells(rowText(row))).toBeLessThanOrEqual(60)
+})
+
+describe('foldQuota: the usage snapshot, checked and cleaned', () => {
+  test('known providers only, in the fixed order, every string cleaned, unknown fields never kept', () => {
+    const hostile = structuredClone(SNAPSHOT) as Record<string, any>
+    hostile.providers = {
+      gemini: hostile.providers.gemini, codex: { ...hostile.providers.codex, email: 'someone@example.com', token: 'sk-SECRET', reason: '\u001b[31mred\u001b[0m‮' },
+      unknownco: hostile.providers.codex, ['__proto__']: hostile.providers.codex, constructor: hostile.providers.codex,
+    }
+    const q = foldQuota(JSON.stringify(hostile))!
+    expect(q.providers.map(p => p.name)).toEqual(['codex', 'gemini'])
+    expect(q.providers[0]!.reason).toBe('red')
+    expect(JSON.stringify(q)).not.toMatch(/example\.com|SECRET|unknownco/)
+    expect(q.providers[1]!.routes.map(r => [r.model, r.gate])).toEqual([['gemini-4-argon-high', 'stop'], ['gemini-4-argon-medium', 'stop'], ['gemini-3.8-flash-high', 'ok']])
+    expect(q.providers[0]!.windows[0]).toEqual({ limitId: 'primary', usedPercent: 42, mins: 300, resetsAt: Date.parse(SNAPSHOT.providers.codex.windows[0]!.resetsAt) })
+  })
+
+  test('anything that is not schema v1 with a providers object, or names no known provider, is null', () => {
+    for (const text of ['', 'null', '[]', '{', '{"v":2,"providers":{"codex":{}}}', '{"v":1}', '{"v":1,"providers":[]}', '{"v":1,"providers":{"x":{}}}', '{"v":1,"providers":{"codex":7}}']) {
+      expect(foldQuota(text), text).toBe(null)
+    }
+  })
+
+  test('odd values fall back to unknown, never to ok', () => {
+    const q = foldQuota(JSON.stringify({ v: 1, providers: { codex: { status: 'great', gate: { state: 'fine' }, windows: [{ usedPercent: 'x' }], routes: 'no', stop: 5 } } }))!
+    expect(q.providers[0]).toMatchObject({ status: 'unknown', gate: 'unknown', routes: [], stop: null, windows: [{ usedPercent: null, mins: null, resetsAt: null }] })
+  })
+
+  test('quotaLine: no snapshot or no run, no line', () => {
+    expect(quotaLine([], foldQuota(JSON.stringify(SNAPSHOT)), 0)).toBe(null)
+  })
+})
+
+// Reviewer pins (u4 review): each kills one single-clause mutant the suite above let survive.
+describe('quota card pins (u4 review)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const at = (ms: number) => new Date(ms).toISOString()
+  const one = (codex: Record<string, unknown>) => foldQuota(JSON.stringify({ v: 1, providers: { codex: {
+    readAt: at(T), status: 'ok', gate: { state: 'ok' }, stop: null,
+    windows: [{ limitId: 'codex', usedPercent: 50, windowDurationMins: 300, resetsAt: null }, { limitId: 'codex', usedPercent: 50, windowDurationMins: 10080, resetsAt: null }],
+    ...codex,
+  } } }))!
+  const row = (q: OcliQuota, now = T) => quotaVariants(q, now, 100, true)[0]!.rows.slice(1)
+  const segsOf = (r: Card['rows'][number]) => (r.kind === 'segs' ? r.segs : [])
+
+  // Fix round 2: an active stop with no end now says `until reset unknown` (spec), not nothing.
+  test('an active stop with no end is STOP (fail closed) and says until reset unknown', () => {
+    const r = rowText(row(one({ stop: { until: null, reason: 'quota exhausted' } }))[0]!)
+    expect(r).toMatch(/^codex  STOP until reset unknown /)
+  })
+
+  test('a stop whose until has passed no longer counts: the gate decides, no until drawn', () => {
+    const r = rowText(row(one({ stop: { until: at(T - 60_000), reason: 'old' } }))[0]!)
+    expect(r).toMatch(/^codex  OK /)
+    expect(r).not.toContain('until')
+  })
+
+  test('on a tie the shorter window binds (bold)', () => {
+    expect(segsOf(row(one({}))[0]!).filter(s => s.isBold).map(s => s.text)).toEqual(['5h 50%'])
+  })
+
+  test('stale starts strictly after 30 minutes', () => {
+    const exact = row(one({ readAt: at(T - 30 * 60_000) }))[0]!
+    expect(rowText(exact)).not.toContain('stale')
+    const past = row(one({ readAt: at(T - 30 * 60_000 - 1000) }))[0]!
+    expect(rowText(past)).toContain('stale 30m')
+  })
+
+  test('the setup line is drawn under an unavailable provider only', () => {
+    expect(row(one({ setup: 'usage.codex is not set' })).map(rowText).join('\n')).not.toContain('setup:')
+    expect(row(one({ status: 'unavailable', setup: 'usage.codex is not set' })).map(rowText)).toContain('       setup: usage.codex is not set')
+  })
+})
+
+// Fix round B (u4 review D1, D2, C1, V1): the pane draws the window the dispatcher's gate bound on.
+describe('quota card: gate.window, the binding window (fix B)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const H = 3_600_000
+  const at = (ms: number) => new Date(ms).toISOString()
+  const hm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+  const runOf = (cli: string, model: string) => ({ runId: 'r', task: 't', role: 'x', cli, model, lastAt: T, startedAt: T } as unknown as OcliRun)
+  const rowsOf = (q: OcliQuota) => quotaVariants(q, T, 100, true)[0]!.rows.slice(1)
+  const segsOf = (r: Card['rows'][number]) => (r.kind === 'segs' ? r.segs : [])
+  const boldOf = (r: Card['rows'][number]) => segsOf(r).filter(s => s.isBold).map(s => s.text)
+  const w = (limitId: string, usedPercent: number, windowDurationMins: number, resetsAt: number | null = null) =>
+    ({ limitId, usedPercent, windowDurationMins, resetsAt: resetsAt === null ? null : at(resetsAt) })
+  const W5 = w('antigravity-quota-summary-gemini-5h', 10, 300, T + H)
+  const WK = w('antigravity-quota-summary-gemini-weekly', 39, 10080, T + 48 * H)
+  const ARGON = w('antigravity-quota-summary-gemini-argon-wtu-weekly', 90, 10080, T + 48 * H)
+  const gemini = (extra: Record<string, unknown> = {}) => foldQuota(JSON.stringify({ v: 1, providers: { gemini: {
+    readAt: at(T), status: 'ok', windows: [W5, WK, ARGON],
+    gate: { state: 'stop', window: ARGON },
+    routes: [
+      { role: 'breadth', model: 'gemini-4-argon-high', gate: { state: 'stop', window: ARGON } },
+      { role: 'breadth-flash', model: 'gemini-3.8-flash-high', gate: { state: 'ok', window: WK } },
+    ],
+    stop: null, ...extra,
+  } } }))!
+
+  test('P1 a flash run names the window its route gate bound (wk 39%), not the fullest (argon 90%)', () => {
+    expect(quotaLine([runOf('agy', 'gemini-3.8-flash-high')], gemini(), T)?.text).toBe('quota: gemini flash OK · wk 39%')
+  })
+
+  test('C1 the provider row bolds the provider gate.window; each route group bolds its own', () => {
+    const [row, sub] = rowsOf(gemini())
+    expect(boldOf(row!)).toEqual(['wk 90%'])
+    expect(boldOf(sub!)).toEqual(['wk 90%', 'wk 39%'])
+  })
+
+  test('P2 codex: a pool the gate does not bind is never the bold window or the line', () => {
+    const q = foldQuota(JSON.stringify({ v: 1, providers: { codex: { readAt: at(T), status: 'ok', windows: [
+      w('codex', 20, 300), w('codex', 30, 10080), w('codex_other', 95, 300),
+    ], gate: { state: 'ok', headroomPercent: 70, window: w('codex', 30, 10080) }, stop: null } } }))!
+    expect(quotaLine([runOf('codex', 'gpt-6.1-sol')], q, T)?.text).toBe('quota: codex OK · wk 30%')
+    expect(boldOf(rowsOf(q)[0]!)).toEqual(['wk 30%'])
+  })
+
+  test('no gate.window: the old pick (fullest, shorter on a tie) still binds', () => {
+    const q = foldQuota(JSON.stringify({ v: 1, providers: { codex: { readAt: at(T), status: 'ok', windows: [w('codex', 20, 300), w('codex', 30, 10080)], gate: { state: 'ok' }, stop: null } } }))!
+    expect(quotaLine([runOf('codex', 'm')], q, T)?.text).toBe('quota: codex OK · wk 30%')
+  })
+
+  test('P3/D1 an active provider stop with no until overrides an ok route on the task line, as on the card', () => {
+    const q = gemini({ gate: { state: 'ok', window: WK }, stop: { until: null, reason: 'quota exhausted' } })
+    expect(rowText(rowsOf(q)[0]!)).toMatch(/^gemini STOP/)
+    expect(quotaLine([runOf('agy', 'gemini-3.8-flash-high')], q, T)?.text).toMatch(/^quota: gemini flash STOP/)
+    // A stop whose until has passed does not.
+    const old = gemini({ gate: { state: 'ok', window: WK }, stop: { until: at(T - 60_000), reason: 'old' } })
+    expect(quotaLine([runOf('agy', 'gemini-3.8-flash-high')], old, T)?.text).toBe('quota: gemini flash OK · wk 39%')
+  })
+
+  test('P4/V1 a gate STOP with no stop record shows until gate.window.resetsAt, relative and HH:MM', () => {
+    expect(rowText(rowsOf(gemini())[0]!)).toContain(`STOP until ${hm(T + 48 * H)} (2d0h)`)
+    expect(quotaLine([runOf('agy', 'gemini-4-argon-high')], gemini(), T)?.text).toBe(`quota: gemini argon STOP until ${hm(T + 48 * H)} (2d0h)`)
+    const unknown = gemini({ gate: { state: 'stop', window: { ...ARGON, resetsAt: null } }, routes: [] })
+    expect(rowText(rowsOf(unknown)[0]!)).toContain('STOP until reset unknown')
+    expect(quotaLine([runOf('agy', 'gemini-4-argon-high')], unknown, T)?.text).toBe('quota: gemini STOP until reset unknown')
+  })
+
+  test('U1 a provider stop and a gate STOP overlap: the row, sub-row and task line show the later end', () => {
+    const q = gemini({ stop: { until: at(T + 6 * H), reason: 'quota exhausted' } })
+    const later = `until ${hm(T + 48 * H)} (2d0h)`
+    expect(rowText(rowsOf(q)[0]!)).toContain(`STOP ${later}`)
+    expect(rowText(rowsOf(q)[1]!)).toContain(`argon STOP wk 90% ${later}`)
+    expect(quotaLine([runOf('agy', 'gemini-4-argon-high')], q, T)?.text).toBe(`quota: gemini argon STOP ${later}`)
+    // The ok flash route has no gate STOP of its own: only the provider stop's end applies.
+    expect(rowText(rowsOf(q)[1]!)).toContain(`flash STOP wk 39% until ${hm(T + 6 * H)} (6h00m)`)
+    expect(quotaLine([runOf('agy', 'gemini-3.8-flash-high')], q, T)?.text).toBe(`quota: gemini flash STOP until ${hm(T + 6 * H)} (6h00m)`)
+  })
+
+  test('U2 the provider stop ends later than the gate reset, or the reset is unknown: the stop end stays', () => {
+    const sooner = gemini({ gate: { state: 'stop', window: w('x', 90, 10080, T + H) }, stop: { until: at(T + 6 * H), reason: 'x' } })
+    expect(rowText(rowsOf(sooner)[0]!)).toContain(`STOP until ${hm(T + 6 * H)} (6h00m)`)
+    const unknown = gemini({ gate: { state: 'stop', window: { ...ARGON, resetsAt: null } }, stop: { until: at(T + 6 * H), reason: 'x' } })
+    expect(rowText(rowsOf(unknown)[0]!)).toContain(`STOP until ${hm(T + 6 * H)} (6h00m)`)
+  })
+
+  test('U3 a provider stop with no end stays until reset unknown even when the gate STOP has a reset', () => {
+    const q = gemini({ stop: { until: null, reason: 'x' } })
+    expect(rowText(rowsOf(q)[0]!)).toContain('STOP until reset unknown')
+    expect(rowText(rowsOf(q)[1]!)).toContain('argon STOP wk 90% until reset unknown')
+    expect(quotaLine([runOf('agy', 'gemini-4-argon-high')], q, T)?.text).toBe('quota: gemini argon STOP until reset unknown')
+  })
+
+  test('P6/D2 more windows than the row draws: the binding one is chosen first and always drawn', () => {
+    const ws = [1, 2, 3, 4].map(i => w(`p${i}`, i, 300))
+    ws.push(w('codex', 80, 10080))
+    const pick = foldQuota(JSON.stringify({ v: 1, providers: { codex: { readAt: at(T), status: 'ok', windows: ws, gate: { state: 'ok' }, stop: null } } }))!
+    expect(quotaLine([runOf('codex', 'm')], pick, T)?.text).toBe('quota: codex OK · wk 80%')
+    expect(boldOf(rowsOf(pick)[0]!)).toEqual(['wk 80%'])
+    expect(segsOf(rowsOf(pick)[0]!).filter(s => /^(\d+h|wk) \d+%$/.test(s.text))).toHaveLength(4)
+    const gated = foldQuota(JSON.stringify({ v: 1, providers: { codex: { readAt: at(T), status: 'ok', windows: ws, gate: { state: 'ok', window: w('codex', 80, 10080) }, stop: null } } }))!
+    expect(boldOf(rowsOf(gated)[0]!)).toEqual(['wk 80%'])
+  })
+})
+
+// Reviewer pins (u5 review): each kills one single-clause mutant the suites above let survive.
+describe('quota card pins (u5 review)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const H = 3_600_000
+  const at = (ms: number) => new Date(ms).toISOString()
+  const hm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+  const w = (limitId: string, usedPercent: number, windowDurationMins: number, resetsAt: number | null = T + 48 * H) =>
+    ({ limitId, usedPercent, windowDurationMins, resetsAt: resetsAt === null ? null : at(resetsAt) })
+  const runOf = (cli: string, model: string) => ({ runId: 'r', task: 't', role: 'x', cli, model, lastAt: T, startedAt: T } as unknown as OcliRun)
+  const snap = (providers: Record<string, unknown>) => foldQuota(JSON.stringify({ v: 1, providers }))!
+  const rows = (q: OcliQuota, columns = 100) => quotaVariants(q, T, columns, true)[0]!.rows.slice(1)
+  const boldOf = (r: Card['rows'][number]) => (r.kind === 'segs' ? r.segs.filter(s => s.isBold).map(s => s.text) : [])
+  const ARGON = w('antigravity-quota-summary-gemini-argon-wtu-weekly', 100, 10080, T + 5 * H)
+  const WK = w('antigravity-quota-summary-gemini-weekly', 39, 10080)
+  const gemini = (extra: Record<string, unknown> = {}) => snap({ gemini: { readAt: at(T), status: 'ok', windows: [WK, ARGON],
+    gate: { state: 'stop', window: ARGON }, stop: null,
+    routes: [{ role: 'breadth', model: 'gemini-4-argon-high', gate: { state: 'stop', window: ARGON } }], ...extra } })
+
+  test('an unavailable provider is ? even when its gate says ok (until-stop)', () => {
+    const q = snap({ glm: { readAt: at(T), status: 'unavailable', windows: [], gate: { state: 'ok', window: null }, stop: null } })
+    expect(rowText(rows(q)[0]!)).toMatch(/^glm {4}\? /)
+  })
+
+  test('a route with no model is dropped', () => {
+    const q = gemini({ routes: [{ role: 'x', model: '', gate: { state: 'ok', window: WK } }] })
+    expect(q.providers[0]!.routes).toEqual([])
+  })
+
+  test('a STOP route sub-row names when its bound window resets', () => {
+    expect(rowText(rows(gemini())[1]!)).toContain(`argon STOP wk 100% until ${hm(T + 5 * H)} (5h00m)`)
+  })
+
+  test('a gate.window missing from the windows list is still the bold window and the task line', () => {
+    const q = snap({ codex: { readAt: at(T), status: 'ok', windows: [w('codex', 20, 300)], gate: { state: 'ok', window: w('codex', 30, 10080) }, stop: null } })
+    expect(boldOf(rows(q)[0]!)).toEqual(['wk 30%'])
+    expect(quotaLine([runOf('codex', 'm')], q, T)?.text).toBe('quota: codex OK · wk 30%')
+  })
+
+  test('below 32 columns the open card drops the route sub-rows', () => {
+    expect(rows(gemini(), 31).map(r => r.key)).toEqual(['quota:row:gemini'])
+    expect(rows(gemini(), 32).map(r => r.key)).toEqual(['quota:row:gemini', 'quota:routes:gemini'])
+  })
+
+  test('a reset already past is not drawn as `resets`', () => {
+    const q = snap({ codex: { readAt: at(T), status: 'ok', windows: [w('codex', 20, 300, T - H)], gate: { state: 'ok', window: w('codex', 20, 300, T - H) }, stop: null } })
+    expect(rowText(rows(q)[0]!)).not.toContain('resets')
+  })
+})
+
+// Fix round 2 (u5 review D1-D3): the reviewer's probes PA, PB, PC, PF as tests.
+describe('quota card: fix round 2 (u5 D1, D2, D3)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const H = 3_600_000
+  const at = (ms: number) => new Date(ms).toISOString()
+  const hm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+  const w = (limitId: string, usedPercent: number | null, windowDurationMins: number, resetsAt: number | null = T + 48 * H) =>
+    ({ limitId, usedPercent, windowDurationMins, resetsAt: resetsAt === null ? null : at(resetsAt) })
+  const runOf = (cli: string, model: string) => ({ runId: 'r', task: 't', role: 'x', cli, model, lastAt: T, startedAt: T } as unknown as OcliRun)
+  const snap = (providers: Record<string, unknown>) => foldQuota(JSON.stringify({ v: 1, providers }))!
+  const rows = (q: OcliQuota, columns = 100) => quotaVariants(q, T, columns, true)[0]!.rows.slice(1)
+  const boldOf = (r: Card['rows'][number]) => (r.kind === 'segs' ? r.segs.filter(s => s.isBold).map(s => s.text) : [])
+  const ARGON = w('antigravity-quota-summary-gemini-argon-wtu-weekly', 90, 10080)
+  const WK = w('antigravity-quota-summary-gemini-weekly', 39, 10080)
+  const FLASH = 'gemini-3.8-flash-high'
+
+  test('PA/D1 an active provider stop turns every route sub-row and the task line STOP, with the stop\'s until', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [WK, ARGON], gate: { state: 'ok', window: WK },
+      routes: [{ role: 'breadth-flash', model: FLASH, gate: { state: 'ok', window: WK } }],
+      stop: { until: at(T + 2 * H), reason: 'quota exhausted' } } })
+    const sub = rowText(rows(q)[1]!)
+    expect(sub).toContain(`flash STOP wk 39% until ${hm(T + 2 * H)} (2h00m)`)
+    expect(sub).not.toContain('OK')
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe(`quota: gemini flash STOP until ${hm(T + 2 * H)} (2h00m)`)
+  })
+
+  test('D1 an active stop with no end: every sub-row and the task line say until reset unknown', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [WK], gate: { state: 'ok', window: WK },
+      routes: [{ role: 'breadth-flash', model: FLASH, gate: { state: 'ok', window: WK } }], stop: { until: null, reason: 'x' } } })
+    expect(rowText(rows(q)[0]!)).toContain('STOP until reset unknown')
+    expect(rowText(rows(q)[1]!)).toContain('flash STOP wk 39% until reset unknown')
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash STOP until reset unknown')
+  })
+
+  test('PB/D2 a route gate.window of null binds nothing: no fallback to the fullest window', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [w('antigravity-quota-summary-gemini-weekly', null, 10080), ARGON],
+      gate: { state: 'unknown', window: null },
+      routes: [{ role: 'breadth-flash', model: FLASH, gate: { state: 'ok', window: null } }], stop: null } })
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash OK · no cap')
+    expect(boldOf(rows(q)[0]!)).toEqual([])
+    expect(boldOf(rows(q)[1]!)).toEqual([])
+  })
+
+  test('B13 a null route window never falls back to the provider window', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [WK, ARGON], gate: { state: 'ok', window: ARGON },
+      routes: [{ role: 'breadth-flash', model: FLASH, gate: { state: 'ok', window: null } }], stop: null } })
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash OK · no cap')
+    expect(boldOf(rows(q)[1]!)).toEqual([])
+  })
+
+  test('PC/D2 an uncapped provider (gate ok, window null) bolds no window, draws no bar, and the line names no percent', () => {
+    const q = snap({ glm: { readAt: at(T), status: 'ok', windows: [w('zai-5h', 70, 300), w('zai-wk', 20, 10080)], gate: { state: 'ok', reason: 'uncapped', window: null }, stop: null } })
+    expect(boldOf(rows(q)[0]!)).toEqual([])
+    expect(rowText(rows(q)[0]!)).not.toMatch(/[█░]/)
+    expect(quotaLine([runOf('opencode', 'glm-5.3')], q, T)?.text).toBe('quota: glm OK · no cap')
+  })
+
+  test('D2 a gate with no window key (older snapshot) still derives the fullest, on the provider and a route', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [WK, ARGON], gate: { state: 'ok' },
+      routes: [{ role: 'breadth-flash', model: FLASH, gate: { state: 'ok' } }], stop: null } })
+    expect(boldOf(rows(q)[0]!)).toEqual(['wk 90%'])
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash OK · wk 90%')
+  })
+
+  test('PF/D3 narrow rows keep the binding window: it is drawn first and other windows are trimmed before it', () => {
+    const ws = [1, 2, 3, 4, 5].map(i => w(`p${i}`, i, 60 * i))
+    ws.push(w('codex', 80, 10080))
+    const q = snap({ codex: { readAt: at(T), status: 'ok', windows: ws, gate: { state: 'ok', window: w('codex', 80, 10080) }, stop: null } })
+    for (const c of [20, 32, 40, 60, 100]) {
+      const segs = (rows(q, c)[0]! as { segs: { text: string; isBold?: boolean }[] }).segs
+      expect(segs.filter(s => s.isBold).map(s => s.text), String(c)).toEqual(['wk 80%'])
+    }
+    expect(rowText(rows(q, 20)[0]!)).toMatch(/^codex  OK   wk 80%/)
+  })
+})
+
+// Re-review of fix round 2: pins for the survivors (R5, R8, R11) and the D3 width sweep.
+describe('quota card pins (fix round 2 re-review)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const H = 3_600_000
+  const at = (ms: number) => new Date(ms).toISOString()
+  const hm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+  const w = (limitId: string, usedPercent: number | null, windowDurationMins: number, resetsAt: number | null = T + 48 * H) =>
+    ({ limitId, usedPercent, windowDurationMins, resetsAt: resetsAt === null ? null : at(resetsAt) })
+  const runOf = (cli: string, model: string) => ({ runId: 'r', task: 't', role: 'x', cli, model, lastAt: T, startedAt: T } as unknown as OcliRun)
+  const snap = (providers: Record<string, unknown>) => foldQuota(JSON.stringify({ v: 1, providers }))!
+  const rows = (q: OcliQuota, columns = 120) => quotaVariants(q, T, columns, true)[0]!.rows.slice(1)
+  const FLASH = 'gemini-3.8-flash-high'
+  const ARGON = 'gemini-4-argon-medium'
+
+  test('R5 an active provider stop turns an unknown route STOP too, not only an ok one', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [w('a', 10, 300)], gate: { state: 'ok', window: w('a', 10, 300) },
+      routes: [{ role: 'b', model: ARGON, gate: { state: 'unknown', window: null } }, { role: 'f', model: FLASH, gate: { state: 'ok', window: null } }],
+      stop: { until: at(T + 3 * H), reason: 'x' } } })
+    expect(rowText(rows(q)[1]!)).toBe(`       argon STOP until ${hm(T + 3 * H)} (3h00m) · flash STOP until ${hm(T + 3 * H)} (3h00m)`)
+  })
+
+  test('R8 an expired provider stop leaves every route sub-row to its own gate', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [w('a', 10, 300)], gate: { state: 'ok', window: w('a', 10, 300) },
+      routes: [{ role: 'f', model: FLASH, gate: { state: 'ok', window: w('a', 10, 300) } }], stop: { until: at(T - 1000), reason: 'x' } } })
+    expect(rowText(rows(q)[1]!)).toBe('       flash OK 5h 10%')
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash OK · 5h 10%')
+  })
+
+  test('R11 a ? chip that binds no window says only the label, never no cap', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [w('a', 10, 300)], gate: { state: 'ok', window: null },
+      routes: [{ role: 'f', model: FLASH, gate: { state: 'unknown', window: null } }], stop: null } })
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash ?')
+  })
+
+  test('D3 sweep 20..120 (stop, stale, bars): whenever a window is drawn the binding one is, first and bold', () => {
+    const B = w('codex-wk', 80, 10080)
+    const ws = [...[1, 2, 3, 4, 5].map(i => w(`p${i}`, i, 60 * i)), B]
+    const q = snap({ codex: { readAt: at(T - 5 * H), status: 'ok', windows: ws, gate: { state: 'ok', window: B }, stop: { until: at(T + 2 * H), reason: 'x' } } })
+    for (let c = 20; c <= 120; c++) {
+      for (const cd of quotaVariants(q, T, c, true)) {
+        const r = cd.rows.find(x => x.key === 'quota:row:codex')
+        if (!r || r.kind !== 'segs') continue
+        const i = r.segs.findIndex(s => /^(\d+h|wk) /.test(s.text) || s.isBold)
+        if (i < 0) continue
+        expect(r.segs[i]!.isBold, String(c)).toBe(true)
+        expect('wk 80%'.startsWith(r.segs[i]!.text.replace(/…$/, '')), String(c)).toBe(true)
+      }
+    }
+  })
 })

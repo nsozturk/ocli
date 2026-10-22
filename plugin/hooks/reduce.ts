@@ -1,7 +1,7 @@
 // Pure: live-file text -> events -> runs. No `$`. Every string from a live file is untrusted CLI
 // output, so it is cleaned here, at ingest: nothing downstream (pane, toast, notify, status) can
 // carry a terminal escape.
-import type { Checkpoint, OcliHistory, OcliRun, OcliStatus } from '../types'
+import type { Checkpoint, OcliHistory, OcliQuota, OcliRun, OcliStatus, QuotaWindow, QuotaProvider, QuotaState } from '../types'
 
 export type { Checkpoint } from '../types'
 
@@ -467,6 +467,9 @@ export type Row =
   /** A phase: `prefix` (its name), one dot colour per run, `tail` (marks, LLMs, fill), `right` (done/total);
    * `isWarn` while one of its runs may be looping. */
   | { kind: 'phase'; key: string; prefix: string; dots: string[]; tail: string; right: string; isPending?: boolean; isWarn?: boolean }
+  /** Styled pieces of one row, already cut to its width; `isDim` dims them all. */
+  | { kind: 'segs'; key: string; segs: Seg[]; isDim?: boolean }
+export type Seg = { text: string; color?: string; isBold?: boolean }
 /** `height` is what the card costs in rows: its rows and the two of its border. */
 export type Card = { key: string; color?: string; rows: Row[]; height: number }
 
@@ -530,7 +533,7 @@ function headRow(key: string, press: string, isOpen: boolean, name: string, righ
  * row is followed by a block per run (runDetail). `isHeader` draws the header form, for a card too
  * tall even closed. `declared` is the task's plan: those phases are drawn first, a pending row for
  * any not yet run. */
-export function card(task: string, runs: readonly OcliRun[], now: number, columns: number, open: Detail, isHeader = false, declared: readonly string[] = []): Card {
+export function card(task: string, runs: readonly OcliRun[], now: number, columns: number, open: Detail, isHeader = false, declared: readonly string[] = [], quota: DetailLine | null = null): Card {
   // A plan with no run yet is not "Completed" (what taskStatus says of no runs): it is neutral.
   const status = runs.length ? taskStatus(runs, now) : 'Declared'
   const color = runs.length ? TASK_COLOR[status as TaskStatus] : undefined
@@ -554,6 +557,8 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
     rows.push({ kind: 'text', key: 'short', text: fit(note, columns), isDim: true })
     return { key: `task:${task}`, color, rows, height: rows.length + 2 }
   }
+  // After the header form's return: HEADER_HEIGHT stays its exact height.
+  if (quota) rows.splice(2, 0, { kind: 'text', key: 'quota', ...quota, text: fit(quota.text, columns) })
   if (recent) rows.push({ kind: 'text', key: 'what', text: fit(recent.title, columns), isDim: true })
   rows.push({ kind: 'text', key: 'phases', text: 'Phases', isBold: true })
   for (const [phase, list] of phases) {
@@ -604,9 +609,9 @@ export function card(task: string, runs: readonly OcliRun[], now: number, column
 
 /** A task's card in every form, most detailed first: open in full and compact while `expanded` names
  * the task, then closed, then the header. */
-export function cardVariants(task: string, runs: readonly OcliRun[], now: number, columns: number, expanded: readonly string[], declared: readonly string[] = []): Card[] {
+export function cardVariants(task: string, runs: readonly OcliRun[], now: number, columns: number, expanded: readonly string[], declared: readonly string[] = [], quota: DetailLine | null = null): Card[] {
   const forms: Detail[] = expanded.includes(task) ? ['full', 'compact', false] : [false]
-  return [...forms.map(open => card(task, runs, now, columns, open, false, declared)), card(task, runs, now, columns, false, true, declared)]
+  return [...forms.map(open => card(task, runs, now, columns, open, false, declared, quota)), card(task, runs, now, columns, false, true, declared)]
 }
 
 // --- History: cards the person moved out of the list, by hand only --------------------------------
@@ -794,4 +799,246 @@ export function checkpointCard(cp: Checkpoint, drift: string | null, columns: nu
   if (drift) rows.push({ kind: 'text', key: 'cp:drift', text: fit(drift, columns), color: 'warning' })
   if (cp.resume && CHECKPOINT_NAME.test(cp.name)) rows.push({ kind: 'button', key: 'checkpoint:resume', label: 'Queue resume' })
   return { key: 'checkpoint', rows, height: rows.length + 2 }
+}
+
+// --- the quota card: <live dir>/usage/latest.json, the dispatcher's last reading per provider -----
+
+const QUOTA_PROVIDERS = ['codex', 'claude', 'glm', 'gemini', 'muse', 'cline'] as const
+const QUOTA_STATES: readonly QuotaState[] = ['ok', 'stop', 'unknown']
+const QUOTA_STATUSES: readonly QuotaProvider['status'][] = ['ok', 'unknown', 'unavailable']
+/** Windows drawn per row: the binding one and the shortest of the rest. Ingest keeps them all (the
+ * 64 KiB read cap bounds the count), so the binding one is chosen before any is dropped. */
+const MAX_WINDOWS = 4
+const MAX_ROUTES = 12
+/** A reading older than this is drawn dim with its age. */
+export const QUOTA_STALE_MS = 30 * 60_000
+/** Inner columns below which the bars are dropped, then the route sub-rows. */
+const QUOTA_BAR_COLUMNS = 60
+const QUOTA_SUB_COLUMNS = 32
+const BAR_CELLS = 5
+/** The CLI a run names to the provider whose quota it spends. ponytail: opencode is GLM and agy is
+ * Gemini in the ocli roster; an opencode run on another model would be shown GLM's quota. */
+const PROVIDER_OF = new Map([['codex', 'codex'], ['claude', 'claude'], ['opencode', 'glm'], ['agy', 'gemini'], ['muse', 'muse'], ['cline', 'cline']])
+
+const record = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+const stateOf = (value: unknown): QuotaState => (QUOTA_STATES as readonly unknown[]).includes(value) ? (value as QuotaState) : 'unknown'
+const list = (value: unknown, max: number): Record<string, unknown>[] =>
+  (Array.isArray(value) ? value : []).map(record).filter((r): r is Record<string, unknown> => r !== null).slice(0, max)
+
+const windowOf = (w: Record<string, unknown>): QuotaWindow =>
+  ({ limitId: clean(w.limitId, 80), usedPercent: num(w.usedPercent), mins: num(w.windowDurationMins), resetsAt: time(w.resetsAt) })
+const byMins = (a: QuotaWindow, b: QuotaWindow): number => (a.mins ?? Infinity) - (b.mins ?? Infinity)
+/** The most used window (the shorter on a tie); null when none has a percentage. */
+const fullestOf = (windows: readonly QuotaWindow[]): QuotaWindow | null =>
+  [...windows].sort(byMins).reduce<QuotaWindow | null>((best, w) => w.usedPercent !== null && (best === null || w.usedPercent > best.usedPercent!) ? w : best, null)
+/** A gate's `window`: the one the dispatcher's gate bound on, as written; null (or not a window)
+ * binds none; undefined when the gate has no `window` key at all (a snapshot older than gate.window). */
+const boundOf = (gate: unknown): QuotaWindow | null | undefined => {
+  const g = record(gate)
+  if (!g || !Object.hasOwn(g, 'window')) return undefined
+  const w = record(g.window)
+  return w && windowOf(w)
+}
+
+/** `<live dir>/usage/latest.json` (schema v1) as the pane draws it: only the six known providers, in
+ * the fixed order, only the fields it draws (an identity or a secret a writer let through is never
+ * kept), every string cleaned. null unless it is `{v: 1, providers: {...}}` naming one of them. */
+export function foldQuota(text: string): OcliQuota | null {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return null
+  }
+  const r = record(raw)
+  const all = record(r?.providers)
+  if (!r || r.v !== 1 || !all) return null
+  const providers: QuotaProvider[] = []
+  for (const name of QUOTA_PROVIDERS) {
+    const p = Object.hasOwn(all, name) ? record(all[name]) : null
+    if (!p) continue
+    const stop = record(p.stop)
+    const windows = list(p.windows, Infinity).map(windowOf)
+    providers.push({
+      name,
+      readAt: time(p.readAt),
+      status: (QUOTA_STATUSES as readonly unknown[]).includes(p.status) ? (p.status as QuotaProvider['status']) : 'unknown',
+      reason: clean(p.reason, 120),
+      windows,
+      gate: stateOf(record(p.gate)?.state),
+      window: boundOf(p.gate) === undefined ? fullestOf(windows) : boundOf(p.gate)!,
+      routes: list(p.routes, MAX_ROUTES).map(x => {
+        const window = boundOf(x.gate)
+        return { role: clean(x.role, 40), model: clean(x.model, 80), gate: stateOf(record(x.gate)?.state), ...(window === undefined ? {} : { window }) }
+      }).filter(x => x.model),
+      stop: stop && { until: time(stop.until), reason: clean(stop.reason, 120) },
+      setup: clean(p.setup, 160),
+    })
+  }
+  return providers.length ? { writtenAt: time(r.writtenAt), providers } : null
+}
+
+type Chip = 'OK' | 'STOP' | '?'
+const CHIP_COLOR = new Map<Chip, string>([['OK', 'success'], ['STOP', 'warning']])
+const chipOf = (state: QuotaState): Chip => (state === 'ok' ? 'OK' : state === 'stop' ? 'STOP' : '?')
+/** A provider stop with no end, or one still ahead (the dispatcher's providerStopActive: fail closed). */
+const isStopActive = (p: QuotaProvider, now: number): boolean => p.stop !== null && (p.stop.until === null || p.stop.until > now)
+/** An active stop or a stop gate: STOP; no reading: ?; else the gate. */
+function providerChip(p: QuotaProvider, now: number): Chip {
+  if (p.gate === 'stop' || isStopActive(p, now)) return 'STOP'
+  return p.status === 'unavailable' ? '?' : chipOf(p.gate)
+}
+const untilAt = (ms: number | null, now: number): string => (ms === null ? 'until reset unknown' : `until ${clockOf(ms)} (${rel(ms - now)})`)
+/** When a STOP ends: an active stop's own end (`until reset unknown` when it has none, an endless stop can always
+ * be the longest); when a stop gate overlaps it, the later of that end and the gate window's reset; else, for a stop
+ * gate alone, the reset of the window it bound on. '' when neither applies or the snapshot names no window. */
+function untilOf(p: QuotaProvider, now: number, gate: QuotaState, bound: QuotaWindow | null): string {
+  if (isStopActive(p, now)) {
+    const end = p.stop!.until
+    const reset = gate === 'stop' ? bound?.resetsAt ?? null : null
+    return untilAt(end !== null && reset !== null && reset > end ? reset : end, now)
+  }
+  return gate === 'stop' && bound ? untilAt(bound.resetsAt, now) : ''
+}
+
+/** Short and coarse: `40m`, `2h10m`, `2d3h`. */
+function rel(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000))
+  if (m < 60) return `${m}m`
+  if (m < 1440) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+  return `${Math.floor(m / 1440)}d${Math.floor(m / 60) % 24}h`
+}
+const ageOf = (ms: number): string => (ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m` : ms < 86_400_000 ? `${Math.floor(ms / 3_600_000)}h` : `${Math.floor(ms / 86_400_000)}d`)
+const windowLabel = (mins: number | null): string =>
+  mins === null ? '?' : mins === 10080 ? 'wk' : mins >= 1440 ? `${Math.round(mins / 1440)}d` : mins >= 60 ? `${Math.round(mins / 60)}h` : `${mins}m`
+const pct = (n: number | null): string => (n === null ? '?%' : `${Math.round(n)}%`)
+
+/** The binding window: the gate's own (`bound`, matched in the list by limitId and length); none
+ * when the gate binds none. Drawn first, so a narrow row cuts the other windows (shortest first,
+ * MAX_WINDOWS in all) before it. */
+function windowsOf(windows: readonly QuotaWindow[], bound: QuotaWindow | null) {
+  const sorted = [...windows].sort(byMins)
+  const binding = bound && (sorted.find(w => w.limitId === bound.limitId && w.mins === bound.mins) ?? bound)
+  const shown = (binding ? [binding, ...sorted.filter(w => w !== binding)] : sorted).slice(0, MAX_WINDOWS)
+  return { shown, binding }
+}
+
+const isStale = (p: QuotaProvider, now: number): boolean => p.readAt === null || now - p.readAt > QUOTA_STALE_MS
+
+/** Segments cut to `columns` cells, the last one that does not fit with an ellipsis. */
+function fitSegs(segs: readonly Seg[], columns: number): Seg[] {
+  const out: Seg[] = []
+  let used = 0
+  for (const seg of segs) {
+    if (used + width(seg.text) <= columns) {
+      out.push(seg)
+      used += width(seg.text)
+      continue
+    }
+    if (columns - used > 1) out.push({ ...seg, text: fit(seg.text, columns - used) })
+    break
+  }
+  return out
+}
+
+const INDENT = ' '.repeat(7)
+
+/** One provider's rows: its row (name, chip, until/stale, bar, windows with the binding one bold,
+ * the reset), then the routes sub-row or the setup line when `isSub`. */
+function providerRows(p: QuotaProvider, now: number, columns: number, isBars: boolean, isSub: boolean): Row[] {
+  const chip = providerChip(p, now)
+  const { shown: sorted, binding } = windowsOf(p.windows, p.window)
+  const segs: Seg[] = [{ text: fill(p.name, 7) }, { text: fill(chip, 5), color: CHIP_COLOR.get(chip) }]
+  const notes = [untilOf(p, now, p.gate, p.window), isStale(p, now) ? `stale ${p.readAt === null ? '?' : ageOf(now - p.readAt)}` : ''].filter(Boolean)
+  if (notes.length) segs.push({ text: `${notes.join(' ')} ` })
+  if (!sorted.length) segs.push({ text: p.reason || 'no reading' })
+  else {
+    if (isBars && binding?.usedPercent != null) {
+      const n = Math.round((Math.min(100, Math.max(0, binding.usedPercent)) / 100) * BAR_CELLS)
+      segs.push({ text: `${'█'.repeat(n)}${'░'.repeat(BAR_CELLS - n)} ` })
+    }
+    sorted.forEach((w, i) => {
+      if (i) segs.push({ text: ' ' })
+      segs.push({ text: `${windowLabel(w.mins)} ${pct(w.usedPercent)}`, ...(w === binding ? { isBold: true } : {}) })
+    })
+    if (binding?.resetsAt != null && binding.resetsAt > now) segs.push({ text: ` · resets ${rel(binding.resetsAt - now)}` })
+  }
+  const rows: Row[] = [{ kind: 'segs', key: `quota:row:${p.name}`, segs: fitSegs(segs, columns), ...(isStale(p, now) ? { isDim: true } : {}) }]
+  if (isSub && p.routes.length) {
+    const sub: Seg[] = [{ text: INDENT }]
+    // An active provider stop refuses every route (the dispatcher's budget-stop), whatever its gate.
+    const isStopped = isStopActive(p, now)
+    routeGroups(p).forEach(([label, gate, bound], i) => {
+      const state: QuotaState = isStopped ? 'stop' : gate
+      sub.push({ text: `${i ? ' · ' : ''}${label} ` }, { text: chipOf(state), color: CHIP_COLOR.get(chipOf(state)) })
+      if (bound) sub.push({ text: ' ' }, { text: `${windowLabel(bound.mins)} ${pct(bound.usedPercent)}`, isBold: true })
+      const until = state === 'stop' ? untilOf(p, now, gate, bound) : ''
+      if (until) sub.push({ text: ` ${until}` })
+    })
+    rows.push({ kind: 'segs', key: `quota:routes:${p.name}`, segs: fitSegs(sub, columns) })
+  }
+  if (isSub && p.status === 'unavailable' && p.setup) rows.push({ kind: 'text', key: `quota:setup:${p.name}`, text: fit(`${INDENT}setup: ${p.setup}`, columns), isDim: true })
+  return rows
+}
+
+/** A route model's family and effort: `gemini-4-argon-high` is `argon`, `high`. */
+function routeName(model: string): { family: string; effort: string } {
+  const short = (model.split('/').pop() ?? model).replace(/^[a-z]+-[\d.]+-/, '')
+  const at = short.lastIndexOf('-')
+  const effort = at > 0 ? short.slice(at + 1) : ''
+  return /^(min|low|medium|high|xhigh|max)$/.test(effort) ? { family: short.slice(0, at), effort } : { family: short, effort: '' }
+}
+
+/** Routes grouped by family, state and bound window, in first-seen order: `argon high/medium`,
+ * `flash`. Efforts are named only for a family with more than one route. */
+function routeGroups(p: QuotaProvider): [string, QuotaState, QuotaWindow | null][] {
+  const names = p.routes.map(r => ({ ...routeName(r.model), gate: r.gate, window: r.window ?? null }))
+  const groups = new Map<string, { family: string; efforts: string[]; gate: QuotaState; window: QuotaWindow | null }>()
+  for (const n of names) {
+    const key = [n.family, n.gate, n.window && JSON.stringify(n.window)].join('\u0000')
+    const group = groups.get(key) ?? groups.set(key, { family: n.family, efforts: [], gate: n.gate, window: n.window }).get(key)!
+    if (n.effort) group.efforts.push(n.effort)
+  }
+  return [...groups.values()].map(g => {
+    const isMany = names.filter(n => n.family === g.family).length > 1
+    return [isMany && g.efforts.length ? `${g.family} ${g.efforts.join('/')}` : g.family, g.gate, g.window]
+  })
+}
+
+/** The Quota card, `columns` wide: its ▸/▾ head with `<ok>/<n> OK`; open, a row per provider, with
+ * the bars on a wide pane and the route sub-rows and setup lines when `isSub` (and the pane is not
+ * too narrow). */
+function quotaCard(q: OcliQuota, now: number, columns: number, isOpen: boolean, isSub = true): Card {
+  const ok = q.providers.filter(p => providerChip(p, now) === 'OK').length
+  const rows: Row[] = [headRow('quota:head', 'quota:toggle', isOpen, 'Quota', `${ok}/${q.providers.length} OK`, columns)]
+  if (isOpen) {
+    for (const p of q.providers) rows.push(...providerRows(p, now, columns, columns >= QUOTA_BAR_COLUMNS, isSub && columns >= QUOTA_SUB_COLUMNS))
+  }
+  return { key: 'quota', rows, height: rows.length + 2 }
+}
+
+/** The Quota card's forms, most detailed first: open in full, open without sub-rows, closed. */
+export const quotaVariants = (q: OcliQuota, now: number, columns: number, isOpen: boolean): Card[] =>
+  isOpen ? [quotaCard(q, now, columns, true), quotaCard(q, now, columns, true, false), quotaCard(q, now, columns, false)] : [quotaCard(q, now, columns, false)]
+
+/** A task card's quota line for its newest run's provider (its route, when the snapshot scopes
+ * one): `quota: gemini flash OK · wk 39%`, or `quota: glm STOP until 14:05` in the warning colour.
+ * null when there is no snapshot, no run, or the snapshot lacks the provider. */
+export function quotaLine(runs: readonly OcliRun[], q: OcliQuota | null, now: number): DetailLine | null {
+  const run = [...runs].sort((a, b) => (b.lastAt ?? startOf(b) ?? 0) - (a.lastAt ?? startOf(a) ?? 0))[0]
+  const name = run && PROVIDER_OF.get(run.cli)
+  const p = name ? q?.providers.find(x => x.name === name) : undefined
+  if (!run || !p) return null
+  const model = (run.model ?? '').split('/').pop()
+  const route = p.routes.find(r => r.model.split('/').pop() === model)
+  // The route's gate and window when the snapshot scopes one; an active provider stop overrides it.
+  const gate = route ? route.gate : p.gate
+  const bound = route ? (route.window === undefined ? fullestOf(p.windows) : route.window) : p.window
+  const chip = route ? (isStopActive(p, now) ? 'STOP' : chipOf(gate)) : providerChip(p, now)
+  const label = `quota: ${p.name}${route ? ` ${routeName(route.model).family}` : ''} ${chip}`
+  if (chip === 'STOP') return { text: [label, untilOf(p, now, gate, bound)].filter(Boolean).join(' '), color: 'warning' }
+  const { binding } = windowsOf(p.windows, bound)
+  if (binding) return { text: `${label} · ${windowLabel(binding.mins)} ${pct(binding.usedPercent)}` }
+  return { text: chip === 'OK' ? `${label} · no cap` : label }
 }
