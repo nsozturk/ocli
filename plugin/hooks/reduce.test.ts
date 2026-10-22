@@ -1354,3 +1354,54 @@ describe('quota card: fix round 2 (u5 D1, D2, D3)', () => {
     expect(rowText(rows(q, 20)[0]!)).toMatch(/^codex  OK   wk 80%/)
   })
 })
+
+// Re-review of fix round 2: pins for the survivors (R5, R8, R11) and the D3 width sweep.
+describe('quota card pins (fix round 2 re-review)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const H = 3_600_000
+  const at = (ms: number) => new Date(ms).toISOString()
+  const hm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+  const w = (limitId: string, usedPercent: number | null, windowDurationMins: number, resetsAt: number | null = T + 48 * H) =>
+    ({ limitId, usedPercent, windowDurationMins, resetsAt: resetsAt === null ? null : at(resetsAt) })
+  const runOf = (cli: string, model: string) => ({ runId: 'r', task: 't', role: 'x', cli, model, lastAt: T, startedAt: T } as unknown as OcliRun)
+  const snap = (providers: Record<string, unknown>) => foldQuota(JSON.stringify({ v: 1, providers }))!
+  const rows = (q: OcliQuota, columns = 120) => quotaVariants(q, T, columns, true)[0]!.rows.slice(1)
+  const FLASH = 'gemini-3.8-flash-high'
+  const ARGON = 'gemini-4-argon-medium'
+
+  test('R5 an active provider stop turns an unknown route STOP too, not only an ok one', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [w('a', 10, 300)], gate: { state: 'ok', window: w('a', 10, 300) },
+      routes: [{ role: 'b', model: ARGON, gate: { state: 'unknown', window: null } }, { role: 'f', model: FLASH, gate: { state: 'ok', window: null } }],
+      stop: { until: at(T + 3 * H), reason: 'x' } } })
+    expect(rowText(rows(q)[1]!)).toBe(`       argon STOP until ${hm(T + 3 * H)} (3h00m) · flash STOP until ${hm(T + 3 * H)} (3h00m)`)
+  })
+
+  test('R8 an expired provider stop leaves every route sub-row to its own gate', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [w('a', 10, 300)], gate: { state: 'ok', window: w('a', 10, 300) },
+      routes: [{ role: 'f', model: FLASH, gate: { state: 'ok', window: w('a', 10, 300) } }], stop: { until: at(T - 1000), reason: 'x' } } })
+    expect(rowText(rows(q)[1]!)).toBe('       flash OK 5h 10%')
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash OK · 5h 10%')
+  })
+
+  test('R11 a ? chip that binds no window says only the label, never no cap', () => {
+    const q = snap({ gemini: { readAt: at(T), status: 'ok', windows: [w('a', 10, 300)], gate: { state: 'ok', window: null },
+      routes: [{ role: 'f', model: FLASH, gate: { state: 'unknown', window: null } }], stop: null } })
+    expect(quotaLine([runOf('agy', FLASH)], q, T)?.text).toBe('quota: gemini flash ?')
+  })
+
+  test('D3 sweep 20..120 (stop, stale, bars): whenever a window is drawn the binding one is, first and bold', () => {
+    const B = w('codex-wk', 80, 10080)
+    const ws = [...[1, 2, 3, 4, 5].map(i => w(`p${i}`, i, 60 * i)), B]
+    const q = snap({ codex: { readAt: at(T - 5 * H), status: 'ok', windows: ws, gate: { state: 'ok', window: B }, stop: { until: at(T + 2 * H), reason: 'x' } } })
+    for (let c = 20; c <= 120; c++) {
+      for (const cd of quotaVariants(q, T, c, true)) {
+        const r = cd.rows.find(x => x.key === 'quota:row:codex')
+        if (!r || r.kind !== 'segs') continue
+        const i = r.segs.findIndex(s => /^(\d+h|wk) /.test(s.text) || s.isBold)
+        if (i < 0) continue
+        expect(r.segs[i]!.isBold, String(c)).toBe(true)
+        expect('wk 80%'.startsWith(r.segs[i]!.text.replace(/…$/, '')), String(c)).toBe(true)
+      }
+    }
+  })
+})
