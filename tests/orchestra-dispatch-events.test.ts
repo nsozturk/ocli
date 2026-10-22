@@ -9,11 +9,13 @@ vi.mock('node:fs', async original => ({ ...await original<Record<string, unknown
 vi.mock('node:fs/promises', async original => ({ ...await original<Record<string, unknown>>(), readFile: mocks.policy, appendFile: mocks.append, mkdir: vi.fn(), lstat: mocks.lstat }));
 // The real witness by default (beforeEach); one test makes it throw.
 vi.mock('../dispatcher/witness.mjs', async original => ({ ...await original<Record<string, unknown>>(), witness: mocks.witness }));
-vi.mock('../dispatcher/usage.mjs', async original => ({ ...await original<Record<string, unknown>>(), readCodexUsage: vi.fn(async () => ({status:'unknown'})), readGlmUsage: vi.fn(async () => ({status:'unknown'})), claudeUsageFromLead: vi.fn(), usageDelta: mocks.delta, gateFor: vi.fn() }));
+vi.mock('../dispatcher/usage.mjs', async original => ({ ...await original<Record<string, unknown>>(), usageDelta: mocks.delta, gateFor: vi.fn() }));
+// Slice D: every counter read goes through usage-readers/index.mjs.
+vi.mock('../dispatcher/usage-readers/index.mjs', () => ({ readProviderUsage: vi.fn(async () => ({ status: 'unknown' })) }));
 // @ts-expect-error plain ESM tooling
 import { main, runBrief, runPhase, runTitle } from '../dispatcher/dispatch.mjs';
 const realWitness = (await vi.importActual<{ witness: (...args: unknown[]) => unknown }>('../dispatcher/witness.mjs')).witness;
-const originalPolicy = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+const originalPolicy = JSON.parse(readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'));
 let policy: typeof originalPolicy;
 let child: EventEmitter & {stdout: EventEmitter; stderr: EventEmitter; pid: number};
 const fixture = readFileSync(new URL('./fixtures/orchestra-events/codex.jsonl', import.meta.url), 'utf8');
@@ -840,7 +842,7 @@ it('the prefix hash never alters the prompt or argv the CLI is spawned with', as
 
 // run.start.brief: what the person reads in the pane's expanded card, never the whole prompt.
 const SPEC = '\n# Slice RK1 — catalogue adapter\n\nWrite the catalogue adapter for\nthe GLM route.\n\n## Details\nSECRET-LATER-PARAGRAPH\n';
-const WORKTREE = 'Your worktree (work ONLY here): /x/senatus-rk1-fix';
+const WORKTREE = 'Your worktree (work ONLY here): /x/project-rk1-fix';
 it('runBrief: the first heading, the first task paragraph, then the --suffix, folded, joined with " · "', () => {
   expect(runBrief(undefined, SPEC, `slice RK1\n${WORKTREE}`)).toBe('Slice RK1 — catalogue adapter · Write the catalogue adapter for the GLM route. · slice RK1');
   // No suffix, no heading: the first paragraph alone; it never reaches past the first blank line.
@@ -915,8 +917,27 @@ const runWith = (cli: string) => {
 const firstNode = () => JSON.parse(mocks.append.mock.calls[0][1]);
 it('Q6: sums the codex turn.completed usage into tokens; cached is never metered', async () => {
   await dispatch();
-  // fixture: input 115922 (cached 64768), output 59, reasoning 0
-  expect(firstNode().tokens).toEqual({ input: 115922, output: 59, cached: 64768, reasoning: 0, metered: 115981 });
+  // fixture: input 115922 (incl. cached 64768), output 59, reasoning 0 ⇒ Q20 metered 51154 + 59
+  expect(firstNode().tokens).toEqual({ input: 115922, output: 59, cached: 64768, reasoning: 0, metered: 51213 });
+});
+it('Q20: codex reasoning is inside output and counted once', async () => {
+  mocks.spawn.mockImplementation(() => {
+    const proc = Object.assign(new EventEmitter(), {stdout:new EventEmitter(),stderr:new EventEmitter(),pid:123});
+    queueMicrotask(() => {
+      proc.stdout.emit('data', '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":300,"reasoning_output_tokens":200}}\n');
+      proc.emit('close',0,null);
+    });
+    return proc;
+  });
+  await dispatch();
+  expect(firstNode().tokens).toEqual({ input: 1000, output: 300, cached: 600, reasoning: 200, metered: 700 });
+});
+it('Q20: agy thinking is inside output (its own total_tokens = input + output)', async () => {
+  policy.routes.breadth.status = 'ok'; // package-only: the shipped agy route is unverified (unsafe by design)
+  runWith('agy');
+  await dispatch('--role','breadth');
+  // steps: input 38807+2688+2273, output 496+132+17, thinking 399+44+16; result total_tokens 44413
+  expect(firstNode().tokens).toEqual({ input: 43768, output: 645, cached: 74142, reasoning: 459, metered: 44413 });
 });
 it('Q6: sums every opencode step_finish into tokens, reasoning included in metered', async () => {
   runWith('opencode');

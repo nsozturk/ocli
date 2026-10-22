@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,11 +8,15 @@ import { fileURLToPath } from 'node:url';
 // Q6 on the node: --size and one usage delta per window kind. main() runs with the provider
 // readers, spawn and the node append mocked; the tree is a temp dir, never the real orchestra/tree/.
 const mocks = vi.hoisted(() => ({
-  codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), appendFile: vi.fn(), spawn: vi.fn(),
+  codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), counter: vi.fn(), appendFile: vi.fn(), spawn: vi.fn(),
 }));
-vi.mock('../dispatcher/usage.mjs', async importOriginal => ({
+// Slice D: dispatch reads every counter through usage-readers/index.mjs; the stub routes by provider.
+vi.mock('../dispatcher/usage-readers/index.mjs', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
-  readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
+  readProviderUsage: (provider: string) => {
+    const reader = ({ codex: mocks.codex, glm: mocks.glm, claude: mocks.claude } as Record<string, (() => unknown) | undefined>)[provider];
+    return reader ? reader() : mocks.counter(provider);
+  },
 }));
 vi.mock('node:child_process', () => ({ spawn: mocks.spawn }));
 vi.mock('node:fs', async importOriginal => ({
@@ -41,7 +45,7 @@ describe('dispatch usage recording — Q6 size and per-window deltas on the node
     treeDir = mkdtempSync(path.join(tmpdir(), 'ocli-usage-tree-'));
     vi.stubEnv('ORCHESTRA_TREE_DIR', treeDir);
     // The shipped routes, whatever a local dispatcher/policy.json says.
-    vi.stubEnv('ORCHESTRA_POLICY', fileURLToPath(new URL('../dispatcher/policy.example.json', import.meta.url)));
+    vi.stubEnv('ORCHESTRA_POLICY', fileURLToPath(new URL('../dispatcher/policy.full-roster.json', import.meta.url)));
     vi.stubEnv('ORCHESTRA_RANKING_FILE', path.join(treeDir, 'no-ranking.json'));
     now = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -50,6 +54,7 @@ describe('dispatch usage recording — Q6 size and per-window deltas on the node
     let reads = 0;
     mocks.codex.mockImplementation(async () => { now += 10_000; return sample(++reads === 1 ? 4 : 7); });
     mocks.glm.mockResolvedValue({ status: 'unknown', reason: 'no verified source', windows: [] });
+    mocks.counter.mockResolvedValue({ status: 'unavailable', reason: 'reader:unavailable' });
     let delivered = false;
     mocks.spawn.mockImplementation((command: string) => {
       const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
@@ -85,6 +90,18 @@ describe('dispatch usage recording — Q6 size and per-window deltas on the node
     expect(recorded()).toHaveProperty('blockedBasis', 'counter-exhausted');
     expect(stderrText()).toContain('[dispatch] codex usage limit CONFIRMED against its counter: usage confirms exhaustion');
   });
+  // u5-e review pin (M6): with no reading around the run, the re-read's ordinaryUsageAllowed=false is the provider's
+  // own exhaustion verdict, even while its percentage shows room.
+  it('a re-read codex counter that says ordinaryUsageAllowed=false confirms exhaustion though the window has room', async () => {
+    let reads = 0;
+    mocks.codex.mockImplementation(async () => (++reads <= 2
+      ? { status: 'unknown', reason: 'mocked', windows: [] }
+      : { ...sample(4), ordinaryUsageAllowed: false }));
+    failWith('usage limit reached', 1);
+    await main(['--role', 'reason', '--task', 'mock-usage', '--prompt', 'stable']);
+    expect(reads).toBe(3);
+    expect(recorded()).toHaveProperty('blockedBasis', 'counter-exhausted');
+  });
   it('labels a failed run against a counter with room a transient refusal, never CONFIRMED', async () => {
     failWith('quota exceeded', 9);
     await main(['--role', 'reason', '--task', 'mock-usage', '--prompt', 'stable']);
@@ -109,6 +126,45 @@ describe('dispatch usage recording — Q6 size and per-window deltas on the node
     expect(mocks.spawn).not.toHaveBeenCalled();
     expect(mocks.codex).not.toHaveBeenCalled();
     expect(mocks.appendFile).not.toHaveBeenCalled();
+  });
+  // Package: the shipped example keeps agy (breadth) unverified, so these tests mark it ok on their own copy.
+  const withBreadthOk = () => {
+    const policy = JSON.parse(readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'));
+    policy.routes.breadth.status = 'ok';
+    const file = path.join(treeDir, 'policy.json');
+    writeFileSync(file, JSON.stringify(policy));
+    vi.stubEnv('ORCHESTRA_POLICY', file);
+  };
+  it('records the counter reading (index.mjs) for breadth (gemini) without invoking another provider reader (Q17)', async () => {
+    const reading = { status: 'ok', source: 'reader', updatedAt: '2026-09-26T00:00:00Z', windows: [
+      { limitId: 'antigravity-quota-summary-gemini-5h', usedPercent: 20, windowDurationMins: 300, resetsAt: '2026-09-26T05:00:00Z' },
+      { limitId: 'antigravity-quota-summary-gemini-weekly', usedPercent: 30, windowDurationMins: 10080, resetsAt: '2026-10-03T00:00:00Z' },
+    ] };
+    mocks.counter.mockResolvedValue(reading);
+    withBreadthOk();
+    await dispatch('breadth');
+    expect(mocks.codex).not.toHaveBeenCalled();
+    expect(mocks.glm).not.toHaveBeenCalled();
+    expect(mocks.counter).toHaveBeenCalledTimes(2); // usageBefore + usageAfter
+    expect(mocks.counter.mock.calls.map((c: unknown[]) => c[0])).toEqual(['gemini', 'gemini']);
+    // Slice D: the counter comes from index.mjs, never a `codexbar` child process.
+    expect(mocks.spawn.mock.calls.map((c: unknown[]) => c[0])).not.toContain('codexbar');
+    expect(recorded()).toMatchObject({ usageBefore: reading, usageAfter: reading, score: 1 });
+    // No identity ever reaches the node: the mock reading is the reader's already-scrubbed shape.
+    expect(JSON.stringify(recorded().usageBefore)).not.toContain('accountEmail');
+  });
+  it('records counter readings (index.mjs) for muse and cline routes with their mapped providers (Q17)', async () => {
+    const reading = { status: 'ok', source: 'reader', updatedAt: '2026-09-26T00:00:00Z', windows: [
+      { limitId: 'muse-primary', usedPercent: 20, windowDurationMins: 300, resetsAt: '2026-09-26T05:00:00Z' },
+    ] };
+    mocks.counter.mockResolvedValue(reading);
+    await dispatch('muse');
+    expect(mocks.counter.mock.calls.map((c: unknown[]) => c[0])).toEqual(['muse', 'muse']);
+    expect(recorded()).toMatchObject({ usageBefore: reading, usageAfter: reading });
+    mocks.counter.mockClear();
+    mocks.appendFile.mockClear();
+    await main(['--role', 'cline-mimo', '--task', 'mock-usage', '--prompt', 'stable', '--verify', 'true']);
+    expect(mocks.counter.mock.calls.map((c: unknown[]) => c[0])).toEqual(['cline', 'cline']);
   });
   it('records the 5h and weekly deltas separately; the reset 5h window gives none, usageDelta unchanged', async () => {
     const H5 = (resetsAt: string, usedPercent: number) => ({ limitId: 'codex', usedPercent, windowDurationMins: 300, resetsAt });

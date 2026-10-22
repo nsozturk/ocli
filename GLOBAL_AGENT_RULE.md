@@ -1,11 +1,11 @@
 ## ocli — dispatching headless coding CLIs with live progress
 
 When you (the lead agent in Claude Code) hand a slice of work to another coding CLI (Codex,
-opencode, Antigravity `agy`, Muse), dispatch it through ocli so the person sees it live in the
+opencode, Antigravity `agy`, Muse, Cline, Claude Code), dispatch it through ocli so the person sees it live in the
 `/ocli` pane:
 
 ```sh
-node <ocli>/dispatcher/dispatch.mjs --role <implement|reason|breadth|muse> --task <task-slug> \
+node <ocli>/dispatcher/dispatch.mjs --role <implement|reason|auto|...> --task <task-slug> \
   --phase <implement|review|...> --title "<what this run is for>" \
   --root <worktree> --prompt "$(cat <brief.md>)" [--verify "<test command>"]
 ```
@@ -17,11 +17,15 @@ Rules:
    implementation, review and fix rounds. Declare the plan first with
    `--declare-phases implement,review,merge --task <task-slug>` so the card shows what is left.
 3. Give every developer CLI its own worktree via `--root`.
-4. Read the final message on stdout; exit 0 = recorded, 1 = verifier failed, 2 = refused/errored.
+4. Read the final message on stdout; exit 0 = recorded, 1 = verifier failed, 2 = refused/errored,
+   3 = `--role auto --size S|M|L` decided `split` or `wait` (one JSON line on stdout, nothing ran).
+   `node <ocli>/dispatcher/dispatch.mjs --list-routes` shows the routes your policy declares.
 5. Treat `run.end.witness.findings` (e.g. `claimedTestsButNone`, `doneNoChange`) as review leads:
    the CLI said something its own trace does not back.
 6. `blocked` means the provider refusal was confirmed; do not report a quota outage from transcript
    text alone.
 7. A route whose policy `status` is not `ok` is refused; probe it by hand before enabling it.
+8. A failed or signalled run leaves a WIP commit and a `handoff` on its tree node; resume it with
+   `--continue <nodeId>` instead of starting the slice over.
 
 Contract for the live files: `<ocli>/docs/LIVE-EVENTS.md`.

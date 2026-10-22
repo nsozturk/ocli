@@ -1,0 +1,256 @@
+{
+  "schemaVersion": 1,
+  "decision": {
+    "headroomFactor": 1.5,
+    "minLearnedSamples": 3,
+    "costHistory": 10,
+    "readingMaxAgeMins": 30
+  },
+  "lead": {
+    "provider": "claude",
+    "snapshotFile": "~/.claude/usage-snapshot.json",
+    "throttle": {
+      "leanBelowPercent": 25,
+      "closeBelowPercent": 10
+    }
+  },
+  "providers": {
+    "codex": {
+      "pool": "openai",
+      "plan": "chatgpt-plus",
+      "meteredBy": "counter",
+      "limitIds": [
+        "codex"
+      ],
+      "reservePercent": 5,
+      "onUnknown": "refuse",
+      "uncalibratedMaxSize": null,
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    },
+    "glm": {
+      "pool": "zai",
+      "plan": "glm-coding-lite",
+      "meteredBy": "counter",
+      "limitIds": [
+        "zai-primary"
+      ],
+      "reservePercent": 15,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": "M",
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    },
+    "gemini": {
+      "pool": "google",
+      "plan": "google-ai-pro",
+      "meteredBy": "counter",
+      "limitIds": [
+        "antigravity-quota-summary-gemini-5h",
+        "antigravity-quota-summary-gemini-weekly",
+        "antigravity-quota-summary-gemini-argon-wtu-weekly"
+      ],
+      "limitScopes": {
+        "antigravity-quota-summary-gemini-argon-wtu-weekly": {
+          "models": [
+            "gemini-4-argon-high",
+            "gemini-4-argon-medium"
+          ]
+        }
+      },
+      "reservePercent": 15,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": "M",
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    },
+    "muse": {
+      "pool": "meta",
+      "plan": "meta-contributor",
+      "meteredBy": "counter",
+      "limitIds": null,
+      "_note": "Q17: the muse windows are unmeasured until CodexBar returns a real reading (it needs Keychain access for muse; on 2026-10-17 it answered error kind provider). No limitId is guessed, so headroom stays unknown and the cap never binds.",
+      "reservePercent": 0,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": "M",
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    },
+    "cline": {
+      "pool": "cline",
+      "plan": "cline-pass",
+      "meteredBy": "counter",
+      "limitIds": null,
+      "_note": "Q17: the clinepass windows are unmeasured until CodexBar returns a real reading (run 'cline auth' first; on 2026-10-17 its credentials were rejected). No limitId is guessed, so headroom stays unknown and the cap never binds.",
+      "reservePercent": 10,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": null,
+      "overflow": true,
+      "maxSize": "S",
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    },
+    "claude": {
+      "pool": "anthropic",
+      "plan": "claude-max-5x",
+      "meteredBy": "counter",
+      "limitIds": [
+        "5-hour limit",
+        "Weekly · all models"
+      ],
+      "reservePercent": 20,
+      "onUnknown": "until-stop",
+      "uncalibratedMaxSize": null,
+      "overflow": false,
+      "maxSize": null,
+      "priorTokens": {
+        "S": 300000,
+        "M": 1200000,
+        "L": 4000000
+      },
+      "windows": [
+        {
+          "kind": "5h",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        },
+        {
+          "kind": "weekly",
+          "capacity": {
+            "unit": "percent",
+            "value": 100
+          },
+          "source": "counter",
+          "priorCost": null
+        }
+      ]
+    }
+  }
+}

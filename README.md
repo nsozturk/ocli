@@ -3,8 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.1-8b5cf6" alt="Version 0.5.1">
-  <img src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white" alt="Node.js 22+">
+  <img src="https://img.shields.io/badge/version-0.6.0--beta.1-8b5cf6" alt="Version 0.6.0-beta.1">
+  <a href="https://github.com/nsozturk/ocli/actions/workflows/test.yml"><img src="https://github.com/nsozturk/ocli/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?logo=node.js&logoColor=white" alt="Node.js 22.13+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/runtime%20deps-zero-0ea5e9" alt="Zero runtime dependencies">
   <a href="AGENTS.md"><img src="https://img.shields.io/badge/AI%20Agent-Native%20Ready-a78bfa" alt="AI Agent: Native Ready"></a>
@@ -13,16 +14,16 @@
 
 <p align="center">
   <code>claude-code</code> <code>claude-code-plugin</code> <code>codex</code> <code>opencode</code> <code>antigravity</code>
-  <code>gemini</code> <code>muse</code> <code>coding-agents</code> <code>orchestration</code> <code>live-events</code>
+  <code>gemini</code> <code>muse</code> <code>cline</code> <code>coding-agents</code> <code>orchestration</code> <code>quota-routing</code> <code>live-events</code>
 </p>
 
 # ocli — Orchestrated CLI
 
-> **ocli (Orchestrated CLI):** run headless coding CLIs — Codex, opencode, Antigravity `agy`, Muse, Cline —
+> **ocli (Orchestrated CLI):** run headless coding CLIs — Codex, opencode, Antigravity `agy`, Muse, Cline, Claude Code —
 > under one lead and watch them live in Claude Code as Workflow-style cards.
 
 **ocli** shows what your headless coding CLIs are doing while they do it. When Claude Code
-orchestrates other agents (Codex, opencode, Antigravity `agy`, Muse, Cline) as background developers, each
+orchestrates other agents (Codex, opencode, Antigravity `agy`, Muse, Cline, Claude Code itself) as background developers, each
 one runs out of sight: you get a final message, or a stuck terminal, and nothing in between. ocli is
 two small pieces: a **dispatcher** that runs one CLI per call and turns its native JSON event stream
 into one normalized live-event file per run, and a **Claude Code plugin** that draws those runs as
@@ -81,9 +82,12 @@ What else it does:
 
 - **Claude Code ≥ 2.1.292** (installing the plugin from a shell). The pane is a mod: mods need
   **≥ 2.1.287 in the terminal** and **≥ 2.1.286 in the Desktop app**.
-- **Node.js ≥ 22** for the dispatcher and for `/ocli-digest`. No runtime dependencies.
-- The developer CLIs you route to (`codex`, `opencode`, `agy`, `muse`), installed and logged in with
-  their own login. ocli never handles their credentials.
+- **Node.js ≥ 22.13** for the dispatcher and for `/ocli-digest`. No runtime dependencies.
+- The developer CLIs you route to, installed and logged in with their own login. The starter config
+  needs only `codex` and `opencode`; the full roster adds `agy`, `muse`, `cline` and `claude`. ocli
+  never handles their credentials.
+- Nothing else: plan usage is read by ocli's built-in usage readers (ported from CodexBar, see
+  [Configuration](#configuration)); macOS first.
 
 ## Quick start
 
@@ -99,17 +103,24 @@ or in one step: `claude plugin install ocli-monitor --marketplace "$PWD/ocli"`. 
 on GitHub, `claude plugin install ocli-monitor --marketplace nsozturk/ocli` does the same, and inside
 a terminal session `/plugin install ocli-monitor@ocli` works after the marketplace is added.
 
-**2. Make the dispatcher policy yours** (Node.js 22+, no dependencies; the dispatcher lives in the
+**2. Make the dispatcher policy yours** (Node.js 22.13+, no dependencies; the dispatcher lives in the
 clone, not in the installed plugin):
 
 ```sh
-cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json
+cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json        # starter: codex + opencode
+# or everything ocli knows (agy, Muse, Claude Opus, Astra, Cline Pass):
+cp ocli/dispatcher/policy.full-roster.json ocli/dispatcher/policy.json
 ```
 
-This step is not optional in practice. The example routes pin the models they were verified with,
-which your accounts may not have: set each route's `model` to one your CLI lists (`opencode models`,
-`codex` model list, …), read [Permissions and sandboxing](#permissions-and-sandboxing), and dispatch
-each route once by hand before you trust it. Without a `policy.json` the dispatcher uses the example.
+This step is not optional in practice. The routes pin the models they were verified with, which your
+accounts may not have: set each route's `model` to one your CLI lists (`opencode models`,
+`codex debug models`, …), read [Permissions and sandboxing](#permissions-and-sandboxing) and
+[SECURITY.md](SECURITY.md), and dispatch each route once by hand before you trust it. Without a
+`policy.json` the dispatcher uses the starter (`policy.example.json`): `implement` (opencode, GLM-5.3)
+and `reason` (codex, GPT-6.1 Sol at `xhigh`). The provider plans work the same way:
+`provider-plans.example.json` (codex, glm, claude) is the default, `provider-plans.full-roster.json`
+adds the gemini, muse and cline pools; copy one to `~/.config/agent-rules/provider-plans.json` or point
+`ORCHESTRA_PLANS` at it.
 
 **3. Keep the run files out of git.** The dispatcher writes full prompts, raw CLI transcripts and
 stdout/stderr tails into your project; add these lines to the project's `.gitignore` first:
@@ -146,7 +157,7 @@ there is simply no card.
 
 | flag | meaning |
 |---|---|
-| `--role` | a route in the policy (`implement` = opencode, `reason` = codex, `breadth` = agy, `muse` = Muse, `cline-*` = Cline), or `auto`: the highest-AA eligible route in `developers.rotation.order` (ties by rotation order; unranked routes are never auto-picked; none eligible = refuse; no CLI is spawned, though a usage read may have run). With `--size` the quota decision picks instead (see below); without it one stderr notice says `--role auto without --size: AA only, no quota decision` |
+| `--role` | a route in the policy (`implement` = opencode, `reason` = codex GPT-6.1 Sol; full roster: `astra` = codex GPT-6 Astra, `breadth` = agy Argon, `breadth-flash` = agy Gemini Flash (explicit, simple work while Argon is out of quota), `muse` = Muse, `opus` / `opus-high` = Claude Opus 5.5 medium / high, `cline-*` = Cline), or `auto`: the highest-AA eligible route in `developers.rotation.order` (ties by rotation order; unranked routes are never auto-picked; none eligible = refuse; no CLI is spawned, though a usage read may have run). With `--size` the quota decision picks instead (see below); without it one stderr notice says `--role auto without --size: AA only, no quota decision` |
 | `--min-aa` | with `--role auto`: only routes whose AA Intelligence Index is at least this |
 | `--task` | groups runs into one card; `[A-Za-z0-9][A-Za-z0-9._-]*` |
 | `--prompt` | the brief; passed as one argv element, never through a shell |
@@ -188,8 +199,9 @@ HEAD branch or a detached HEAD, never bypasses hooks (a refusing hook is recorde
 (`clean-tree`, `default-branch`, `detached`, `not-git`, `hook-refused: …`, `timeout`), never in the dispatch's outcome. On a
 signal the dispatcher stops the CLI (SIGKILL after 5 s), hands off within 10 s and appends a `partial: true` node before it
 re-raises the signal. A successful run (exit 0, not blocked) adds no `handoff` field. Each node also records `size`, the
-run's summed `tokens` (`metered` = input + output + reasoning; cached input is not metered; `null` when the CLI reports no
-usage) and `usageDeltas`, one per usage window (5-hour and weekly apart).
+run's summed `tokens` (`metered` = what the provider bills, computed per CLI: cached input is never metered and
+reasoning is never counted twice, e.g. codex's input already includes its cached tokens and its output its reasoning; `null`
+when the CLI reports no usage; quota recomputes it at read time, so older nodes are not trusted) and `usageDeltas`, one per usage window (5-hour and weekly apart).
 
 **Resuming a hand-off: `--continue <nodeId>`.** Looks the node up in the tree and refuses, before anything is read or
 spawned, an unknown id, a node without a `handoff`, a hand-off naming no worktree, or a `--root` other than that worktree.
@@ -222,16 +234,19 @@ Without `--size`, `--role auto` is exactly the AA pick above.
 
 ## Configuration
 
-ocli reads no credentials, no keychain and no account file. Everything machine-specific is optional
-and set by you:
+ocli never asks for a credential. Its built-in usage readers do read the sessions your own CLIs
+already keep (OAuth token files, browser cookies, Keychain items) to fetch plan usage, locally; see
+[SECURITY.md](SECURITY.md). Everything else machine-specific is optional and set by you:
 
 | setting | where | default |
 |---|---|---|
 | `ORCHESTRA_LIVE_DIR` | environment, for `dispatch.mjs` and `digest.mjs` | `<cwd>/orchestra/live` |
 | `liveDirs` | plugin option (`/config`, or `claude plugin install … --config liveDirs=<dirs>`) | `<project root>/orchestra/live` |
-| routes and models | `dispatcher/policy.json` (gitignored; copy of `policy.example.json`) | the example routes |
+| routes and models | `dispatcher/policy.json` (gitignored; a copy of `policy.example.json` or `policy.full-roster.json`) | the starter routes |
 | `ORCHESTRA_POLICY` | environment: path to a policy file used instead of both of the above | unset |
 | `ORCHESTRA_PLANS` | environment: path to your provider plans (see below) | `~/.config/agent-rules/provider-plans.json`, else `dispatcher/provider-plans.example.json` |
+| `ORCHESTRA_RANKING_FILE` | environment: path to an AA Intelligence Index ranking | `dispatcher/model-ranking.json`, else `dispatcher/model-ranking.example.json` |
+| usage readers | environment variables first, then `~/.config/ocli/usage-readers.json` (`OCLI_USAGE_READERS_CONFIG` names another file) | every reader on its defaults |
 
 ```sh
 export ORCHESTRA_LIVE_DIR=/absolute/path/to/orchestra/live   # optional
@@ -240,19 +255,31 @@ export ORCHESTRA_LIVE_DIR=/absolute/path/to/orchestra/live   # optional
 [`.env.example`](.env.example) lists the same variable; the scripts do not load it, export it in your
 shell. If you move the live dir, point the plugin's `liveDirs` at the same absolute path.
 
-**Usage counters are optional.** `dispatcher/usage.mjs` asks codex for its rate limits by spawning
-`codex app-server` (from `PATH`) and calling `account/rateLimits/read` over stdio, using codex's own
-login; it reads no file. Claude Code's limits come only from a snapshot the lead passes in, and
-GLM (opencode) has no readable quota source. Whatever cannot be read is reported as `unknown`, and
-a capped route with an unknown reading is not dispatched on an assumption.
+**Built-in usage readers (ported from CodexBar).** `dispatcher/usage.mjs` reads each provider's
+plan usage itself, with no extra app: codex through `codex app-server` (`account/rateLimits/read`,
+codex's own login), and the other providers through readers ported from
+[CodexBar](https://github.com/steipete/CodexBar) (MIT © Peter Steinberger). Raw usage responses are kept
+locally in `~/.config/ocli/data/raw_usage.sqlite` (`OCLI_RAW_USAGE_DB` names another file) with secrets stripped; a node records usage windows
+only, never an account identity. A pool whose reading is `unavailable` runs until its provider stops
+it (`gateSource: "until-stop"`); a capped codex route with an unknown reading is never dispatched on an
+assumption. Claude Code's limits come only from a snapshot the lead passes in.
+
+The readers live in `dispatcher/usage-readers/`. They cover the providers ocli routes to: codex,
+claude, antigravity (agy), zai (GLM), muse and cline. CodexBar's JavaScript provider plugins
+are vendored unchanged under `dispatcher/usage-readers/plugins/` with `LICENSE-CodexBar` and
+`ATTRIBUTION.md` (source path, commit and sha256 of every file); the native-only readers among those
+providers are hand-ported. Browser cookies are read from Chromium-family browsers on macOS only (Safari and
+Firefox are out of scope; elsewhere a cookie-based reader reports `unavailable`). The readers use `node:sqlite`,
+so they need Node.js 22.13 or newer.
 
 **Provider plans set the caps.** What each subscription allows lives in one strict JSON file (schema
 v1, `dispatcher/plans.mjs`), read from `ORCHESTRA_PLANS`, else `~/.config/agent-rules/provider-plans.json`,
 else the shipped [`dispatcher/provider-plans.example.json`](dispatcher/provider-plans.example.json) (with
-one stderr warning per process). A counter pool whose `onUnknown` is `refuse` stops at
-`100 − reservePercent` on its `limitIds` (codex in the example: 95%), on **every** window it reports,
-weekly as well as 5-hour; every other pool (`until-stop`, claude included for now) runs until the
-provider itself stops it. A file that exists but fails to parse, or is a symlink, is an error, never a
+one stderr warning per process). A counter pool stops at `100 − reservePercent` on its `limitIds`
+(codex in the example: 95%, GLM 85%), on **every** window it reports, weekly as well as 5-hour. What a
+pool does with **no** reading is its `onUnknown`: `refuse` (codex) gates it `unknown` and auto never
+picks it; `until-stop` (GLM, Gemini, Muse, Cline, and claude, which has no percent cap yet) runs until
+the provider itself stops it. A file that exists but fails to parse, or is a symlink, is an error, never a
 fall-through: every capped route then gates `unknown`. A recorded reading whose window has since reset
 is `tree-expired` (unknown, not room); `--role auto` re-reads such a capped route once (a usage read,
 never an inference call) before it picks, and `--list-routes` never reads.
@@ -266,15 +293,47 @@ write anything your user can, use the network, and push with your git credential
 
 | route | CLI | approval | OS sandbox | shipped status |
 |---|---|---|---|---|
-| `reason`, `easy` | codex | n/a (`exec`) | yes: `-s workspace-write` confines writes to `{root}` | `ok` / `unverified` |
+| `reason`, `astra`, `easy` | codex | n/a (`exec`) | yes: `-s workspace-write` confines writes to `{root}` | `ok` / `ok` / `unverified` |
 | `implement` | opencode | off: `--auto` approves everything | none | `ok` |
+| `opus`, `opus-high` | Claude Code | `--permission-mode acceptEdits` plus one `--allowedTools` list (no bypass flag) | none: `--add-dir {root}` sets the workspace | `ok` |
 | `muse` | Muse | off: `--disable-approval`, `--user-input-auto-resolve` | Muse's own, unless a wrapper injects `--yolo` | `ok` |
-| `breadth` | agy | off: `--dangerously-skip-permissions` | none, and not confined to `{root}` | `unverified` |
+| `breadth`, `breadth-flash` | agy | off: `--dangerously-skip-permissions` | none, and not confined to `{root}` | `unverified` |
 | `cline-mimo`, `cline-qwen` | Cline (Cline Pass) | off: act mode auto-approve | none; `-c {root}` sets the workspace | `ok` |
 
 Run the unsandboxed routes only where that is acceptable: a disposable VM or container, or a
-dedicated user account without your credentials. `breadth` ships `unverified` for that reason; the
-dispatcher refuses it until you set `"status": "ok"` in your own `policy.json`.
+dedicated user account without your credentials. `breadth` and `breadth-flash` ship `unverified` for that reason; the
+dispatcher refuses it until you set `"status": "ok"` in your own `policy.json`. The full threat model
+is in [SECURITY.md](SECURITY.md).
+
+## Add your own route
+
+A route is one entry under `routes` in your `dispatcher/policy.json`:
+
+```json
+"my-dev": {
+  "cli": "opencode",
+  "model": "anthropic/claude-sonnet-5-5",
+  "argv": ["run", "--format", "json", "--pure", "--auto", "--dir", "{root}", "-m", "{model}", "{prompt}"],
+  "status": "ok",
+  "verifiedAt": "2026-10-17"
+}
+```
+
+- `cli` is the executable (from `PATH`); `argv` is passed as an array, never through a shell, with
+  stdin closed. The placeholders are `{model}` `{effort}` `{variant}` `{task}` `{root}` `{prompt}`; any
+  other `{name}` is refused before spawn.
+- The argv must carry the CLI's own headless / JSON-event flags. The live pane understands the event
+  streams of `codex`, `opencode`, `agy`, `muse`, `cline` and `claude` (`docs/LIVE-EVENTS.md`); another
+  CLI still runs and is recorded (exit, stdout tail, `--verify` score); its lines reach the pane as
+  `unparsed` events.
+- A route runs only with `"status": "ok"`. Dispatch it once by hand, watch the pane, then set it.
+- Add it to `developers.rotation.order` if `--role auto` may pick it. Auto picks only routes the
+  AA ranking scores at exactly their (cli, model, effort); add an entry to your
+  `dispatcher/model-ranking.json` for a model the shipped ranking does not list.
+- Quota: a `cli` that `dispatcher/tree-read.mjs` maps to no provider is recorded as `no-budget` and
+  never capped.
+- `node dispatcher/dispatch.mjs --list-routes` shows every route with its AA score and eligibility;
+  `ORCHESTRA_POLICY=<file>` tries a policy without replacing yours.
 
 ## What it runs and reads
 
@@ -378,6 +437,30 @@ The path of one dispatch:
 The full contract, including how another dispatcher can write compatible files, is in
 [`docs/LIVE-EVENTS.md`](docs/LIVE-EVENTS.md).
 
+## Usage readers
+
+`node dispatcher/usage.mjs` (add `--json` for a machine-readable `setup` object) reads every developer's quota. When a reader
+is unavailable it prints a `setup:` hint: the setting it needs and where it may come from. Values are never printed.
+
+### Credentials
+
+| Provider | Unavailable reason | What it needs | Where it may come from |
+|---|---|---|---|
+| claude | `native:claude:credentials-not-found` | consent to read Claude Code's keychain item (read-only, never written; default OFF) | env `OCLI_CLAUDE_KEYCHAIN_CONSENT=1`, or `usage-readers.json` `{ "claude": { "keychainReadConsent": true } }` |
+| claude (consent given) | `native:claude:credentials-not-found` | Claude Code has no stored credential | run `claude` once and sign in |
+| claude (consent given) | `native:claude:credentials-keychain-access-revoked` | keychain access to Claude Code's item was denied | re-allow it in Keychain Access, or unset the consent |
+| glm | `plugin:secret-access` | `Z_AI_API_KEY` | env `Z_AI_API_KEY`; keychain service `ocli-usage-readers` account `zai.Z_AI_API_KEY`; config `{ "zai": { "Z_AI_API_KEY": "..." } }` |
+| cline | `plugin:secret-access` | `CLINE_API_KEY` | env `CLINE_API_KEY`; keychain account `clinepass.CLINE_API_KEY`; config `{ "clinepass": { "CLINE_API_KEY": "..." } }` |
+| muse | `plugin:authentication-expired` | a fresh Muse Code login, stored as `MUSE_DEVICE_TOKEN` | env `MUSE_DEVICE_TOKEN`; keychain account `muse.MUSE_DEVICE_TOKEN`; config `{ "muse": { "MUSE_DEVICE_TOKEN": "..." } }` |
+
+Store a keychain secret (macOS prompts for the value because `-w` comes last; do not paste it into a shell line):
+
+    security add-generic-password -s ocli-usage-readers -a zai.Z_AI_API_KEY -w
+    security add-generic-password -s ocli-usage-readers -a clinepass.CLINE_API_KEY -w
+    security add-generic-password -s ocli-usage-readers -a muse.MUSE_DEVICE_TOKEN -w
+
+The config file is `~/.config/ocli/usage-readers.json` (override with env `OCLI_USAGE_READERS_CONFIG`).
+
 ## Repository layout
 
 | path | what |
@@ -386,14 +469,16 @@ The full contract, including how another dispatcher can write compatible files, 
 | `plugin/` | the Claude Code plugin (pane, hooks, types, its own tests) |
 | `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
-| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (codex usage reader), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` (caps), `quota.mjs` (pure headroom + `decide` run/split/wait, used by `--role auto --size`), `policy.example.json` |
+| `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (built-in usage readers), `tree-read.mjs` (read-only tree queries), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` / `.full-roster.json` (caps), `quota.mjs` (pure headroom + `decide` run/split/wait, used by `--role auto --size`), `ranking.mjs` + `model-ranking.example.json` (AA index), `policy.example.json` (starter) and `policy.full-roster.json` |
+| `.github/workflows/test.yml` | CI: `npm ci && npm test` on Ubuntu and macOS, Node 22 and 24 |
+| `SECURITY.md`, `CHANGELOG.md` | threat model and reporting; release notes |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
 
 ## Tests
 
 ```sh
-npm install && npm test              # dispatcher + normalizer (vitest is the only devDependency)
+npm ci && npm test                   # dispatcher + normalizer (vitest is the only devDependency)
 claude plugin test plugin            # the plugin's own tests, in Claude Code's plugin test runner
 claude plugin validate .             # the marketplace manifest only
 claude plugin validate plugin        # the plugin manifest, types and hooks
@@ -411,12 +496,13 @@ claude plugin validate plugin        # the plugin manifest, types and hooks
 - **Error shapes are partly source-derived.** Successful runs of all four CLIs are captured in
   `tests/fixtures/`. Codex `turn.failed`, opencode `error`, agy non-`SUCCESS` results and Muse
   terminal events other than `completed` are mapped from the CLIs' sources, not from captures.
-- **Usage counters:** only codex exposes one locally. For opencode, agy and Muse a quota refusal is
-  recognized from the CLI's own error event or from stderr on a failed run, and the record says the
-  verdict is unconfirmed.
+- **Usage readers are macOS first.** Platform seams exist for the others; where a reader has no
+  implementation on your platform the reading is `unavailable`. Without a reading a quota refusal is recognized from the CLI's own error event or
+  from stderr on a failed run, and the record says the verdict is unconfirmed. Claude has no counter
+  in the dispatcher process.
 - **`/ocli-digest` needs Node.js on `PATH`.** It runs `node <plugin root>/lib/digest.mjs`; without
   `node`, or where the runtime has no `$.process`, it answers `ocli digest unavailable: <reason>`.
-- **CLI flags drift.** The argv in `policy.example.json` is what each CLI accepted when it was
+- **CLI flags drift.** The argv in the shipped policies is what each CLI accepted when it was
   verified; re-probe a route after upgrading a CLI.
 
 ## License

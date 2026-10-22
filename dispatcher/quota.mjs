@@ -5,6 +5,8 @@
 
 import { providerForNode, stopProviderForNode, latestReading, latestProviderStop, providerStopActive } from './tree-read.mjs';
 import { headroomOf } from './usage.mjs';
+import { scopedLimitIds } from './plans.mjs';
+import { nodeMetered } from './events.mjs';
 
 const KIND_MINS = { '5h': 300, weekly: 10080 };
 const MIN_MS = 60_000;
@@ -30,7 +32,8 @@ const poolNodes = (plans, nodes, provider) => {
 /** Metered tokens of one run: the recorded total, else the provider's size prior (no size ⇒ L);
  * null when neither exists — the caller counts it as unmeasured, never as 0. */
 export function meteredOf(node, plans) {
-  if (Number.isFinite(node?.tokens?.metered)) return node.tokens.metered;
+  const m = nodeMetered(node);
+  if (m !== null) return m;
   const p = providerForNode(node);
   if (p == null || !Object.hasOwn(plans.providers, p)) return null;
   return plans.providers[p].priorTokens?.[node.size ?? 'L'] ?? null;
@@ -65,12 +68,15 @@ function stopsOfKind(nodes, kind) {
   return out;
 }
 
-/** The newest ok reading's fullest scoped window of one kind (null if none, or any is unreadable). */
-function counterWindow(plans, nodes, provider, kind, nowMs) {
+/** The newest ok reading's fullest scoped window of one kind (null if none, or any is unreadable).
+ * A counter with no limitIds (Q17: muse, cline, unmeasured) scopes nothing: unknown, never room.
+ * Q19: scoped to the buckets the route on `model` draws on (plans limitScopes); no model = whole pool. */
+function counterWindow(plans, nodes, provider, kind, nowMs, model) {
   const p = providerOf(plans, provider);
-  const reading = latestReading(nodes ?? [], provider, nowMs, p.limitIds);
+  const limitIds = scopedLimitIds(p, model) ?? [];
+  const reading = latestReading(nodes ?? [], provider, nowMs, limitIds);
   const ofKind = (reading?.report.windows ?? []).filter(w => w?.windowDurationMins === KIND_MINS[kind]);
-  return { window: headroomOf(ofKind, p.limitIds, 0).window, readAt: reading?.recordedAt ?? null };
+  return { window: headroomOf(ofKind, limitIds, 0).window, readAt: reading?.recordedAt ?? null };
 }
 
 /** Q12f: whether a counter reading recorded at `readAt` is still young enough to decide on —
@@ -88,12 +94,12 @@ export function readingFresh(plans, readAt, nowMs) {
  * usedPercent null. Token (and ms) providers: Σ metered tokens of the pool since the window start,
  * the later of the latest known reset of that kind (provider stops, ≤ nowMs) and nowMs − duration.
  */
-export function windowUsage(plans, nodes, provider, kind, nowMs) {
+export function windowUsage(plans, nodes, provider, kind, nowMs, model) {
   clockOf(nowMs);
   const p = providerOf(plans, provider);
   const mins = KIND_MINS[kind];
   if (p.meteredBy === 'counter') {
-    const { window, readAt } = counterWindow(plans, nodes, provider, kind, nowMs);
+    const { window, readAt } = counterWindow(plans, nodes, provider, kind, nowMs, model);
     const fresh = window != null && readingFresh(plans, readAt, nowMs) && msOf(window.resetsAt) > nowMs;
     return { usedPercent: fresh ? window.usedPercent : null, source: 'counter', readAt, fresh };
   }
@@ -131,13 +137,13 @@ export function capacityFor(plans, nodes, provider, kind) {
  * or tokens; `unknown` (headroom null) when any input is — an unmeasured run in a token window included. `min` is the route's headroom — the smallest
  * window — and is unknown when any window is.
  */
-export function headroomFor(plans, nodes, provider, nowMs) {
+export function headroomFor(plans, nodes, provider, nowMs, model) {
   clockOf(nowMs);
   const p = providerOf(plans, provider);
   const unit = p.meteredBy === 'counter' ? 'percent' : 'tokens';
   const windows = p.windows.map(({ kind }) => {
     const cap = capacityFor(plans, nodes, provider, kind);
-    const u = windowUsage(plans, nodes, provider, kind, nowMs);
+    const u = windowUsage(plans, nodes, provider, kind, nowMs, model);
     // An unmeasured run is unknown use, not zero: leaving it out would print room we cannot back.
     const used = unit === 'percent' ? u.usedPercent : u.unmeasured > 0 ? null : u.usedTokens;
     const headroom = cap != null && used != null ? (cap * (100 - p.reservePercent)) / 100 - used : null;
@@ -172,17 +178,19 @@ const median = xs => {
 
 /** %-per-token of one counter window kind, pooled over the pool's runs carrying both a Q6 delta of
  * that kind (scoped to the plan limitIds; the largest if several) and metered tokens. */
-function percentPerToken(plans, nodes, provider, kind) {
+function percentPerToken(plans, nodes, provider, kind, model) {
   const p = providerOf(plans, provider);
+  const limitIds = scopedLimitIds(p, model);
   let percent = 0;
   let tokens = 0;
   for (const n of poolNodes(plans, nodes, provider)) {
-    if (!Number.isFinite(n.tokens?.metered) || !Array.isArray(n.usageDeltas)) continue;
+    const m = nodeMetered(n);
+    if (m === null || !Array.isArray(n.usageDeltas)) continue;
     const ds = n.usageDeltas.filter(d => d?.windowDurationMins === KIND_MINS[kind]
-      && (p.limitIds == null || p.limitIds.includes(d.limitId)) && Number.isFinite(d.percentDelta));
+      && (limitIds == null || limitIds.includes(d.limitId)) && Number.isFinite(d.percentDelta));
     if (!ds.length) continue;
     percent += Math.max(...ds.map(d => d.percentDelta));
-    tokens += n.tokens.metered;
+    tokens += m;
   }
   return tokens > 0 ? percent / tokens : null;
 }
@@ -193,13 +201,13 @@ function percentPerToken(plans, nodes, provider, kind) {
  * max(prior, worst seen). A prior is no sample (an unmeasured run teaches nothing). Counter providers
  * also get `percent` per window kind: tokens × the pooled %-per-token ratio (null when none is learned).
  */
-export function estimateFor(plans, nodes, provider, size) {
+export function estimateFor(plans, nodes, provider, size, model) {
   sizeOf(size);
   const p = providerOf(plans, provider);
   const seen = newestFirst(poolNodes(plans, nodes, provider)
-    .filter(n => n.size === size && endedOk(n) && Number.isFinite(n.tokens?.metered)))
+    .filter(n => n.size === size && endedOk(n) && nodeMetered(n) !== null))
     .slice(0, plans.decision.costHistory)
-    .map(n => n.tokens.metered);
+    .map(nodeMetered);
   const prior = p.priorTokens?.[size] ?? null;
   let est;
   if (seen.length >= plans.decision.minLearnedSamples) est = { tokens: median(seen), source: 'learned' };
@@ -211,7 +219,7 @@ export function estimateFor(plans, nodes, provider, size) {
   if (p.meteredBy !== 'counter') return est;
   const percent = {};
   for (const { kind } of p.windows) {
-    const ratio = percentPerToken(plans, nodes, provider, kind);
+    const ratio = percentPerToken(plans, nodes, provider, kind, model);
     percent[kind] = est.tokens != null && ratio != null ? est.tokens * ratio : null;
   }
   return { ...est, percent };
@@ -220,13 +228,13 @@ export function estimateFor(plans, nodes, provider, size) {
 /** Per declared window at `atMs` ≥ nowMs: headroom (null = unknown) and its cap. Counter windows are
  * read as of nowMs (a reading does not age into room) except that a window whose known reset falls in
  * (nowMs, atMs] is taken as empty; token windows are recomputed at atMs (stops reset, runs roll off). */
-function windowsAt(plans, nodes, provider, nowMs, atMs) {
+function windowsAt(plans, nodes, provider, nowMs, atMs, model) {
   const p = providerOf(plans, provider);
   const counter = p.meteredBy === 'counter';
-  return headroomFor(plans, nodes, provider, counter ? nowMs : atMs).windows.map(w => {
+  return headroomFor(plans, nodes, provider, counter ? nowMs : atMs, model).windows.map(w => {
     const cap = capacityFor(plans, nodes, provider, w.kind);
     if (counter && atMs > nowMs) {
-      const resetMs = msOf(counterWindow(plans, nodes, provider, w.kind, nowMs).window?.resetsAt);
+      const resetMs = msOf(counterWindow(plans, nodes, provider, w.kind, nowMs, model).window?.resetsAt);
       if (resetMs > nowMs && resetMs <= atMs) return { ...w, cap, headroom: (cap * (100 - p.reservePercent)) / 100 };
     }
     return { ...w, cap };
@@ -252,10 +260,10 @@ function check(plans, nodes, route, size, nowMs, atMs) {
     }
   }
   const factor = plans.decision.headroomFactor;
-  const est = estimateFor(plans, nodes, route.provider, size);
+  const est = estimateFor(plans, nodes, route.provider, size, route.model);
   let slack = Infinity;
   let unknown = false;
-  for (const w of windowsAt(plans, nodes, route.provider, nowMs, atMs)) {
+  for (const w of windowsAt(plans, nodes, route.provider, nowMs, atMs, route.model)) {
     const e = w.unit === 'percent' ? est.percent?.[w.kind] ?? null : est.tokens;
     if (w.headroom == null || e == null) { unknown = true; continue; }
     if (w.headroom < factor * e) return { why: 'headroom' };
@@ -300,7 +308,7 @@ function resetTimes(plans, nodes, routes, nowMs) {
     const stop = latestProviderStop(pool, pool.map(stopProviderForNode).find(Boolean) ?? null)?.providerStop;
     times.add(msOf(stop?.resetsAt));
     if (p.meteredBy === 'counter') {
-      for (const { kind } of p.windows) times.add(msOf(counterWindow(plans, nodes, r.provider, kind, nowMs).window?.resetsAt));
+      for (const { kind } of p.windows) times.add(msOf(counterWindow(plans, nodes, r.provider, kind, nowMs, r.model).window?.resetsAt));
     }
   }
   // ponytail: a rolling token window frees as runs age out, not at a reset — not a candidate time;
@@ -310,7 +318,8 @@ function resetTimes(plans, nodes, routes, nowMs) {
 
 /**
  * The routing verdict for one task of `size`. `routes`: the dispatcher's ranked candidates, each
- * `{ role, provider, aa, rotationIndex, status }` (rotationIndex null = not in the rotation).
+ * `{ role, provider, model, aa, rotationIndex, status }` (rotationIndex null = not in the rotation; model
+ * scopes the plans limitScopes buckets, Q19 — absent = the whole pool).
  * run (best eligible main route, else overflow for S) ⇒ split (a smaller size would run) ⇒ wait
  * until the earliest reset that makes some route eligible ⇒ wait with no time (unknown). `reasons`
  * holds one `{ role, why }` per route not chosen, in input order.

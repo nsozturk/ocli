@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
@@ -8,13 +9,20 @@ import * as path from 'node:path';
 // Q12: --role auto --size S|M|L routes through quota.decide. main() runs in-process with the provider
 // readers, the CLI spawn and the node append mocked (the orchestra-dispatch-candidates pattern); tree,
 // live dir, policy, plans and ranking are TEMP files, so no real provider, tree or plans file is touched.
-const mocks = vi.hoisted(() => ({ codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), appendFile: vi.fn(), spawn: vi.fn() }));
+const mocks = vi.hoisted(() => ({ codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), counter: vi.fn(), appendFile: vi.fn(), spawn: vi.fn() }));
 vi.mock('../dispatcher/usage.mjs', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
-  readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
-}));
+  }));
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(), spawn: mocks.spawn,
+}));
+// Slice D: dispatch reads every counter through usage-readers/index.mjs; the stub routes by provider.
+vi.mock('../dispatcher/usage-readers/index.mjs', async importOriginal => ({
+  ...await importOriginal<Record<string, unknown>>(),
+  readProviderUsage: (provider: string) => {
+    const reader = ({ codex: mocks.codex, glm: mocks.glm, claude: mocks.claude } as Record<string, (() => unknown) | undefined>)[provider];
+    return reader ? reader() : mocks.counter(provider);
+  },
 }));
 vi.mock('node:fs', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
@@ -31,10 +39,12 @@ import { providerForNode, stopProviderForNode, providerStopActive } from '../dis
 // @ts-expect-error - dispatcher tooling is plain ESM.
 import { windowUsage } from '../dispatcher/quota.mjs';
 // @ts-expect-error - dispatcher tooling is plain ESM.
-import { EXAMPLE_PLANS, parsePlans } from '../dispatcher/plans.mjs';
+import { parsePlans } from '../dispatcher/plans.mjs';
+// The full-roster plans the suites run on (the shipped starter is provider-plans.example.json).
+const EXAMPLE_PLANS: string = fileURLToPath(new URL('../dispatcher/provider-plans.full-roster.json', import.meta.url));
 
 const NOTICE = '--role auto without --size: AA only, no quota decision';
-const shipped = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+const shipped = JSON.parse(readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'));
 // Package-only: the example ships agy (breadth) "unverified" (unsafe by design); senatus's policy has it ok.
 shipped.routes.breadth.status = 'ok';
 const plans = parsePlans(readFileSync(EXAMPLE_PLANS, 'utf8'));
@@ -48,6 +58,31 @@ const roomReading = () => ({ status: 'ok', windows: [
   { limitId: 'codex', usedPercent: 10, windowDurationMins: 300, resetsAt: isoIn(HOUR) },
   { limitId: 'codex', usedPercent: 10, windowDurationMins: 10080, resetsAt: isoIn(48 * HOUR) },
 ] });
+
+// Q15 (user rule 2026-10-17): Astra tokens run out fast, so gpt-6-astra runs at effort max and ONLY
+// for very easy (S) tasks. The shipped data files encode that rule; this pins them so a roster edit
+// that silently re-admits codex to the main rotation (or lifts the S cap) fails here, not in spending.
+describe('shipped roster (user 2026-10-17)', () => {
+  it('codex default is GPT-6.1 Sol xhigh in the rotation; Astra is its own route, never rotated; codex is uncapped by size', () => {
+    expect([shipped.routes.reason.model, shipped.routes.reason.effort]).toEqual(['gpt-6.1-sol', 'xhigh']);
+    expect(shipped.developers.rotation.order).toContain('reason');
+    expect([shipped.routes.astra.model, shipped.routes.astra.effort]).toEqual(['gpt-6-astra', 'max']);
+    expect(shipped.routes.astra._notes.join(' ')).toContain('never in the rotation');
+    expect(shipped.developers.rotation.order).not.toContain('astra');
+    expect(plans.providers.codex.maxSize).toBeNull();
+    expect(plans.providers.codex.plan).toBe('chatgpt-plus');
+  });
+  it('Opus 5.5 medium is the rotated developer; Opus 5.5 high is the explicit seat for decision-focused work', () => {
+    expect([shipped.routes.opus.effort, shipped.developers.rotation.order.includes('opus')]).toEqual(['medium', true]);
+    expect(shipped.routes['opus-high'].effort).toBe('high');
+    expect(shipped.developers.rotation.order).not.toContain('opus-high');
+  });
+  it('Gemini 3.8 Flash is the explicit fallback seat when Argon is out of quota — never rotated', () => {
+    expect([shipped.routes['breadth-flash'].cli, shipped.routes['breadth-flash'].model]).toEqual(['agy', 'gemini-3.8-flash-high']);
+    expect(shipped.routes['breadth-flash']._notes.join(' ')).toContain('ONLY simple');
+    expect(shipped.developers.rotation.order).not.toContain('breadth-flash');
+  });
+});
 
 describe('--role auto --size: quota decision (Q12)', () => {
   let dir: string;
@@ -69,6 +104,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     mocks.codex.mockResolvedValue(roomReading());
     mocks.glm.mockResolvedValue({ status: 'unknown', reason: 'mocked', windows: [] });
+    mocks.counter.mockResolvedValue({ status: 'unavailable', reason: 'reader:unavailable' });
     mocks.spawn.mockImplementation(() => {
       const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
       queueMicrotask(() => child.emit('close', 0, null));
@@ -92,6 +128,15 @@ describe('--role auto --size: quota decision (Q12)', () => {
     const file = path.join(dir, 'policy.json');
     writeFileSync(file, JSON.stringify(policy));
     vi.stubEnv('ORCHESTRA_POLICY', file);
+  };
+  // Q15: the shipped example caps codex at maxSize S (Astra is for very easy tasks only). A test that
+  // prices an M/L codex run says so on its own plans fixture instead of the shipped file.
+  const plansWithCodexUncapped = () => {
+    const doc = JSON.parse(readFileSync(EXAMPLE_PLANS, 'utf8'));
+    doc.providers.codex.maxSize = null;
+    const file = path.join(dir, 'plans.json');
+    writeFileSync(file, JSON.stringify(doc));
+    vi.stubEnv('ORCHESTRA_PLANS', file);
   };
   const seed = (...nodes: Record<string, unknown>[]) => {
     execFileSync('mkdir', ['-p', treeDir]);
@@ -125,6 +170,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
   it('run: dispatches the role decide picked, not the AA top, with rule quota and candidates.quota', async () => {
     // reason (AA 51) is gate-eligible on the live refresh, but codex has no learned %/token ratio, so
     // decide cannot price an M run there (unknown, refuse); muse (48) is in on until-stop.
+    plansWithCodexUncapped();
     await dispatch('--size', 'M');
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
     expect(mocks.spawn.mock.calls[0][0]).toBe('muse');
@@ -149,6 +195,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
 
   it('wait: exit 3, one JSON line naming the reset, no spawn, no node', async () => {
     rotation(['reason']);
+    plansWithCodexUncapped();
     const weekly = isoIn(3 * HOUR);
     seed(codexNearWeeklyCap(weekly));
     await dispatch('--size', 'M');
@@ -163,6 +210,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
     // No codex reading anywhere: without a live read reason gates unknown, so muse is decided.
     await dispatch('--size', 'M', '--dry-run');
     expect(mocks.codex).not.toHaveBeenCalled();
+    expect(mocks.counter).not.toHaveBeenCalled(); // Q17: a dry run spawns no counter reader either
     expect(mocks.spawn).not.toHaveBeenCalled();
     expect(nodeCalls()).toHaveLength(0);
     expect(process.exitCode ?? 0).toBe(0);
@@ -176,6 +224,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
     expect(process.exitCode).toBe(3);
     expect(decisionLine().action).toBe('wait');
     expect(mocks.codex).not.toHaveBeenCalled();
+    expect(mocks.counter).not.toHaveBeenCalled();
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
@@ -210,6 +259,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
     // The tree has the ratio but no readable reading; the refresh's reading is what decide sees.
     const history = codexNearWeeklyCap(isoIn(3 * HOUR));
     seed({ ...history, usageAfter: { status: 'unavailable', reason: 'x' } });
+    plansWithCodexUncapped();
     await dispatch('--size', 'M');
     expect(mocks.codex).toHaveBeenCalled();
     expect(mocks.spawn.mock.calls[0][0]).toBe('codex');
@@ -237,6 +287,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
 
   it('Q12f: sized path refreshes a 31-min-old reading with future resets — one live read, and it decides', async () => {
     rotation(['reason', 'muse']);
+    plansWithCodexUncapped();
     seed(codex31MinOld());
     await dispatch('--size', 'M');
     // Reads before the CLI spawns: the refresh only (its reading is reused as usageBefore); the one
@@ -252,6 +303,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
     const history = codexNearWeeklyCap(isoIn(3 * HOUR));
     const [fiveHour, weekly] = history.usageAfter.windows;
     rotation(['reason', 'muse']);
+    plansWithCodexUncapped();
     seed({ ...history, recordedAt: isoIn(-5 * 60_000),
       usageAfter: { status: 'ok', windows: [{ ...fiveHour, resetsAt: isoIn(-60_000) }, weekly] } });
     await dispatch('--size', 'M');
@@ -274,6 +326,7 @@ describe('--role auto --size: quota decision (Q12)', () => {
   it('Q12f: a gate-eligible route whose provider the plans omit is skipped as no-plan, not a throw', async () => {
     const d = JSON.parse(readFileSync(EXAMPLE_PLANS, 'utf8'));
     delete d.providers.muse;
+    d.providers.codex.maxSize = null; // this test prices an M codex run: its own fixture, not the shipped cap
     const file = path.join(dir, 'plans.json');
     writeFileSync(file, JSON.stringify(d));
     vi.stubEnv('ORCHESTRA_PLANS', file);
@@ -304,7 +357,15 @@ describe('provider mapping (Q12)', () => {
 
   it('a muse node is the muse provider and counts in the meta pool', () => {
     expect(providerForNode(muse)).toBe('muse');
-    expect(windowUsage(plans, [muse], 'muse', '5h', now)).toMatchObject({ usedTokens: 4321, unmeasured: 0 });
+    // Q17: muse is a CodexBar counter pool now, counted by its counter reading, not summed tokens.
+    // Its windows are unmeasured (limitIds null), so even a reading carrying windows counts as
+    // unknown use — never a percentage bound on a guessed id.
+    const counted = { ...muse, usageAfter: { status: 'ok', source: 'reader', windows: [
+      { limitId: 'muse-primary', usedPercent: 25, windowDurationMins: 300, resetsAt: new Date(now + 3_600_000).toISOString() },
+      { limitId: 'muse-secondary', usedPercent: 40, windowDurationMins: 10080, resetsAt: new Date(now + 86_400_000).toISOString() },
+    ] } };
+    expect(windowUsage(plans, [counted], 'muse', '5h', now)).toMatchObject({ usedPercent: null, source: 'counter', fresh: false });
+    expect(windowUsage(plans, [counted], 'muse', 'weekly', now)).toMatchObject({ usedPercent: null, source: 'counter', fresh: false });
   });
 
   it('gemini and muse stops reach their pools; codex and claude stay unmapped', () => {

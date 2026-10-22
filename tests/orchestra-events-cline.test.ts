@@ -89,7 +89,7 @@ describe('cline --json normaliser', () => {
 
 describe('cline routes in the example policy', () => {
   it('cline routes resolve every placeholder; a route without an effort never passes --thinking', () => {
-    const policy = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+    const policy = JSON.parse(readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'));
     const cline = Object.entries(policy.routes).filter(([, r]: any) => r.cli === 'cline');
     expect(cline.map(([role]) => role)).toEqual(['cline-mimo', 'cline-qwen']);
     const filled = new Set(['model', 'effort', 'variant', 'task', 'root', 'prompt']);

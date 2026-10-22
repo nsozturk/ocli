@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
 import { parsePlans, loadPlans, stopAtPercentFor } from '../dispatcher/plans.mjs';
 
-const EXAMPLE = fileURLToPath(new URL('../dispatcher/provider-plans.example.json', import.meta.url));
+const EXAMPLE = fileURLToPath(new URL('../dispatcher/provider-plans.full-roster.json', import.meta.url));
 let exampleText = '';
 const fresh = () => JSON.parse(exampleText);
 const parseObj = (o: unknown) => () => parsePlans(JSON.stringify(o));
@@ -19,6 +19,11 @@ describe('parsePlans', () => {
     expect(Object.keys(plans.providers).sort()).toEqual(['claude', 'cline', 'codex', 'gemini', 'glm', 'muse']);
     expect(plans.providers.codex.limitIds).toEqual(['codex']);
     expect(plans.providers.claude.limitIds).toEqual(['5-hour limit', 'Weekly · all models']);
+    expect(plans.providers.gemini.limitIds).toEqual([
+      'antigravity-quota-summary-gemini-5h',
+      'antigravity-quota-summary-gemini-weekly',
+      'antigravity-quota-summary-gemini-argon-wtu-weekly',
+    ]);
     expect(plans.providers.cline).toMatchObject({ overflow: true, maxSize: 'S', reservePercent: 10 });
     expect(plans.providers.glm.priorTokens).toEqual({ S: 300000, M: 1200000, L: 4000000 });
     expect(plans.decision).toEqual({ headroomFactor: 1.5, minLearnedSamples: 3, costHistory: 10, readingMaxAgeMins: 30 });
@@ -27,10 +32,10 @@ describe('parsePlans', () => {
     expect(plans.providers).toMatchObject({
       codex: { meteredBy: 'counter', reservePercent: 5, onUnknown: 'refuse' },
       claude: { meteredBy: 'counter', reservePercent: 20, onUnknown: 'until-stop' }, // lead decision: uncapped until Q13
-      glm: { meteredBy: 'tokens', reservePercent: 15, uncalibratedMaxSize: 'M', ...until },
-      gemini: { meteredBy: 'tokens', reservePercent: 15, uncalibratedMaxSize: 'M', ...until },
-      muse: { meteredBy: 'ms', reservePercent: 0, uncalibratedMaxSize: 'M', ...until },
-      cline: { meteredBy: 'tokens', ...until },
+      glm: { meteredBy: 'counter', reservePercent: 15, uncalibratedMaxSize: 'M', ...until },
+      gemini: { meteredBy: 'counter', reservePercent: 15, uncalibratedMaxSize: 'M', ...until },
+      muse: { meteredBy: 'counter', reservePercent: 0, uncalibratedMaxSize: 'M', ...until },
+      cline: { meteredBy: 'counter', ...until },
     });
   });
 
@@ -66,7 +71,7 @@ describe('parsePlans', () => {
   });
 
   it('refuses unit unknown with a value, and a known unit without one', () => {
-    const o = fresh(); o.providers.glm.windows[0].capacity.value = 5;
+    const o = fresh(); o.providers.glm.windows[0].capacity = { unit: 'unknown', value: 5 };
     expect(parseObj(o)).toThrow(/providers\.glm\.windows\[0\]\.capacity\.value/);
     const p = fresh(); p.providers.codex.windows[0].capacity.value = null;
     expect(parseObj(p)).toThrow(/providers\.codex\.windows\[0\]\.capacity\.value/);
@@ -154,15 +159,19 @@ describe('loadPlans', () => {
 });
 
 describe('stopAtPercentFor', () => {
-  it('is 100 - reserve for counter providers and null for until-stop ones', () => {
+  it('is 100 - reserve for counter providers with a reader; claude excluded until Q13 (Q17)', () => {
     const plans = parsePlans(exampleText);
     expect(stopAtPercentFor(plans, 'codex')).toBe(95);
     expect(stopAtPercentFor(plans, 'claude')).toBeNull(); // counter-metered but until-stop: uncapped until Q13
-    // A counter pool that refuses when unread is capped at 100 - reserve; the same pool marked until-stop is not.
+    // A counter pool that refuses when unread is capped at 100 - reserve; claude marked refuse caps too.
     const refusing = parsePlans(exampleText); refusing.providers.claude.onUnknown = 'refuse';
     expect(stopAtPercentFor(refusing, 'claude')).toBe(80);
-    expect(stopAtPercentFor(plans, 'glm')).toBeNull();
-    expect(stopAtPercentFor(plans, 'cline')).toBeNull();
+    // Q17: CodexBar counter pools cap at 100 - reserve even though onUnknown stays until-stop;
+    // the until-stop half (no reading => run) lives in gateFor/quota, not in this number.
+    expect(stopAtPercentFor(plans, 'glm')).toBe(85);
+    expect(stopAtPercentFor(plans, 'gemini')).toBe(85);
+    expect(stopAtPercentFor(plans, 'muse')).toBe(100);
+    expect(stopAtPercentFor(plans, 'cline')).toBe(90);
   });
 
   it('throws on an unknown provider rather than reading it as uncapped', () => {

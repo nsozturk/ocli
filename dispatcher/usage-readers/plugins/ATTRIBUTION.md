@@ -1,0 +1,80 @@
+# Vendored from CodexBar
+
+Source: CodexBar by Peter Steinberger, MIT License (see `LICENSE-CodexBar`), commit `6480977`.
+These files are vendored unchanged and must stay byte-identical to the source; `dispatcher/usage-readers/plugin-host.mjs`
+runs them. `tests/usage-readers-plugin-host.test.ts` pins the hashes below.
+
+| File | Source path @ 6480977 | sha256 |
+|---|---|---|
+| abacus.js | Sources/CodexBarCore/Resources/Plugins/abacus.js | 9e9aff4710c0c47050f6560e4bd411f3deede4e5b881d01fd9634adfdb71ceab |
+| aerostack.js | Sources/CodexBarCore/Resources/Plugins/aerostack.js | f0ead202fc5ee40481ea22122b7f4d9238013cbc68cb6b218592d6a64439a9f3 |
+| aiand.js | Sources/CodexBarCore/Resources/Plugins/aiand.js | 0d6f147df5e79e1e2f83eb2e7e907c6a2d0fb47f9ea940d452077e2bc27d5797 |
+| aixy.js | Sources/CodexBarCore/Resources/Plugins/aixy.js | 975d98525503e286f9425c2a1d64fe00da8e2fdc0b00890e15c2cbcb9a37c125 |
+| atlascloud.js | Sources/CodexBarCore/Resources/Plugins/atlascloud.js | 852fb78abaf4fcdbbfbfeac0b60d6b82a9ca9b1d1d2f9014f6e5299b41ac47fa |
+| bifrost.js | Sources/CodexBarCore/Resources/Plugins/bifrost.js | b7576d59ccd077c812118cf09d282042589a80df470c621e414583050f03aa07 |
+| chutes.js | Sources/CodexBarCore/Resources/Plugins/chutes.js | 39f4e3d5a2303c1185d662eca0bad5cf9b273268296be52a5cb61f6339ac34d9 |
+| claudeplatform.js | Sources/CodexBarCore/Resources/Plugins/claudeplatform.js | d3c61855621fd4e5b5b753bdd223524e0ee7f4b55cfd63f24f23516ac33027e8 |
+| clawrouter.js | Sources/CodexBarCore/Resources/Plugins/clawrouter.js | a639d0a3744d0517234ad017fcfda5bdd7a632b53e6b9d3a6e84973b94f62315 |
+| clinepass.js | Sources/CodexBarCore/Resources/Plugins/clinepass.js | 099f2af3eb26745f521211a020f0b715b98ba1add3ba327e7c8a56133754edf7 |
+| cosmic.js | Sources/CodexBarCore/Resources/Plugins/cosmic.js | eb869360f719b3b3b96311617c173e624efa05b91c0f7d31ce985f0a3a77d7a6 |
+| deepgram.js | Sources/CodexBarCore/Resources/Plugins/deepgram.js | 4b3e91ca11e000154d97e1f48488f7ac3113405c52974f1aa55c0a194bec8f66 |
+| deepinfra.js | Sources/CodexBarCore/Resources/Plugins/deepinfra.js | 6b279b9cdb9b0b5bc91e6f19b45e7c13721661cffcdfbaf17721af3e05f361cf |
+| devpass.js | Sources/CodexBarCore/Resources/Plugins/devpass.js | 6fdfab17f543fc88f28b90f76fbe6edc6db3f4d3c7fa657a899c573d363a0886 |
+| elevenlabs.js | Sources/CodexBarCore/Resources/Plugins/elevenlabs.js | 43c9767df93281094b9da5588ba34305ae3bde403157c7cd0c055ea5bbd31403 |
+| exa.js | Sources/CodexBarCore/Resources/Plugins/exa.js | 36d2cbf9973e160f2e0d2548ff1f9bbf254f94c9a09710004c0718749e5cdfbd |
+| fal.js | Sources/CodexBarCore/Resources/Plugins/fal.js | 5c3607c74508d8fcabe8fd04fbf6ed5edfec5364c24454a7dc9e8ab0ccedd30c |
+| fireworks.js | Sources/CodexBarCore/Resources/Plugins/fireworks.js | 19ae7109739842fa9a14d721e24bad8df8218023c3e3463f132a946a955da2c6 |
+| flora.js | Sources/CodexBarCore/Resources/Plugins/flora.js | 451732a2e088769dcd023770cfa378c2c386eea8fad137c6db676b6e305e569f |
+| futureagi.js | Sources/CodexBarCore/Resources/Plugins/futureagi.js | 07b35684d9d24f11454e312ed6199edfd0b74b4e250a79684666a4bd5f73e553 |
+| gemini-web.js | Sources/CodexBarCore/Resources/Plugins/gemini-web.js | 7c71195603b2051ad74d85c0acc523546cf5ec62a600ae4900a1d7e54be7b02e |
+| gitkraken.js | Sources/CodexBarCore/Resources/Plugins/gitkraken.js | c583890b74fc4c054cd818e560b30a17dd716c7611b554bd5b559f533a824ca2 |
+| helmcode.js | Sources/CodexBarCore/Resources/Plugins/helmcode.js | 9aa6a515eda5c361f340a6535342ccaba9365a06124eec1501e7744c33765430 |
+| huggingface.js | Sources/CodexBarCore/Resources/Plugins/huggingface.js | 78cb1bb09535c71f7cb9d1a6336efb4ead44b36a1d4716602c1f7a1e35821291 |
+| hyper.js | Sources/CodexBarCore/Resources/Plugins/hyper.js | a8201abe6997057547d6294882b27c4040ac03e151f7ac4678b7c28844170cd5 |
+| langdock.js | Sources/CodexBarCore/Resources/Plugins/langdock.js | c950eb7566aea322bba26fc97735a7ba688b6cfb7fa6a5e06a2e0cb6fff6f831 |
+| linkup.js | Sources/CodexBarCore/Resources/Plugins/linkup.js | 7857c63217818a2a9935397a8fe70621b42ab17115a43da2eab6b4a0ea27b775 |
+| litellm.js | Sources/CodexBarCore/Resources/Plugins/litellm.js | 7f607effff7b7e068bfc418e0035874c3b98c6dd43ea38f8c81f16c84f0f0c78 |
+| lithosai.js | Sources/CodexBarCore/Resources/Plugins/lithosai.js | 11f83683e93728e8d35ae6d9852b854d6f8db9dee2b0b293e5899089216b01ff |
+| llmman.js | Sources/CodexBarCore/Resources/Plugins/llmman.js | eb48d35bb101fda0e3bf122eea358c6e16ea937ac72376e6e4ede52e7828d209 |
+| llmproxy.js | Sources/CodexBarCore/Resources/Plugins/llmproxy.js | 8bc1b02da7afdd7d3a844c5a3b3c200b0ee4aac12ff9c2161e6e75140b8db845 |
+| longcat.js | Sources/CodexBarCore/Resources/Plugins/longcat.js | 406712b0410340c06655f55e6dd6ab8b666bb80999084fb8fece6f16b840bd2d |
+| manus.js | Sources/CodexBarCore/Resources/Plugins/manus.js | bafd4f143d16b815b75c1ea26d1c00f19d6f5e4e99ad617e4979c382a71ec36d |
+| moonshot.js | Sources/CodexBarCore/Resources/Plugins/moonshot.js | 266978cd6315e05a79956e411e35e3064f74bb8c442a1e98174aff32ce72ed75 |
+| munito.js | Sources/CodexBarCore/Resources/Plugins/munito.js | 6feee407bd3765acb723bca995e660ee9dc8d556e51bfdff158686e3ffaf0ffe |
+| muse.js | Sources/CodexBarCore/Resources/Plugins/muse.js | 85b6f9489f4e004d027cca1fe2a0a87884792d0be7aa50ef7b8df3b17902c424 |
+| museai.js | Sources/CodexBarCore/Resources/Plugins/museai.js | ab325a1b6cff46bbe347d98340d9212cab732f6b48c0d2ae5c6d955824ac5019 |
+| neuralwatt.js | Sources/CodexBarCore/Resources/Plugins/neuralwatt.js | ad5fe916ba20a2eb6736c9b69ca8300f97f7945d83ee364a2794f47c08e6da4a |
+| notion.js | Sources/CodexBarCore/Resources/Plugins/notion.js | e0289c1bb870008d628b5bc612bd22452ed54b5e81e80ef521585434d3844a0d |
+| nous.js | Sources/CodexBarCore/Resources/Plugins/nous.js | 160f5329bf4895a061d3bed74d0476283d3abad47e071fb868d667c0c5cb485e |
+| ollama-api.js | Sources/CodexBarCore/Resources/Plugins/ollama-api.js | 6536434cbc72775ea6edf389ebf03720f46aa21331dec121d73a5296489f7a71 |
+| openai.js | Sources/CodexBarCore/Resources/Plugins/openai.js | dae2a51e9016ac13d9a2e406a38ae6bde5e0a72d5223476e596e0c061978d4f5 |
+| openrouter.js | Sources/CodexBarCore/Resources/Plugins/openrouter.js | 03725011f3372b4541e0470295b98e1d679bfb82e1393eb4f39d68db02da4a56 |
+| parallel.js | Sources/CodexBarCore/Resources/Plugins/parallel.js | 854d5faa2b6c01b96cf009295fabe85cbdc28d07911d7c7e1da970c8cc77e5e8 |
+| perplexity.js | Sources/CodexBarCore/Resources/Plugins/perplexity.js | 2724e1c8563bf22aeb66180e6ad32cf6f790897d2ab7df508883e9ec44c74c11 |
+| poe.js | Sources/CodexBarCore/Resources/Plugins/poe.js | a9353343b2cf83e49dcee320987f3707fb331e0485b112d9a613b2f8e42a46a2 |
+| provider-plugin-prelude.js | Sources/CodexBarCore/Resources/Plugins/provider-plugin-prelude.js | d56b2f669e33d800b61f547740da71b6c887967b2a32b47ae0b04635091a6404 |
+| qoder.js | Sources/CodexBarCore/Resources/Plugins/qoder.js | bfbfd518fcc0e1ae4430b1769f135c4679ba9961008e18c4e16f63069c7fdd7e |
+| qwencloud-team.js | Sources/CodexBarCore/Resources/Plugins/qwencloud-team.js | 11a7e231c1705a83f29b4509102abaa656b9888f63cfc132de0a520d94ee9301 |
+| raycast.js | Sources/CodexBarCore/Resources/Plugins/raycast.js | df8f6d185cb67fd9ec9b622d2321a6d4e5395576b9ab54b1725aac272c95ecb7 |
+| replicate.js | Sources/CodexBarCore/Resources/Plugins/replicate.js | d240c36fa142ee91ce90ae52a2c6814613d2d5533a00c8a4c7ecec2f9386006c |
+| sailresearch.js | Sources/CodexBarCore/Resources/Plugins/sailresearch.js | 3823be0a067659d6ae8dc4691e1b346cc7c7656e7f57134c12d898babcebb809 |
+| sakana.js | Sources/CodexBarCore/Resources/Plugins/sakana.js | a4aca33cce33567c73a11c9d493d9adf0d30e96aeb4cda233a38ecab059b9cb5 |
+| sofya.js | Sources/CodexBarCore/Resources/Plugins/sofya.js | 4190c42d42a1b70b6ed284821ef7803420564b4b020e939e60d79e4b0991c281 |
+| sub2api.js | Sources/CodexBarCore/Resources/Plugins/sub2api.js | 5b1cf8a5d868698cfc248e2f2812d1ef3bf88982db902fb90daa79286a27b333 |
+| synthetic.js | Sources/CodexBarCore/Resources/Plugins/synthetic.js | 89715f5d075f086dc35a87f11d50f9bc618339f4eca48939a25f7643a4be2021 |
+| t3chat.js | Sources/CodexBarCore/Resources/Plugins/t3chat.js | fc93dcf5a66bd6e3955cf2d9d91e90154b55a79e83a01d6447c6c5cb3170495c |
+| tavily.js | Sources/CodexBarCore/Resources/Plugins/tavily.js | 584b6b99f17c86942163f7d887f2a24351225f75d4be12f5851ce695577975d9 |
+| tinyapi.js | Sources/CodexBarCore/Resources/Plugins/tinyapi.js | 14f874b433198e9bfb9f1d689a0822f35ac8d97945cab015c039f836eed4ef17 |
+| typesafe.js | Sources/CodexBarCore/Resources/Plugins/typesafe.js | eb3941346a966b3f5f9e0010f17edaeed7dfb6c8b0331319a86f26da10d51980 |
+| v0.js | Sources/CodexBarCore/Resources/Plugins/v0.js | 5f54a9329dca35d59d76e427c34d4d9db8d3400d0b38c5fcee8899928a900019 |
+| venice.js | Sources/CodexBarCore/Resources/Plugins/venice.js | 3b1550023cc5785a8056c0cc142540b0e66d0e619c24b2d88228fb3b2dd05a54 |
+| vercel.js | Sources/CodexBarCore/Resources/Plugins/vercel.js | 27b39f42709e93a2cfbf850171f198069553c99967f9b7ba6d16614862cb084a |
+| workbuddy.js | Sources/CodexBarCore/Resources/Plugins/workbuddy.js | d5dbd97ac32a7ceee75f0969415c7601e17402a6cad19a163735b4747e4d2e89 |
+| xai.js | Sources/CodexBarCore/Resources/Plugins/xai.js | 8baa525c54013be4a804f99eb4455d4d93a197774fc89f4d29db85b50a3e6013 |
+| xapi.js | Sources/CodexBarCore/Resources/Plugins/xapi.js | c8aff7628f2a67a8726486d847747dd8121123da6526b2793b4b7b36ec37930f |
+| xkiro.js | Sources/CodexBarCore/Resources/Plugins/xkiro.js | 03bfcb8e518577ee18dd335e4e1e1f7d629d3e5abdf2216b187b1cba8b683853 |
+| zai.js | Sources/CodexBarCore/Resources/Plugins/zai.js | fc458029151e5b992e95a9ed0baa62db87df5b7345a76e26e557365f7f86cee4 |
+| zed.js | Sources/CodexBarCore/Resources/Plugins/zed.js | 5e1c274a1320974b2c77f0ba2e16f02ab836beb5d6cf47f2c30d31ce8ba66a33 |
+| zenmux.js | Sources/CodexBarCore/Resources/Plugins/zenmux.js | d7e00bc38c262f94a20ac619fb4c1df5546c7f6532ee5aae83edf67791f17f28 |
+| zoommate.js | Sources/CodexBarCore/Resources/Plugins/zoommate.js | 15faf40f473a1ecd5a0f7cd1479da2146119d8af84179a40dae1e82e6c4395b9 |
+| LICENSE-CodexBar | LICENSE | 14293556b79940745123d0160c71d27ed0e9fe9b8a848093f3ed78f4853caafe |

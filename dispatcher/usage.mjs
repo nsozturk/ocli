@@ -6,7 +6,11 @@
 // source, it says `unknown` and why — it never estimates a percentage and presents it as read.
 
 import { spawn } from 'node:child_process';
-import { loadPlans, stopAtPercentFor } from './plans.mjs';
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { loadPlans, stopAtPercentFor, scopedLimitIds, modelMatches } from './plans.mjs';
+import { readProviderUsage } from './usage-readers/index.mjs';
+import { setupHint, claudeConsentGiven } from './usage-readers/doctor.mjs';
 
 const WEEK_MINS = 10080;
 const FIVE_HOUR_MINS = 300;
@@ -118,16 +122,11 @@ export function claudeUsageFromLead(snapshot) {
 }
 
 /**
- * GLM-5.3 runs on a zai-coding-plan subscription. `opencode stats` reports LOCAL token and cost
- * accounting, which is a different quantity from the plan's remaining allowance — reporting it as a
- * percentage would be inventing a number. Until a real source is found this stays `unknown`.
+ * GLM-5.3's plan counter: the vendored `zai` plugin through usage-readers/index.mjs. `opencode stats` is local
+ * token accounting, not plan allowance, and is never presented as a percentage.
  */
-export async function readGlmUsage() {
-  return {
-    status: 'unknown',
-    reason: 'zai-coding-plan exposes no verified local quota source; `opencode stats` is local token/cost accounting, not plan allowance',
-    windows: [],
-  };
+export async function readGlmUsage(opts) {
+  return readProviderUsage('glm', opts);
 }
 
 /**
@@ -150,13 +149,23 @@ export function bindingWindow(windows, limitIds = null) {
 export const ROUTE_LIMIT_IDS = {
   codex: ['codex'],
   claude: ['5-hour limit', 'Weekly · all models'],
+  glm: ['zai-primary'],
+  gemini: [
+    'antigravity-quota-summary-gemini-5h',
+    'antigravity-quota-summary-gemini-weekly',
+    'antigravity-quota-summary-gemini-argon-wtu-weekly',
+  ],
+  // Unmeasured: CodexBar has never returned a muse/clinepass reading here, so no id is guessed and
+  // nothing binds (an empty list, never null, which would bind on every window).
+  muse: [],
+  cline: [],
 };
 
 /**
  * Spending caps, derived from the provider plans (plans.mjs: ORCHESTRA_PLANS, else
  * ~/.config/agent-rules/provider-plans.json, else the shipped provider-plans.example.json): a counter
- * pool that refuses when unread stops at 100 − reservePercent on its limitIds; every other pool runs
- * until the provider itself stops it. A cap is a decision, not a measurement: `stopAtPercent` says
+ * pool stops at 100 − reservePercent on its limitIds (claude only when it refuses unread); every
+ * other pool runs until the provider itself stops it. A cap is a decision, not a measurement: `stopAtPercent` says
  * when to stop using a developer, independent of how fast it is burning.
  *
  * `null` means deliberately uncapped. Uncapped is not "unknown": `gateFor` returns `ok` for it without
@@ -166,9 +175,11 @@ export const ROUTE_LIMIT_IDS = {
  * parsed, or omits one of them, leaves NO row and sets plansError(): every budgeted developer then
  * gates `unknown` — no cap can be honoured, so none is room.
  */
-// ponytail: gemini/cline/muse stay unmanaged here (no row, `no-budget`) until token pools are ranked;
-// widening this list changes the gateSource recorded for them.
-export const BUDGETED = ['codex', 'glm', 'claude'];
+// Q17: gemini/muse/cline gain CodexBar counter rows beside codex/glm/claude. A plans file that
+// omits a core developer (codex/glm/claude) is a plans error for every budgeted gate; omitting a
+// Q17 pool leaves that pool row-less (`no-budget`) so decide() can still skip it as `no-plan`.
+const CORE_BUDGETED = ['codex', 'glm', 'claude'];
+export const BUDGETED = ['codex', 'glm', 'gemini', 'muse', 'cline', 'claude'];
 let loaded = null;
 function load() {
   if (loaded) return loaded;
@@ -179,11 +190,15 @@ function load() {
     }
     const rows = {};
     for (const provider of BUDGETED) {
-      const stopAtPercent = stopAtPercentFor(plans, provider); // throws on a plans file without it
+      if (!Object.hasOwn(plans.providers, provider)) {
+        if (CORE_BUDGETED.includes(provider)) throw new Error(`plans: providers.${provider}: unknown provider`);
+        continue;
+      }
+      const stopAtPercent = stopAtPercentFor(plans, provider);
       const p = plans.providers[provider];
       rows[provider] = stopAtPercent === null
-        ? { stopAtPercent: null, note: `${p.plan}: runs until the provider stops it (metered by ${p.meteredBy}; no percent cap)` }
-        : { stopAtPercent, limitIds: p.limitIds };
+        ? { stopAtPercent: null, note: `${p.plan}: runs until the provider stops it (metered by ${p.meteredBy}; no percent cap)`, onUnknown: p.onUnknown }
+        : { stopAtPercent, limitIds: p.limitIds, ...(p.limitScopes ? { limitScopes: p.limitScopes } : {}), onUnknown: p.onUnknown };
     }
     loaded = { rows, error: null };
   } catch (error) {
@@ -205,18 +220,31 @@ export const plansError = () => load().error;
  *   {state:'unknown'}   — capped but unreadable, so the cap cannot be honoured; escalate, never assume
  * A cap that cannot be read is NOT treated as room: a quota claim has to be checkable before it
  * changes what we do.
+ * `model` (Q19) is the route's model: a plans `limitScopes` bucket binds only routes it names.
  */
-export function gateFor(provider, report) {
+export function gateFor(provider, report, model) {
   if (!BUDGETED.includes(provider)) return { state: 'ok', reason: 'no budget configured' };
   const error = plansError();
   if (error) return { state: 'unknown', reason: `no cap can be honoured: ${error}` };
   const budget = load().rows[provider];
+  if (!budget) return { state: 'ok', reason: 'no budget configured' };
   if (budget.stopAtPercent === null) return { state: 'ok', reason: budget.note ?? 'uncapped' };
+  // Q17: a counter pool with a CodexBar reader caps when the reader shows the cap, but its
+  // `until-stop` unknown stays until-stop: no reading (or no scoped window) is room to run
+  // until the provider itself stops, never a `stop`. Refuse pools keep failing closed.
+  const untilStop = budget.onUnknown === 'until-stop';
   if (report?.status !== 'ok') {
+    if (untilStop) return { state: 'ok', reason: `${provider}: no readable counter; runs until the provider stops it (cap ${budget.stopAtPercent}%)` };
     return { state: 'unknown', reason: `capped at ${budget.stopAtPercent}% but usage is ${report?.status ?? 'missing'}` };
   }
-  const { window, headroomPercent } = headroomOf(report.windows ?? [], budget.limitIds ?? null, budget.stopAtPercent);
-  if (!window) return { state: 'unknown', reason: 'no readable window (a number for every scoped window) in the pools this route consumes' };
+  // A capped pool with no limitIds (muse, cline: unmeasured) scopes no window — unknown headroom,
+  // never room and never a cap. Null here would scope EVERY window the reader returned.
+  // Q19: only the buckets the route on `model` draws on (scopedLimitIds); no model = the whole pool.
+  const { window, headroomPercent } = headroomOf(report.windows ?? [], scopedLimitIds(budget, model) ?? [], budget.stopAtPercent);
+  if (!window) {
+    if (untilStop) return { state: 'ok', reason: `${provider}: no readable window in the pools this route consumes; runs until the provider stops it (cap ${budget.stopAtPercent}%)` };
+    return { state: 'unknown', reason: 'no readable window (a number for every scoped window) in the pools this route consumes' };
+  }
   if (window.usedPercent >= budget.stopAtPercent) {
     return { state: 'stop', reason: `${window.limitId} at ${window.usedPercent}% has reached the ${budget.stopAtPercent}% cap`, window };
   }
@@ -293,35 +321,69 @@ function formatWindow(w) {
   return `${String(w.limitId).padEnd(24)} ${label.padEnd(8)} ${String(w.usedPercent).padStart(3)}% used   resets ${resets}${w.model ? `   (${w.model})` : ''}`;
 }
 
-export async function readAll({ claudeSnapshot } = {}) {
-  const [codex, glm] = await Promise.all([
-    readCodexUsage().catch(error => ({ status: 'unavailable', reason: String(error), windows: [] })),
-    readGlmUsage(),
-  ]);
-  return { codex, claude: claudeUsageFromLead(claudeSnapshot), glm, readAt: new Date().toISOString() };
+/** Every provider through usage-readers/index.mjs, in parallel. `opts` reach every reader (tests inject them). */
+export async function readAll({ claudeSnapshot, ...opts } = {}) {
+  const [codex, claude, glm, gemini, muse, cline] = await Promise.all(
+    ['codex', 'claude', 'glm', 'gemini', 'muse', 'cline'].map(p => readProviderUsage(p, { ...opts, claudeSnapshot })));
+  return { codex, claude, glm, gemini, muse, cline, readAt: new Date().toISOString() };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const all = await readAll();
-  if (process.argv.includes('--json')) {
-    process.stdout.write(`${JSON.stringify(all, null, 2)}\n`);
+const gateLine = gate => `${gate.state === 'ok' ? 'DISPATCH OK' : gate.state === 'stop' ? 'STOP — CAP REACHED' : 'UNKNOWN — DO NOT ASSUME ROOM'}: ${gate.reason}${gate.headroomPercent !== undefined ? ` (${gate.headroomPercent}% headroom)` : ''}`;
+
+/** Q19, for `node dispatcher/usage.mjs`: per plans-scoped bucket of `provider`, which of `routes`
+ * ({ role, model, provider }) it binds, then each route's own gate. [] for an unscoped provider. */
+export function scopedBucketLines(provider, report, routes) {
+  const scopes = budget()[provider]?.limitScopes;
+  if (!scopes) return [];
+  const mine = routes.filter(r => r.provider === provider);
+  const lines = Object.entries(scopes).map(([id, { models }]) => {
+    const binds = mine.filter(r => modelMatches(r.model, models)).map(r => r.role);
+    const free = mine.filter(r => !modelMatches(r.model, models)).map(r => r.role);
+    return `  -> scoped ${id}: binds ${binds.join(', ') || 'no route'}; not ${free.join(', ') || 'any other route'}`;
+  });
+  for (const r of mine) lines.push(`     ${r.role} (${r.model}): ${gateLine(gateFor(provider, report, r.model))}`);
+  return lines;
+}
+
+/** The CLI body, injectable so tests never touch real readers, config or stdout. `policyFile` overrides
+ * the policy (else dispatch.mjs's own resolution: ORCHESTRA_POLICY, policy.json, policy.example.json). */
+export async function runUsageCli({ argv = process.argv, readAllImpl = readAll, policyFile,
+  claudeConsent = claudeConsentGiven(), write = s => process.stdout.write(s) } = {}) {
+  const all = await readAllImpl();
+  // Dynamic: tree-read.mjs statically imports this module, so a static/top-level import deadlocks when this is main.
+  const { providerForNode } = await import('./tree-read.mjs');
+  // Q19: the policy routes per provider, for the scoped-bucket lines.
+  const policy = policyFile
+    ? JSON.parse(readFileSync(policyFile, 'utf8'))
+    : await (await import('./dispatch.mjs')).readPolicy();
+  const providerRoutes = Object.entries(policy.routes ?? {})
+    .filter(([, r]) => r?.argv)
+    .map(([role, r]) => ({ role, model: r.model, provider: providerForNode({ cli: r.cli, model: r.model }) }));
+  const setup = Object.fromEntries(Object.entries(all).map(([n, r]) => [n, n === 'readAt' ? null : setupHint(n, r, { claudeConsent })]).filter(([, h]) => h));
+  if (argv.includes('--json')) {
+    write(`${JSON.stringify(Object.keys(setup).length ? { ...all, setup } : all, null, 2)}\n`);
   } else {
     for (const [name, report] of Object.entries(all)) {
       if (name === 'readAt') continue;
-      process.stdout.write(`\n${name.toUpperCase()}  [${report.status}]\n`);
-      if (report.reason) process.stdout.write(`  ${report.reason}\n`);
-      for (const w of report.windows) process.stdout.write(`  ${formatWindow(w)}\n`);
+      write(`\n${name.toUpperCase()}  [${report.status}]\n`);
+      if (report.reason) write(`  ${report.reason}\n`);
+      for (const line of setup[name]?.needs ?? []) write(`  setup: ${line}\n`);
+      for (const line of setup[name]?.command ?? []) write(`  setup: ${line}\n`);
+      for (const w of report.windows) write(`  ${formatWindow(w)}\n`);
       const binding = bindingWindow(report.windows, ROUTE_LIMIT_IDS[name] ?? null);
-      if (binding) process.stdout.write(`  -> binds on: ${binding.limitId} at ${binding.usedPercent}% (${100 - binding.usedPercent}% left)\n`);
+      if (binding) write(`  -> binds on: ${binding.limitId} at ${binding.usedPercent}% (${100 - binding.usedPercent}% left)\n`);
       const ignored = report.windows.filter(w => ROUTE_LIMIT_IDS[name] && !ROUTE_LIMIT_IDS[name].includes(w.limitId));
       for (const w of ignored) {
-        process.stdout.write(`  -> NOT bound on ${w.limitId} (${w.usedPercent}%) — no configured route draws on it${w.model ? `; that pool is ${w.model}` : ''}\n`);
+        write(`  -> NOT bound on ${w.limitId} (${w.usedPercent}%) — no configured route draws on it${w.model ? `; that pool is ${w.model}` : ''}\n`);
       }
-      const gate = gateFor(name, report);
-      const mark = gate.state === 'ok' ? 'DISPATCH OK' : gate.state === 'stop' ? 'STOP — CAP REACHED' : 'UNKNOWN — DO NOT ASSUME ROOM';
-      process.stdout.write(`  -> ${mark}: ${gate.reason}${gate.headroomPercent !== undefined ? ` (${gate.headroomPercent}% headroom)` : ''}\n`);
+      write(`  -> ${gateLine(gateFor(name, report))}\n`);
+      for (const l of scopedBucketLines(name, report, providerRoutes)) write(`${l}\n`);
     }
-    process.stdout.write('\n');
+    write('\n');
   }
-  process.exit(0);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // No top-level await: tree-read.mjs imports this module, so awaiting its import here never settles.
+  runUsageCli().then(() => process.exit(0), err => { process.stderr.write(`[usage] ${err?.message ?? err}\n`); process.exitCode = 1; });
 }

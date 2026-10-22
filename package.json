@@ -1,13 +1,13 @@
 {
   "name": "ocli",
-  "version": "0.5.1",
+  "version": "0.6.0-beta.1",
   "private": true,
-  "description": "ocli (Orchestrated CLI): run headless coding CLIs (Codex, opencode, Antigravity agy, Muse) under one lead and watch them live in Claude Code as Workflow-style cards.",
+  "description": "ocli (Orchestrated CLI): run headless coding CLIs (Codex, opencode, Antigravity agy, Muse, Cline, Claude Code) under one lead and watch them live in Claude Code as Workflow-style cards.",
   "type": "module",
   "license": "MIT",
   "author": "Enes Öztürk",
-  "engines": { "node": ">=22" },
-  "keywords": ["claude-code", "claude-code-plugin", "codex", "opencode", "gemini", "antigravity", "muse", "coding-agents", "orchestration", "live-events"],
+  "engines": { "node": ">=22.13" },
+  "keywords": ["claude-code", "claude-code-plugin", "codex", "opencode", "gemini", "antigravity", "muse", "cline", "coding-agents", "orchestration", "quota-routing", "live-events"],
   "scripts": { "test": "vitest run" },
   "devDependencies": { "vitest": "^3.2.7" }
 }

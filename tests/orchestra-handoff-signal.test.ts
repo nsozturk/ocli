@@ -4,8 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-// @ts-expect-error - dispatcher tooling is plain ESM.
-import { EXAMPLE_PLANS } from '../dispatcher/plans.mjs';
+// The full-roster plans the suites run on (the shipped starter is provider-plans.example.json).
+const EXAMPLE_PLANS: string = fileURLToPath(new URL('../dispatcher/provider-plans.full-roster.json', import.meta.url));
 
 // Q8: a signal (Ctrl-C, a kill, a closed terminal) keeps the run's work like a failed exit does:
 // dispatch.mjs runs as a real subprocess with a fake CLI that sleeps, in TEMP dirs and a TEMP repo
@@ -91,7 +91,7 @@ function dispatch(dir: string, env: string, cli: string, { extraEnv = {} as Node
   const liveDir = path.join(env, 'live');
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ORCHESTRA_TREE_DIR: tree, ORCHESTRA_LIVE_DIR: liveDir,
     ORCHESTRA_POLICY: policy, ORCHESTRA_PLANS: EXAMPLE_PLANS, ORCHESTRA_RANKING_FILE: path.join(env, 'absent-ranking.json'),
-    SENATUS_EMBED_URL: 'http://127.0.0.1:1', ...extraEnv };
+    ...extraEnv };
   delete childEnv.OPEN_AGENT_SKILLS_DB;
   delete childEnv.OPEN_AGENT_REGISTRY_DB;
   const child = spawn(process.execPath, [DISPATCH, '--role', 'fake', '--task', 'q8', '--prompt', 'p', '--root', dir, ...extraArgs],
@@ -190,18 +190,22 @@ it('a hanging git hook cannot hold the signal path: the hand-off gives up inside
   const before = sh(dir, 'rev-parse', 'HEAD');
   const env = temp('orchestra-signal-env-');
   sleepingHook(dir, env, 60);
-  const run = dispatch(dir, env, fakeCli(env), { extraEnv: { ORCHESTRA_SIGNAL_HANDOFF_MS: '1500' } });
+  // Load-robust (CI): a 1.5 s budget could expire before git even reached the hook on a busy
+  // runner, failing the "the commit did reach the hook" check. 3 s still proves the point against a
+  // 60 s hook; the wall-clock bounds below scale with it.
+  const run = dispatch(dir, env, fakeCli(env), { extraEnv: { ORCHESTRA_SIGNAL_HANDOFF_MS: '3000' } });
   await waitFor(() => existsSync(path.join(dir, 'work.txt')) && existsSync(path.join(env, 'cli.pid')))
     .catch(() => { throw new Error(`the fake CLI never started: ${run.stderr()}`); });
   pids.push(readPid(path.join(env, 'cli.pid')));
   const signalledAt = Date.now();
   run.child.kill('SIGTERM');
   try {
-    expect(await run.exited(8000), run.stderr()).toEqual({ code: null, signal: 'SIGTERM' });
+    expect(await run.exited(15_000), run.stderr()).toEqual({ code: null, signal: 'SIGTERM' });
   } finally {
     if (existsSync(path.join(env, 'hook.pid'))) pids.push(readPid(path.join(env, 'hook.pid')));
   }
-  expect(Date.now() - signalledAt).toBeLessThan(5000);
+  // Below the 10 s default budget, so an ignored ORCHESTRA_SIGNAL_HANDOFF_MS still fails here.
+  expect(Date.now() - signalledAt).toBeLessThan(9_000);
   expect(existsSync(path.join(env, 'hook.pid'))).toBe(true); // the commit did reach the hook
   const [node] = run.nodes();
   expect(node).toMatchObject({ partial: true, signal: 'SIGTERM' });

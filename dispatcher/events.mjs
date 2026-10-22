@@ -16,7 +16,48 @@ const usage = (input, output, cached, reasoning) => ({
 });
 const codexUsage = u => usage(u?.input_tokens, u?.output_tokens, u?.cached_input_tokens, u?.reasoning_output_tokens);
 const agyUsage = u => usage(u?.input_tokens, u?.output_tokens, u?.cache_read_tokens, u?.thinking_tokens);
+// Q20: what each CLI's usage fields contain, so metered = uncached input + output, reasoning added
+// only when it sits outside output. Measured: codex (OpenAI usage) input_tokens includes
+// cached_input_tokens and output_tokens includes reasoning_output_tokens; agy fixture total_tokens ==
+// input + output on every step while thinking_tokens > 0, so thinking is inside output and input
+// excludes cache_read (2688 < 36754). claude input excludes cache_read_input_tokens; opencode's total
+// == input + output + reasoning + cache.read (all exclusive). cline is provider-dependent and muse
+// emits no usage: unknown keeps the pre-Q20 rule (input + output + reasoning).
+const TOKEN_SEMANTICS = {
+  codex: { inputIncludesCached: true, outputIncludesReasoning: true },
+  agy: { inputIncludesCached: false, outputIncludesReasoning: true },
+};
+/** Metered tokens from raw per-CLI totals {input, output, cached, reasoning}. Shared by dispatch (new
+ * nodes) and quota (read time, so old nodes' stored metered is never trusted). null when input or
+ * output is; cached/reasoning null count as 0. */
+export function meteredTokens(cli, tokens) {
+  const { input = null, output = null, cached = null, reasoning = null } = tokens ?? {};
+  if (number(input) === null || number(output) === null) return null;
+  const s = Object.hasOwn(TOKEN_SEMANTICS, cli) ? TOKEN_SEMANTICS[cli] : {};
+  return input - (s.inputIncludesCached ? (cached ?? 0) : 0) + output + (s.outputIncludesReasoning ? 0 : (reasoning ?? 0));
+}
+/** A tree node's metered tokens at READ time: recomputed from its raw fields + cli when it has
+ * them (append-only nodes keep a pre-Q20 metered that over-counts codex); a node with no raw
+ * input/output falls back to its stored metered; else null. */
+export function nodeMetered(node) {
+  const t = node?.tokens;
+  const m = meteredTokens(node?.cli, t);
+  if (m !== null) return m;
+  return number(t?.input) === null && number(t?.output) === null ? number(t?.metered) : null;
+}
 const CAP = 50; // distinct dropped keys, and collected CLI error texts
+const FINAL_TEXT_BYTES = 65536;
+
+/** The node's final report, independent of the pane projection. Incomplete UTF-8 tails are omitted. */
+export function limitFinalText(value) {
+  const full = text(value);
+  const finalTextTruncated = Buffer.byteLength(full, 'utf8') > FINAL_TEXT_BYTES;
+  const finalText = finalTextTruncated
+    ? new StringDecoder('utf8').write(Buffer.from(full, 'utf8').subarray(0, FINAL_TEXT_BYTES))
+    : full;
+  return { finalText, finalTextTruncated };
+}
+
 const cliError = (state, display, full = display) => {
   state.cliErrors ??= [];
   if (state.cliErrors.length < CAP) state.cliErrors.push(text(full));
@@ -129,6 +170,49 @@ const clineEnd = (raw, state) => {
 const IGNORED = Object.freeze([]);
 const ignore = () => IGNORED;
 
+// Claude Code `--output-format stream-json --verbose` (claude --help, this Mac, 2026-10-17):
+// system/init, assistant content blocks, user tool_result blocks, result. Shapes hand-written
+// from the documented format (tests/orchestra-events-claude.test.ts), never captured live.
+// tool_use/tool_result pair like cline's content_start/content_end: the start remembers name and
+// input by tool_use id (bounded); the end is their verdict, ok = !is_error.
+const claudeSystem = raw => raw?.subtype === 'init' ? [step(`init ${text(raw.model)}`)] : [];
+const claudeAssistant = (raw, state) => {
+  const content = raw?.message?.content;
+  if (!Array.isArray(content)) return [];
+  const events = [];
+  for (const block of content) {
+    if (block?.type === 'text') events.push(message(block.text));
+    else if (block?.type === 'tool_use') {
+      const fields = { tool: text(block.name) || 'unknown', detail: text(block.input) };
+      state.claudeCalls ??= new Map();
+      if (state.claudeCalls.size >= CAP) state.claudeCalls.delete(state.claudeCalls.keys().next().value);
+      state.claudeCalls.set(block.id, fields);
+      events.push({ kind: 'tool.start', ...fields });
+    }
+  }
+  return events;
+};
+const claudeUser = (raw, state) => {
+  const content = raw?.message?.content;
+  if (!Array.isArray(content)) return [];
+  const events = [];
+  for (const block of content) {
+    if (block?.type !== 'tool_result') continue;
+    const remembered = state.claudeCalls?.get(block.tool_use_id);
+    state.claudeCalls?.delete(block.tool_use_id);
+    events.push({ kind: 'tool.end', tool: remembered?.tool ?? 'unknown', detail: remembered?.detail ?? '', ok: block.is_error !== true });
+  }
+  return events;
+};
+const claudeResult = (raw, state) => {
+  const events = [];
+  // An is_error result is the CLI reporting failure: its text is evidence, never the final answer.
+  if (raw?.is_error === true) events.push(...cliError(state, `claude result ${text(raw.subtype)}: ${text(raw.result)}`, raw));
+  else if (typeof raw?.result === 'string') events.push(message(raw.result));
+  if (raw?.usage) events.push(usage(raw.usage.input_tokens, raw.usage.output_tokens, raw.usage.cache_read_input_tokens, null));
+  return events;
+};
+
 // Captured CLI event names are data; unknown types are counted rather than guessed.
 const mappings = {
   codex: {
@@ -206,6 +290,14 @@ const mappings = {
     // survives in it.
     error: (raw, state) => cliError(state, raw.message, raw),
   },
+  // Claude Code stream-json: top-level type. Unknown types (and non-init system subtypes,
+  // assistant/user lines without a content array) fall through and are counted as dropped.
+  claude: {
+    system: claudeSystem,
+    assistant: claudeAssistant,
+    user: claudeUser,
+    result: claudeResult,
+  },
 };
 // unverified: only run.terminal.completed was captured. payload.text is model text, so only the
 // terminal name and reason are taken.
@@ -232,6 +324,7 @@ export function normalize(cli, rawLine, state = {}) {
       Object.defineProperty(state.dropped, key, { value: (Object.hasOwn(state.dropped, key) ? state.dropped[key] : 0) + 1, enumerable: true, configurable: true, writable: true });
     }
     return events.map(event => {
+      if (event.kind === 'message') Object.assign(state, limitFinalText(event.text));
       for (const key of ['detail', 'text', 'line']) if (key in event) event[key] = text(event[key]).slice(0, 500);
       return event;
     });

@@ -62,7 +62,7 @@ describe('--worktree auto (Q10)', () => {
     vi.stubEnv('ORCHESTRA_TREE_DIR', treeDir);
     vi.stubEnv('ORCHESTRA_LIVE_DIR', liveDir);
     // Package-only: the shipped policy and ranking, never a user's gitignored dispatcher/policy.json.
-    vi.stubEnv('ORCHESTRA_POLICY', fileURLToPath(new URL('../dispatcher/policy.example.json', import.meta.url)));
+    vi.stubEnv('ORCHESTRA_POLICY', fileURLToPath(new URL('../dispatcher/policy.full-roster.json', import.meta.url)));
     vi.stubEnv('ORCHESTRA_RANKING_FILE', fileURLToPath(new URL('../dispatcher/model-ranking.example.json', import.meta.url)));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

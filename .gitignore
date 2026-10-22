@@ -1,6 +1,9 @@
 node_modules
 tmp/
 orchestra/
+# The readers' raw store lives in ~/.config/ocli/data/; never commit a local SQLite copy either
+*.sqlite
+*.sqlite-*
 dispatcher/policy.json
 .DS_Store
 

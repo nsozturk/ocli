@@ -669,7 +669,7 @@ test('streak: an identical tool.start counts up, a different one starts over', (
   expect(fold([...EIGHT.slice(0, 3), tend(3, false), ev(4, 'message', { text: 'retrying' }), tstart(5)])[0]!.streak!.n).toBe(3)
   // The whole detail counts, not a prefix: agy's details are JSON under a deep worktree path, so three
   // different commands (a real trace, names scrubbed) share their first 80 code points.
-  const root = '/home/user/Development/Fun/projects/myapp-obstruction-native-opencode'
+  const root = '/home/user/workspaces/code/projects/myapp-obstruction-native-opencode'
   const agy = [`${root}/modules/myapp-obstruction`, `${root}/modules/myapp-obstruction/ios`, `${root}/scripts/models/fetch-face-parsing.sh`]
     .map((path, i) => tstart(i + 1, JSON.stringify({ CommandLine: `ls -la ${path}` }), 'run_command'))
   expect(fold([ev(0, 'run.start'), ...agy])[0]!.streak).toEqual({ sig: `run_command: {"CommandLine":"ls -la ${root}/scripts/models/fetch-face-parsing.sh"}`, n: 1, okSince: false, open: true })

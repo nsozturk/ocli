@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ocli — Orchestrated CLI for headless coding CLIs in Claude Code</title>
-<meta name="description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.">
+<meta name="description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse, Cline, Claude Code — under one lead and watch them live in Claude Code as Workflow-style cards.">
 <link rel="canonical" href="https://nsozturk.github.io/ocli/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="ocli">
 <meta property="og:title" content="ocli — Orchestrated CLI">
-<meta property="og:description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.">
+<meta property="og:description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse, Cline, Claude Code — under one lead and watch them live in Claude Code as Workflow-style cards.">
 <meta property="og:image" content="https://nsozturk.github.io/ocli/assets/banner.png">
 <meta property="og:url" content="https://nsozturk.github.io/ocli/">
 <meta name="twitter:card" content="summary_large_image">
@@ -21,8 +21,8 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "ocli",
-  "softwareVersion": "0.5.1",
-  "description": "ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.",
+  "softwareVersion": "0.6.0-beta.1",
+  "description": "ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse, Cline, Claude Code — under one lead and watch them live in Claude Code as Workflow-style cards.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
   "license": "https://opensource.org/licenses/MIT",
@@ -65,7 +65,7 @@ th{background:var(--card-bg)}
 </head>
 <body>
 <nav class="nav">
-  <span class="brand">ocli</span><span class="tag">v0.5.1</span><span class="tag">MIT</span>
+  <span class="brand">ocli</span><span class="tag">v0.6.0-beta.1</span><span class="tag">MIT</span>
   <a class="gh" href="https://github.com/nsozturk/ocli">GitHub</a>
 </nav>
 <div class="wrap">
@@ -97,7 +97,7 @@ th{background:var(--card-bg)}
 <section id="overview">
 <h1>ocli — Orchestrated CLI</h1>
 <p><strong>ocli (Orchestrated CLI)</strong>: run headless coding CLIs — Codex, opencode, Antigravity
-<code>agy</code>, Muse — under one lead and watch them live in Claude Code as Workflow-style cards.</p>
+<code>agy</code>, Muse, Cline, Claude Code — under one lead and watch them live in Claude Code as Workflow-style cards.</p>
 <p>When Claude Code
 orchestrates Codex, opencode, Antigravity <code>agy</code> or Muse as background developers, each
 one runs out of sight. ocli is a <strong>dispatcher</strong> that runs one CLI per call and turns its
@@ -127,7 +127,7 @@ History card at the bottom, by hand only. Ended runs raise one toast each.</p>
 <h2>Requirements</h2>
 <ul>
 <li>Claude Code ≥ 2.1.292 (mods need ≥ 2.1.287 in the terminal, ≥ 2.1.286 in the Desktop app).</li>
-<li>Node.js ≥ 22, for the dispatcher and <code>/ocli-digest</code>. No runtime dependencies.</li>
+<li>Node.js ≥ 22.13, for the dispatcher and <code>/ocli-digest</code>. No runtime dependencies.</li>
 <li>The developer CLIs you route to, installed and logged in with their own login.</li>
 </ul>
 </section>
@@ -139,9 +139,10 @@ History card at the bottom, by hand only. Ended runs raise one toast each.</p>
 claude plugin marketplace add "$PWD/ocli"
 claude plugin install ocli-monitor@ocli</code></pre>
 <p>Once published: <code>claude plugin install ocli-monitor --marketplace nsozturk/ocli</code>.</p>
-<p>2. Make the dispatcher policy yours (Node.js 22+, no dependencies):</p>
-<pre><code>cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json</code></pre>
-<p>The example routes pin the models they were verified with. Set each route's <code>model</code> to
+<p>2. Make the dispatcher policy yours (Node.js 22.13+, no dependencies):</p>
+<pre><code>cp ocli/dispatcher/policy.example.json ocli/dispatcher/policy.json       # starter: codex + opencode
+cp ocli/dispatcher/policy.full-roster.json ocli/dispatcher/policy.json   # or every route ocli knows</code></pre>
+<p>The routes pin the models they were verified with. Set each route's <code>model</code> to
 one your CLI lists, read <a href="#permissions">Permissions and sandboxing</a>, and dispatch each
 route once by hand before you trust it.</p>
 <p>3. Keep the run files out of git: they hold full prompts and raw transcripts. Add to the
@@ -181,19 +182,26 @@ moves them (then set the plugin's <code>liveDirs</code> to the same absolute dir
 
 <section id="configuration">
 <h2>Configuration</h2>
-<p>ocli reads no credentials, no keychain and no account file. One optional environment variable,
+<p>ocli never asks for a credential; its built-in usage readers read the sessions your own CLIs
+already keep, locally (see SECURITY.md). One optional environment variable,
 also listed in <code>.env.example</code>:</p>
 <pre><code>export ORCHESTRA_LIVE_DIR=/absolute/path/to/orchestra/live   # default: &lt;cwd&gt;/orchestra/live</code></pre>
 <p>The plugin option <code>liveDirs</code> (comma-separated absolute paths) sets which dirs the pane
 watches. Usage counters are optional: codex limits are read by spawning <code>codex app-server</code>
-with codex's own login; Claude's come from a snapshot the lead passes in; GLM has none. Anything
-unreadable is reported as <code>unknown</code>.</p>
+with codex's own login, every other provider through ocli's built-in usage readers (ported from
+CodexBar, cookie readers on macOS only; a pool without a reading runs until its provider stops it); Claude's come from a
+snapshot the lead passes in. A capped codex route with an
+unknown reading is never dispatched on an assumption. Caps come from the provider plans
+(<code>ORCHESTRA_PLANS</code>, else <code>~/.config/agent-rules/provider-plans.json</code>, else
+<code>dispatcher/provider-plans.example.json</code>).</p>
 </section>
 
 <section id="policy">
 <h2>Policy and routes</h2>
-<p><code>dispatcher/policy.json</code> wins when it exists; otherwise
-<code>dispatcher/policy.example.json</code> is used. Each route names a CLI, a model and an argv
+<p><code>ORCHESTRA_POLICY</code> wins, then <code>dispatcher/policy.json</code>; otherwise the starter
+<code>dispatcher/policy.example.json</code> (opencode <code>implement</code>, codex <code>reason</code> on
+GPT-6.1 Sol xhigh) is used. <code>dispatcher/policy.full-roster.json</code> adds agy, Muse, Claude Opus
+medium/high, Astra and Cline Pass. Each route names a CLI, a model and an argv
 template with the placeholders <code>{model} {effort} {variant} {task} {root} {prompt}</code>. A route
 whose <code>status</code> is not <code>ok</code> is refused. The <code>_notes</code> of each route
 record the CLI facts that bite: agy ignores the cwd and stops when the model waits on a long command,
@@ -205,12 +213,13 @@ opencode needs <code>--auto</code> and <code>--dir</code>, a Muse wrapper may tu
 <p>A headless CLI cannot answer a permission prompt, so the example routes pass each CLI's own
 no-prompt flags. <strong>Only the codex routes run inside a sandbox</strong>
 (<code>-s workspace-write</code> confines writes to the worktree). opencode (<code>--auto</code>),
-Muse (<code>--disable-approval</code>) and agy (<code>--dangerously-skip-permissions</code>) run with
-every approval off, and a git worktree is not a security boundary: such an agent can read and write
+Muse (<code>--disable-approval</code>), agy (<code>--dangerously-skip-permissions</code>) and Cline run with
+every approval off, Claude Code applies edits under <code>acceptEdits</code> with one
+<code>--allowedTools</code> list, and a git worktree is not a security boundary: such an agent can read and write
 anything your user can, use the network and push with your git credentials. Run those routes only
 in a disposable VM or container, or under a dedicated user account. The agy <code>breadth</code>
 route ships <code>unverified</code> and is refused until you set it to <code>ok</code> in your own
-policy.</p>
+policy. The full threat model: <a href="https://github.com/nsozturk/ocli/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 </section>
 
 <section id="how">

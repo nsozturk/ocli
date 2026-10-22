@@ -1,11 +1,12 @@
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
 import { bindingWindow, gateFor, budget, headroomOf, usageDeltas } from '../dispatcher/usage.mjs';
-// @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
-import { EXAMPLE_PLANS } from '../dispatcher/plans.mjs';
+// The full-roster plans the suites run on (the shipped starter is provider-plans.example.json).
+const EXAMPLE_PLANS: string = fileURLToPath(new URL('../dispatcher/provider-plans.full-roster.json', import.meta.url));
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
 import { latestReading } from '../dispatcher/tree-read.mjs';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
@@ -20,7 +21,7 @@ const w = (limitId: string, usedPercent: number, windowDurationMins: number | nu
 
 describe('usage.mjs caps come from the plans, not a hardcoded table', () => {
   it('the shipped example stops codex at 95 (100 - reserve 5): the mirror no longer says 45', () => {
-    expect(budget().codex).toEqual({ stopAtPercent: 95, limitIds: ['codex'] });
+    expect(budget().codex).toEqual({ stopAtPercent: 95, limitIds: ['codex'], onUnknown: 'refuse' });
   });
 });
 
@@ -204,7 +205,7 @@ describe('usage.mjs Q5 — caps come from the provider plans', () => {
 
   it('a plans file with codex reserve 10 stops codex at 90, not 95', async () => {
     const u = await freshUsage(withReserve('codex', 10));
-    expect(u.budget().codex).toEqual({ stopAtPercent: 90, limitIds: ['codex'] });
+    expect(u.budget().codex).toEqual({ stopAtPercent: 90, limitIds: ['codex'], onUnknown: 'refuse' });
     expect(u.gateFor('codex', codexAt([90, 10080], [10, 300])).state).toBe('stop');
     expect(u.gateFor('codex', codexAt([89, 10080])).reason).toContain('90% cap');
     expect(u.gateFor('codex', codexAt([89, 10080])).headroomPercent).toBe(1);
@@ -213,10 +214,13 @@ describe('usage.mjs Q5 — caps come from the provider plans', () => {
   it('derives the budgeted rows from the plans: counter pools capped at 100 - reserve, the rest uncapped with a note', async () => {
     const u = await freshUsage(JSON.stringify(example));
     const b = u.budget();
-    expect(Object.keys(b).sort()).toEqual(['claude', 'codex', 'glm']);
+    expect(Object.keys(b).sort()).toEqual(['claude', 'cline', 'codex', 'gemini', 'glm', 'muse']); // Q17: every counter pool
     expect(b.claude.stopAtPercent).toBeNull(); // until-stop until Q13 (lead decision)
-    expect(b.glm.stopAtPercent).toBeNull();
-    expect(b.glm.note).toMatch(/glm-coding-lite/);
+    // Q17: glm/gemini/muse/cline are CodexBar counter pools: capped at 100 - reserve, still until-stop.
+    expect(b.glm).toMatchObject({ stopAtPercent: 85, limitIds: ['zai-primary'], onUnknown: 'until-stop' });
+    expect(b.gemini.stopAtPercent).toBe(85);
+    expect(b.muse.stopAtPercent).toBe(100);
+    expect(b.cline.stopAtPercent).toBe(90);
     expect(u.budget()).toBe(b); // memoized per process
     expect(u.plansError()).toBeNull();
   });
@@ -246,7 +250,7 @@ describe('usage.mjs Q5 — caps come from the provider plans', () => {
     const u = await freshUsage(JSON.stringify(doc));
     expect(u.plansError()).toMatch(/providers\.claude/);
     expect(u.gateFor('codex', codexAt([1, 300])).state).toBe('unknown');
-    expect(u.gateFor('gemini', codexAt([1, 300])).state).toBe('ok'); // unbudgeted: no cap either way
+    expect(u.gateFor('gemini', codexAt([1, 300])).state).toBe('unknown'); // Q17: gemini is budgeted, so a plans error gates it too
   });
 
   it('the shipped example as the source prints exactly ONE stderr warning per process', async () => {

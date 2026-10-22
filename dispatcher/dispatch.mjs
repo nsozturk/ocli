@@ -38,20 +38,21 @@
 import { appendFile, lstat, mkdir, readFile, readlink, rename, writeFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { normalize, createLineSplitter, stderrCliErrors } from './events.mjs';
+import { normalize, createLineSplitter, stderrCliErrors, meteredTokens, nodeMetered } from './events.mjs';
 import { claimsOf, witness } from './witness.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { paneLabel } from './pane-label.mjs';
-import { readCodexUsage, readGlmUsage, claudeUsageFromLead, usageDelta, usageDeltas, gateFor, budget, plansError, BUDGETED } from './usage.mjs';
+import { usageDelta, usageDeltas, gateFor, budget, plansError, BUDGETED } from './usage.mjs';
+import { readProviderUsage as readUsageOf } from './usage-readers/index.mjs';
 import { providerForNode, readNodes, latestReading, stopProviderForNode, latestProviderStop, providerStopActive } from './tree-read.mjs';
 import { aaFor, loadRanking } from './ranking.mjs';
 import { handoff, handoffReason, handoffSync } from './handoff.mjs';
 import { resolveWorktree } from './worktree.mjs';
 import { decide, readingFresh } from './quota.mjs';
-import { loadPlans } from './plans.mjs';
+import { loadPlans, scopedLimitIds } from './plans.mjs';
 
 /**
  * Which provider's usage counter backs each route. A role absent here has no readable counter, so a
@@ -62,7 +63,7 @@ const USAGE_PROVIDER_BY_ROLE = { reason: 'codex', easy: 'codex' };
 async function readProviderUsage(provider) {
   try {
     if (provider === 'codex') {
-      const report = await readCodexUsage();
+      const report = await readUsageOf('codex');
       // The provider's own verdict beats any percentage we might interpret.
       if (report.status === 'ok') report.exhausted = report.ordinaryUsageAllowed === false;
       return report;
@@ -297,7 +298,6 @@ function createLive(args, route, workspace, prefixSha) {
   const state = { dropped: Object.create(null), cliErrors: [] };
   let seq = 0;
   let errors = 0;
-  let finalText = null;
   // Q6: the run's token totals, summed from the normalized usage events. null until one arrives.
   let tokens = null;
   // The tool.end records written, for the witness: the only kind it reads, so streamed message deltas
@@ -321,14 +321,13 @@ function createLive(args, route, workspace, prefixSha) {
   return {
     runId, liveFile, state, emit,
     get errors() { return errors; },
-    get finalText() { return finalText; },
+    get finalText() { return state.finalText ?? null; },
+    get finalTextTruncated() { return state.finalTextTruncated ?? false; },
     get events() { return events; },
-    // metered = what the provider bills against the plan: cached input is NOT in it. A field no event
-    // carried stays null; metered is null when input or output is (reasoning null counts as 0).
+    // metered = what the provider bills against the plan (meteredTokens: per-CLI semantics). A field
+    // no event carried stays null; metered is null when input or output is.
     get tokens() {
-      if (!tokens) return null;
-      const { input, output, reasoning } = tokens;
-      return { ...tokens, metered: input === null || output === null ? null : input + output + (reasoning ?? 0) };
+      return tokens ? { ...tokens, metered: meteredTokens(route.cli, tokens) } : null;
     },
     start(pid) {
       emit({ kind: 'run.start', model: route.model, root: workspace, parentId: args.parent ?? null, pid,
@@ -340,7 +339,6 @@ function createLive(args, route, workspace, prefixSha) {
       attempt(() => appendFileSync(rawFile, `${JSON.stringify({ at, stream, line })}\n`, LIVE_WRITE));
       if (stream === 'stdout') {
         for (const event of normalize(route.cli, line, state)) {
-          if (event.kind === 'message') finalText = event.text;
           if (event.kind === 'usage') {
             tokens ??= { input: null, output: null, cached: null, reasoning: null };
             for (const field of ['input', 'output', 'cached', 'reasoning']) {
@@ -438,7 +436,14 @@ const BLOCKED_LABEL = {
 // events (stdout via normalize, stderr via stderrCliErrors) can carry this verdict. Measured
 // 2026-10-12: cline's ClinePass message matches no USAGE_LIMIT alternative, hence its arm.
 // Window limits only: a transient `rate limit` / 429 stays `blocked`, never a stop.
-const PROVIDER_STOP_LIMIT = /usage limit|clinepass limit|quota exceeded|insufficient (credit|quota)/i;
+const PROVIDER_STOP_LIMIT = /usage limit|clinepass limit|quota exceeded|subscription quota exhausted|insufficient (credit|quota)/i;
+// Q14z: providers whose "will reset at YYYY-MM-DD HH:MM:SS" clock is a fixed UTC offset rather
+// than the machine's local zone. z.ai / GLM reports Asia/Shanghai (UTC+08:00, no DST).
+const PROVIDER_RESET_UTC_OFFSET_MS = Object.freeze({
+  zai: 8 * 3600_000,
+  glm: 8 * 3600_000,
+});
+const ISO_UTC_RESET = /\bresets?\s+at\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{3})?Z\b/;
 const ABSOLUTE_RESET = /will\s+reset\s+at\s+(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/;
 const RELATIVE_RESET = /resets?\s+in\s+((?:\d+\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s*)+)/i;
 const RETRY_AFTER_RESET = /retry\s+after\s+((?:\d+\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\s*)+)/i;
@@ -455,22 +460,48 @@ export function localWallToIso(year, month, day, hour, minute, second) {
   return at.toISOString();
 }
 
+/** A wall time in a fixed UTC offset (no DST) as an ISO UTC instant. */
+function fixedOffsetWallToIso(offsetMs, year, month, day, hour, minute, second) {
+  const wallMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  const wall = new Date(wallMs);
+  if (!Number.isFinite(wallMs)
+    || wall.getUTCFullYear() !== year || wall.getUTCMonth() !== month - 1 || wall.getUTCDate() !== day
+    || wall.getUTCHours() !== hour || wall.getUTCMinutes() !== minute || wall.getUTCSeconds() !== second) {
+    throw new Error('unparseable reset time');
+  }
+  return new Date(wallMs - offsetMs).toISOString();
+}
+
 /**
  * The provider-declared reset as an absolute ISO instant, or null when the text carries no
- * parseable reset (an unknown stop, cleared only by a later successful run). Absolute ("will
- * reset at YYYY-MM-DD HH:MM:SS", the CLI's LOCAL wall time) beats relative ("resets in 1h
- * 6m" or "resets in 1 hour 30 minutes", and a "retry after N seconds" phrase on a window
- * message, after runEndMs); a present-but-invalid absolute falls through to the relative phrase.
+ * parseable reset (an unknown stop, cleared only by a later successful run). ISO UTC ("resets
+ * at YYYY-MM-DDTHH:MM:SS(.fff)Z") beats the wall-clock absolute ("will reset at YYYY-MM-DD
+ * HH:MM:SS", in the provider's known zone or else the Mac's local zone), which beats relative
+ * ("resets in 1h 6m" or "resets in 1 hour 30 minutes", and a "retry after N seconds" phrase on
+ * a window message, after runEndMs); a present-but-invalid absolute falls through to the
+ * relative phrase.
  */
-export function parseProviderReset(text, runEndMs, localToIso = localWallToIso) {
+export function parseProviderReset(text, runEndMs, localToIso = localWallToIso, provider = null) {
   const words = String(text ?? '');
+  const iso = ISO_UTC_RESET.exec(words);
+  if (iso) {
+    const canonical = `${iso[1]}${iso[2] ?? '.000'}Z`;
+    const at = new Date(canonical);
+    // Date accepts rolled-over dates; a reset must preserve the provider's exact instant.
+    if (Number.isFinite(at.getTime()) && at.toISOString() === canonical) return canonical;
+  }
   const absolute = ABSOLUTE_RESET.exec(words);
   if (absolute) {
     const [, year, month, day, hour, minute, second] = absolute.map(Number);
     const dim = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
     if (month >= 1 && month <= 12 && day >= 1 && day <= dim && hour <= 23 && minute <= 59 && second <= 59) {
       try {
-        return localToIso(year, month, day, hour, minute, second);
+        const offsetMs = typeof provider === 'string' && Object.hasOwn(PROVIDER_RESET_UTC_OFFSET_MS, provider)
+          ? PROVIDER_RESET_UTC_OFFSET_MS[provider]
+          : null;
+        return offsetMs !== null
+          ? fixedOffsetWallToIso(offsetMs, year, month, day, hour, minute, second)
+          : localToIso(year, month, day, hour, minute, second);
       } catch { /* fall through to the relative phrase, if any */ }
     }
   }
@@ -508,7 +539,7 @@ export function decideProviderStop({ result, cliErrorText, cli, model, runEndMs,
   const line = String(cliErrorText ?? '').split(/\r?\n/).find(candidate => PROVIDER_STOP_LIMIT.test(candidate));
   if (!line) return null;
   const evidence = [...line.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, '')].slice(0, 200).join('');
-  return { provider, resetsAt: parseProviderReset(cliErrorText, runEndMs, localToIso), evidence };
+  return { provider, resetsAt: parseProviderReset(cliErrorText, runEndMs, localToIso, provider), evidence };
 }
 
 
@@ -553,11 +584,11 @@ function changedLines(before, after) {
 
 async function readRouteUsage(route) {
   try {
-    let reading;
-    if (route.cli === 'codex') reading = await readCodexUsage();
-    else if (route.cli === 'opencode' && route.model.startsWith('zai-coding-plan/')) reading = await readGlmUsage();
-    else if (route.cli === 'claude') reading = claudeUsageFromLead();
-    else return { status: 'unavailable', reason: `no usage reader for ${route.cli} (${route.model})` };
+    // Every counter comes from usage-readers/index.mjs (the in-house CodexBar ports). Dry runs never reach here
+    // (INVARIANTS #6).
+    const provider = providerForNode({ cli: route.cli, model: route.model });
+    if (!provider) return { status: 'unavailable', reason: `no usage reader for ${route.cli} (${route.model})` };
+    const reading = await readUsageOf(provider);
     if (!reading?.status) throw new Error('usage reader returned no status');
     return reading;
   } catch (error) {
@@ -604,6 +635,7 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
   let gate;
   let gateSource;
   let gateReadAt;
+  const row = provider != null ? budget()[provider] : undefined;
   if (provider == null || !BUDGETED.includes(provider)) {
     gate = 'ok';
     gateSource = 'no-budget';
@@ -611,26 +643,35 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
     // Unreadable plans honour no cap, so no budgeted route is room; recorded, the explicit role still runs.
     gate = 'unknown';
     gateSource = 'plans-error';
-  } else if (budget()[provider].stopAtPercent === null) {
+  } else if (!row) {
+    gate = 'ok';
+    gateSource = 'no-budget';
+  } else if (row.stopAtPercent === null) {
     gate = 'ok';
     gateSource = 'uncapped';
   } else if (role === chosenRole && usageBefore?.status === 'ok') {
-    gate = gateFor(provider, usageBefore).state;
+    gate = gateFor(provider, usageBefore, route.model).state;
     gateSource = 'live';
   } else if (liveReadings?.get(provider)?.status === 'ok') {
-    gate = gateFor(provider, liveReadings.get(provider)).state;
+    gate = gateFor(provider, liveReadings.get(provider), route.model).state;
     gateSource = 'live-refresh';
   } else {
-    const reading = treeReadingFor(provider);
+    const reading = treeReadingFor(provider, route.model);
+    // Q17: an until-stop counter (CodexBar pools) with no current reading runs until its
+    // provider stops it; only a refuse cap turns missing/expired evidence into `unknown`.
+    const untilStop = row.onUnknown === 'until-stop';
     if (reading?.expired) {
-      // A pre-reset 96% is not today's 96%; neither is it room.
-      gate = 'unknown';
-      gateSource = 'tree-expired';
+      // A pre-reset 96% is not today's 96%; neither is it room (refuse). Until-stop runs.
+      gate = untilStop ? 'ok' : 'unknown';
+      gateSource = untilStop ? 'until-stop' : 'tree-expired';
       gateReadAt = reading.recordedAt ?? null;
     } else if (reading) {
-      gate = gateFor(provider, reading.report).state;
+      gate = gateFor(provider, reading.report, route.model).state;
       gateSource = 'tree';
       gateReadAt = reading.recordedAt ?? null;
+    } else if (untilStop) {
+      gate = 'ok';
+      gateSource = 'until-stop';
     } else {
       gate = 'unknown';
       gateSource = 'none';
@@ -647,7 +688,7 @@ function candidateRoute({ role, route, chosenRole, usageBefore, inRotation, tree
     status,
     gate,
     gateSource,
-    ...(gateSource === 'tree' || gateSource === 'tree-expired' ? { gateReadAt } : {}),
+    ...(gateSource === 'tree' || gateSource === 'tree-expired' || (gateSource === 'until-stop' && gateReadAt !== undefined) ? { gateReadAt } : {}),
     eligible,
     excludedBy,
     // AA Intelligence Index of exactly this (cli, model, effort); null = unranked (not measured, or no
@@ -672,9 +713,14 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
   const nowMs = Date.now();
   // One tree scan shared by every capped route: provider -> newest recorded reading.
   const readings = new Map();
-  const treeReadingFor = provider => {
-    if (!readings.has(provider)) readings.set(provider, latestReading(nodes, provider, nowMs));
-    return readings.get(provider);
+  // Q19: keyed by the route's scoped limitIds too — a scoped bucket's reset must not expire (or keep)
+  // the reading of a route that does not draw on it.
+  const treeReadingFor = (provider, model) => {
+    const row = budget()[provider];
+    const limitIds = row?.limitScopes ? scopedLimitIds(row, model) : undefined; // undefined = latestReading's default (unscoped)
+    const key = `${provider}\0${JSON.stringify(limitIds ?? null)}`;
+    if (!readings.has(key)) readings.set(key, latestReading(nodes, provider, nowMs, limitIds));
+    return readings.get(key);
   };
   // One tree scan shared by every stoppable route: pool -> newest uncleared provider stop.
   const stops = new Map();
@@ -685,15 +731,20 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
   const dispatchable = Object.keys(policy?.routes ?? {})
     .filter(role => !NON_CANDIDATE_KEYS.has(role) && policy.routes[role]?.argv); // architect: never a candidate
   if (refresh) {
+    // One read per provider (its first eligible route), all in PARALLEL (Q17): four CodexBar pools
+    // read one after another would cost four timeouts when CodexBar hangs.
+    const toRead = new Map();
     for (const role of dispatchable) {
       const route = policy.routes[role];
       if (route.status !== 'ok' || !inRotation.has(role)) continue; // could not be picked anyway
       const provider = providerForNode({ cli: route.cli, model: route.model });
-      if (provider == null || budget()[provider]?.stopAtPercent == null || liveReadings.has(provider)) continue;
-      const reading = treeReadingFor(provider);
+      if (provider == null || budget()[provider]?.stopAtPercent == null || liveReadings.has(provider) || toRead.has(provider)) continue;
+      const reading = treeReadingFor(provider, route.model);
       if (current(reading, nowMs)) continue;
-      liveReadings.set(provider, await readRouteUsage(route));
+      toRead.set(provider, route);
     }
+    const read = await Promise.all([...toRead].map(async ([provider, route]) => [provider, await readRouteUsage(route)]));
+    for (const [provider, reading] of read) liveReadings.set(provider, reading);
   }
   const routes = dispatchable.map(role => candidateRoute({ role, route: policy.routes[role], chosenRole, usageBefore,
     inRotation, treeReadingFor, treeStopFor, liveReadings, ranking, nowMs }));
@@ -709,7 +760,7 @@ async function buildCandidates({ policy, chosenRole, reasonText, usageBefore, ru
 
 /** ORCHESTRA_POLICY names a policy file outright (tests bring their own routes); otherwise your own
  * dispatcher/policy.json (gitignored) wins, and without one the shipped example is used. */
-async function readPolicy() {
+export async function readPolicy() {
   if (process.env.ORCHESTRA_POLICY) return JSON.parse(await readFile(path.resolve(process.env.ORCHESTRA_POLICY), 'utf8'));
   const text = await readFile(path.join(HERE, 'policy.json'), 'utf8').catch(error => {
     if (error?.code !== 'ENOENT') throw error;
@@ -796,7 +847,7 @@ async function decideByQuota(policy, size, minAaRaw, { refresh }) {
     if (!pool.includes(c)) skipped.push({ role: c.role, why: c.excludedBy ?? (c.aa === null ? 'unranked' : 'min-aa') });
     // decide throws on a provider the plans do not declare: such a route cannot be priced.
     else if (provider == null || !Object.hasOwn(plans.providers, provider)) skipped.push({ role: c.role, why: 'no-plan' });
-    else routes.push({ role: c.role, provider, aa: c.aa, rotationIndex: rotation.indexOf(c.role), status: c.status });
+    else routes.push({ role: c.role, provider, aa: c.aa, rotationIndex: rotation.indexOf(c.role), status: c.status, model: c.model });
   }
   const decision = decide(plans, nodes, routes, { size, nowMs });
   return { ...decision, reasons: [...skipped, ...decision.reasons], liveReadings };
@@ -978,6 +1029,7 @@ export async function main(argvInput = process.argv.slice(2)) {
         exitCode: null, signal, finalText: live.finalText, git: gitSync(workspace) }) : null;
       const node = {
         schemaVersion: 1, partial: true, runId: live.runId, liveFile: live.liveFile, finalText: live.finalText,
+        ...(live.finalTextTruncated ? { finalTextTruncated: true } : {}),
         nodeId: randomUUID(), parentId: args.parent ?? null, task: args.task, role: args.role,
         title: runTitle(args.title, args.prompt), phase: runPhase(args.phase, args.role), cli: route.cli, model: route.model,
         promptBytes: Buffer.byteLength(args.prompt, 'utf8'), prompt: args.prompt, prefixSha,
@@ -1111,6 +1163,7 @@ export async function main(argvInput = process.argv.slice(2)) {
       runId: live.runId,
       liveFile: live.liveFile,
       finalText: live.finalText,
+      ...(live.finalTextTruncated ? { finalTextTruncated: true } : {}),
       nodeId: randomUUID(),
       parentId: args.parent ?? null,
       task: args.task,
@@ -1129,11 +1182,11 @@ export async function main(argvInput = process.argv.slice(2)) {
       candidates,
       usageBefore,
       usageAfter,
-      usageDelta: usageDelta(usageBefore, usageAfter, route.cli, result.ms),
+      usageDelta: usageDelta(usageBefore, usageAfter, providerForNode({ cli: route.cli, model: route.model }) ?? route.cli, result.ms),
       // Q6, additive (older nodes lack all three): one delta per scoped window kind (5h and weekly
       // apart), the lead's --size (null when omitted), and the run's summed token totals (null when
       // the CLI emitted no usage events, e.g. muse).
-      usageDeltas: usageDeltas(usageBefore, usageAfter, route.cli, result.ms),
+      usageDeltas: usageDeltas(usageBefore, usageAfter, providerForNode({ cli: route.cli, model: route.model }) ?? route.cli, result.ms),
       size,
       tokens: live.tokens,
       // `blocked` is observed from the provider's own words, so later analysis can tell "this route

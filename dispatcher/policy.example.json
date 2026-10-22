@@ -1,37 +1,10 @@
 {
   "schemaVersion": 1,
-  "_comment": "Example routes. dispatch.mjs reads dispatcher/policy.json when it exists, otherwise this file. The models are the ones these routes were verified with; copy the file, set each model to one your CLI lists, and re-probe a route before you mark it ok. Placeholders: {model} {effort} {variant} {task} {root} {prompt}; any other {name} is rejected before spawn, and braces inside the prompt are left alone. The argv is passed as an array: the prompt never reaches a shell.",
+  "_comment": "Starter policy: two developer CLIs, codex and opencode. Copy it to dispatcher/policy.json (gitignored) and edit there. dispatcher/policy.full-roster.json carries every route ocli knows (agy, Muse, Cline Pass, Claude Opus, Astra); copy routes from it as you add CLIs. A route runs only when its status is \"ok\": probe it by hand once first. dispatch.mjs reads ORCHESTRA_POLICY, else dispatcher/policy.json, else this file. The models are the ones these routes were verified with; copy the file, set each model to one your CLI lists, and re-probe a route before you mark it ok. Placeholders: {model} {effort} {variant} {task} {root} {prompt}; any other {name} is rejected before spawn, and braces inside the prompt are left alone. The argv is passed as an array: the prompt never reaches a shell. The implement route ships with GLM-5.3 on the Z.ai coding plan; set its model to any id `opencode models` lists.",
   "routes": {
     "architect": {
       "cli": "claude",
       "note": "Claude Code itself is the orchestrator; it does not dispatch to itself."
-    },
-    "breadth": {
-      "cli": "agy",
-      "model": "gemini-4-argon-high",
-      "argv": [
-        "--output-format",
-        "stream-json",
-        "--dangerously-skip-permissions",
-        "--disable-slash-commands",
-        "--add-dir",
-        "{root}",
-        "--print-timeout",
-        "45m",
-        "--model",
-        "{model}",
-        "--prompt",
-        "{prompt}"
-      ],
-      "status": "unverified",
-      "statusDetail": "UNSAFE BY DESIGN: --dangerously-skip-permissions turns every approval off and agy is not confined to {root}. Read 'Permissions and sandboxing' in the README, run it only where that is acceptable (a disposable VM, container or user account), then set status to ok in your own policy.json",
-      "_notes": [
-        "UNSAFE: --dangerously-skip-permissions disables every permission prompt. agy can then run any command, edit any file this user can, use the network and the browser, and push with your git credentials. --add-dir {root} adds the worktree to its workspace; it does not confine agy to it.",
-        "agy ignores the process cwd and works in its own scratch workspace: --add-dir {root} puts the worktree in its workspace.",
-        "Print mode times out after 5 minutes by default: --print-timeout lifts the cutoff.",
-        "Print mode ends the session whenever the model decides to wait on a long command (for example a full test suite started 'in the background'). Brief agy to run only the tests of the files it touched, and give it slices whose verification is file-local.",
-        "Error result shapes are source-derived, not captured: only a SUCCESS result has been observed."
-      ]
     },
     "implement": {
       "cli": "opencode",
@@ -66,8 +39,8 @@
     },
     "reason": {
       "cli": "codex",
-      "model": "gpt-6-astra",
-      "effort": "high",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
       "argv": [
         "exec",
         "--json",
@@ -92,113 +65,35 @@
         "-s workspace-write: codex's own OS sandbox confines writes to {root}, whatever the global sandbox setting is. This is the only shipped route with a real sandbox.",
         "-o: the final message also lands in a file you can read back cleanly.",
         "codex may stop and ask a scope question instead of guessing (exit 0, no changes): answer it in the brief and re-dispatch.",
-        "Usage is read from `codex app-server` (account/rateLimits/read) before and after each run; reading it spends no model allowance."
+        "Usage is read from `codex app-server` (account/rateLimits/read) before and after each run; reading it spends no model allowance.",
+        "The codex default: GPT-6.1 Sol at xhigh (AA 51 in the shipped ranking). Replace the model with one your plan can reach; `codex debug models` lists them."
+      ],
+      "fallback": [
+        {
+          "model": "gpt-5.6-sol",
+          "effort": "high"
+        },
+        {
+          "model": "gpt-5.6-sol",
+          "effort": "medium"
+        },
+        {
+          "model": "gpt-5.6-terra",
+          "effort": "xhigh"
+        },
+        {
+          "model": "gpt-5.6-luna",
+          "effort": "max",
+          "_rule": "Luna at max effort only."
+        }
       ]
-    },
-    "easy": {
-      "cli": "codex",
-      "model": "gpt-5.3-codex-spark",
-      "effort": "low",
-      "argv": [
-        "exec",
-        "--json",
-        "-C",
-        "{root}",
-        "-s",
-        "workspace-write",
-        "--skip-git-repo-check",
-        "-m",
-        "{model}",
-        "-c",
-        "model_reasoning_effort=\"{effort}\"",
-        "-c",
-        "mcp_servers.hf-mcp-server.enabled=false",
-        "-o",
-        "{root}/.orchestra-last.md",
-        "{prompt}"
-      ],
-      "status": "unverified",
-      "statusDetail": "example route: probe it once and set status to ok",
-      "_notes": [
-        "A cheaper codex route for small slices: constants, renames, formatting, doc sync.",
-        "Refused until its status is ok: a route is verified live before it is trusted."
-      ]
-    },
-    "muse": {
-      "cli": "muse",
-      "model": "muse-wonder-1.0",
-      "effort": "max",
-      "argv": [
-        "exec",
-        "--json",
-        "--model",
-        "{model}",
-        "--reasoning-effort",
-        "{effort}",
-        "--workspace",
-        "{root}",
-        "--disable-approval",
-        "--user-input-auto-resolve",
-        "--no-foreign-personal-context",
-        "--no-session-log",
-        "{prompt}"
-      ],
-      "status": "ok",
-      "_notes": [
-        "UNSAFE: --disable-approval runs every tool with no prompt and --user-input-auto-resolve answers its questions for you. --workspace {root} roots policy-gated tools at the worktree; it is not a security boundary. See 'Permissions and sandboxing' in the README.",
-        "A launcher wrapper may inject --yolo before this argv, which also turns muse's OS sandbox off: then nothing confines it at all, a git worktree is not a sandbox. Check `ps` once.",
-        "--workspace {root}: roots policy-gated tools at the worktree (muse otherwise defaults to the cwd).",
-        "--user-input-auto-resolve: auto-cancels requests for user input in a headless run.",
-        "--no-foreign-personal-context: skips global personal instruction files; the repo AGENTS.md is the brief.",
-        "muse ignores a repo CLAUDE.md when AGENTS.md exists in the same directory.",
-        "stdin is closed by the dispatcher: a bare `muse` with an open stdin opens its TUI and hangs.",
-        "Terminal error shapes are source-derived, not captured: only run.terminal.completed has been observed."
-      ]
-    },
-    "cline-mimo": {
-      "cli": "cline",
-      "model": "cline-pass/mimo-v2.6-pro",
-      "argv": [
-        "-P",
-        "cline-pass",
-        "-m",
-        "{model}",
-        "--json",
-        "-c",
-        "{root}",
-        "{prompt}"
-      ],
-      "verifiedAt": "2026-10-11",
-      "status": "ok",
-      "_note": "Cline Pass (the user's subscription, no API key). Probe it on your machine and keep status 'ok' only if it answers."
-    },
-    "cline-qwen": {
-      "cli": "cline",
-      "model": "cline-pass/qwen3.8-max",
-      "argv": [
-        "-P",
-        "cline-pass",
-        "-m",
-        "{model}",
-        "--json",
-        "-c",
-        "{root}",
-        "{prompt}"
-      ],
-      "verifiedAt": "2026-10-11",
-      "status": "ok",
-      "_note": "Cline Pass (the user's subscription, no API key). Probe it on your machine and keep status 'ok' only if it answers."
     }
   },
   "developers": {
     "rotation": {
       "order": [
         "implement",
-        "reason",
-        "muse",
-        "breadth",
-        "cline-mimo",
-        "cline-qwen"
+        "reason"
       ],
       "_note": "Which routes --role auto may pick, tie-broken in this order. Edit to the developers you actually use."
     }

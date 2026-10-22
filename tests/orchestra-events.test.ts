@@ -171,3 +171,71 @@ describe('agy run totals', () => {
     expect(normalize('agy', total, state).filter(e => e.kind === 'usage')).toHaveLength(0);
   });
 });
+
+describe('full final message state (Q18)', () => {
+  type State = { finalText?: string; finalTextTruncated?: boolean };
+  const raw = (text: string) => JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } });
+  const messages: [string, (text: string) => unknown][] = [
+    ['codex', text => ({ type: 'item.completed', item: { type: 'agent_message', text } })],
+    ['opencode', text => ({ type: 'text', part: { text } })],
+    ['agy', text => ({ event: 'result', result: { status: 'SUCCESS', response: text } })],
+    ['muse', text => ({ payload_type: 'run.terminal.completed', payload: { text } })],
+    ['cline', text => ({ type: 'agent_event', event: { type: 'content_end', contentType: 'text', text } })],
+    ['claude', text => ({ type: 'result', result: text })],
+  ];
+
+  it.each(messages)('%s keeps 3,000 characters outside the serialized 500-character pane event', (cli, message) => {
+    const full = 'x'.repeat(3000);
+    const state: State = {};
+    const events = normalize(cli, JSON.stringify(message(full)), state);
+    expect(JSON.parse(JSON.stringify(events))).toEqual([{ kind: 'message', text: full.slice(0, 500) }]);
+    expect(state.finalText).toBe(full);
+    expect(state.finalTextTruncated).toBe(false);
+  });
+
+  it.each([65535, 65536, 65537, 100 * 1024])('bounds a %i-byte message and marks only an actual cut', length => {
+    const state: State = {};
+    normalize('codex', raw('x'.repeat(length)), state);
+    expect(state.finalText?.length).toBe(Math.min(length, 65536));
+    expect(state.finalTextTruncated).toBe(length > 65536);
+  });
+
+  it.each([
+    ['two-byte boundary', 'x'.repeat(65535) + 'é', 'x'.repeat(65535)],
+    ['three-byte boundary', '€'.repeat(35000), '€'.repeat(21845)],
+    ['four-byte exact boundary', '🙂'.repeat(25600), '🙂'.repeat(16384)],
+    ['four-byte partial boundary', 'x' + '🙂'.repeat(25600), 'x' + '🙂'.repeat(16383)],
+  ])('does not split a UTF-8 character at the %s', (_label, full, retained) => {
+    const state: State = {};
+    normalize('codex', raw(full), state);
+    expect(state.finalText).toBe(retained);
+    expect(Buffer.byteLength(state.finalText!)).toBeLessThanOrEqual(65536);
+    expect(state.finalText).not.toContain('\uFFFD');
+    expect(state.finalTextTruncated).toBe(true);
+  });
+
+  it('keeps the last message through non-message events and clears the flag for the next message', () => {
+    const state: State = {};
+    normalize('codex', raw('x'.repeat(100 * 1024)), state);
+    for (const line of ['{"type":"turn.completed","usage":{}}', '{"type":"error","message":"warning"}', 'not json']) {
+      normalize('codex', line, state);
+      expect(state.finalText?.length).toBe(65536);
+      expect(state.finalTextTruncated).toBe(true);
+    }
+    normalize('codex', raw('latest answer'), state);
+    expect(state.finalText).toBe('latest answer');
+    expect(state.finalTextTruncated).toBe(false);
+    normalize('codex', raw(''), state);
+    expect(state.finalText).toBe('');
+    expect(state.finalTextTruncated).toBe(false);
+  });
+
+  it('takes the last of several text blocks in a single event', () => {
+    const state: State = {};
+    normalize('claude', JSON.stringify({ type: 'assistant', message: { content: [
+      { type: 'text', text: 'x'.repeat(100 * 1024) }, { type: 'text', text: 'last'.repeat(750) },
+    ] } }), state);
+    expect(state.finalText).toBe('last'.repeat(750));
+    expect(state.finalTextTruncated).toBe(false);
+  });
+});

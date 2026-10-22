@@ -1,14 +1,15 @@
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 // @ts-expect-error - dispatcher tooling is plain ESM.
 import { handoff, handoffReason } from '../dispatcher/handoff.mjs';
 // @ts-expect-error - dispatcher tooling is plain ESM.
 import { main, run as runChild } from '../dispatcher/dispatch.mjs';
-// @ts-expect-error - dispatcher tooling is plain ESM.
-import { EXAMPLE_PLANS } from '../dispatcher/plans.mjs';
+// The full-roster plans the suites run on (the shipped starter is provider-plans.example.json).
+const EXAMPLE_PLANS: string = fileURLToPath(new URL('../dispatcher/provider-plans.full-roster.json', import.meta.url));
 
 // Q7: a failed run keeps its work as a WIP commit on the feature branch and says so on the node.
 // Real git, TEMP repos only (under os.tmpdir(), removed after each test); never this repo.
@@ -159,6 +160,39 @@ describe('handoff on real temp repos', () => {
     expect(sh(dir, 'show', '--name-only', '--format=', 'HEAD').split('\n')).toEqual(['work.txt']);
   });
 
+  it('commits when node_modules is a gitignored symlink to a temp dir and never commits the symlink', async () => {
+    const dir = repo('main');
+    writeFileSync(path.join(dir, '.gitignore'), '/node_modules\nnode_modules/\n');
+    sh(dir, 'add', '.gitignore');
+    sh(dir, 'commit', '-q', '-m', 'ignore node_modules symlink');
+    sh(dir, 'checkout', '-q', '-b', 'feature/x');
+    const nm = temp('orchestra-handoff-nm-');
+    mkdirSync(path.join(nm, 'p'), { recursive: true });
+    writeFileSync(path.join(nm, 'p', 'i.js'), '\n');
+    symlinkSync(nm, path.join(dir, 'node_modules'));
+    mkdirSync(path.join(dir, 'pkg'), { recursive: true });
+    symlinkSync(nm, path.join(dir, 'pkg', 'node_modules'));
+    writeFileSync(path.join(dir, 'work.txt'), 'x\n');
+    const h = await run(dir);
+    expect(h.commitSkipped).toBeNull();
+    expect(h.commit).toBe(sh(dir, 'rev-parse', 'HEAD'));
+    expect(h.changed).toEqual(['?\twork.txt']);
+    expect(sh(dir, 'show', '--name-only', '--format=', 'HEAD').split('\n')).toEqual(['work.txt']);
+  });
+
+  it('keeps the full path on a first-line unstaged modified file (leading porcelain space not trimmed)', async () => {
+    const dir = repo('main');
+    mkdirSync(path.join(dir, 'src'), { recursive: true });
+    writeFileSync(path.join(dir, 'src', 'a.ts'), 'v1\n');
+    sh(dir, 'add', 'src/a.ts');
+    sh(dir, 'commit', '-q', '-m', 'add src/a.ts');
+    sh(dir, 'checkout', '-q', '-b', 'feature/x');
+    writeFileSync(path.join(dir, 'src', 'a.ts'), 'v2\n');
+    const h = await run(dir);
+    expect(h.commitSkipped).toBeNull();
+    expect(h.changed).toEqual(['M\tsrc/a.ts']);
+  });
+
   it('labels a commit failure with no hook to blame git-failed, not hook-refused', async () => {
     const dir = repo();
     sh(dir, 'config', '--unset', 'user.name');
@@ -247,7 +281,7 @@ describe('handoff on real temp repos', () => {
     expect(h.changed).toHaveLength(200);
     expect(h.finalTextTail).toHaveLength(2000);
     expect(h.finalTextTail.endsWith('END')).toBe(true);
-  });
+  }, 30_000); // 205 files + git took 6-9.5 s alone and under load (2026-10-17): past the 5 s default, not a hang
 });
 
 describe('run() timeout', () => {

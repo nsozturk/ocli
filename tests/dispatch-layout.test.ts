@@ -10,7 +10,7 @@ vi.mock('node:fs/promises', async original => ({ ...await original<Record<string
 vi.mock('../dispatcher/usage.mjs', async original => ({ ...await original<Record<string, unknown>>(), readCodexUsage: vi.fn(async () => ({ status: 'unknown' })), readGlmUsage: vi.fn(async () => ({ status: 'unknown' })), claudeUsageFromLead: vi.fn(), usageDelta: vi.fn(), gateFor: vi.fn() }));
 // @ts-expect-error plain ESM tooling
 import { main } from '../dispatcher/dispatch.mjs';
-const example = readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8');
+const example = readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8');
 const enoent = () => Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
 const dispatch = () => main(['--role', 'reason', '--task', 'layout', '--prompt', 'p']);
 let workspace: string;

@@ -1,18 +1,31 @@
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
 import { meteredOf, windowUsage, capacityFor, headroomFor, estimateFor, decide } from '../dispatcher/quota.mjs';
 // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
-import { parsePlans, EXAMPLE_PLANS } from '../dispatcher/plans.mjs';
+import { parsePlans } from '../dispatcher/plans.mjs';
+// The full-roster plans the suites run on (the shipped starter is provider-plans.example.json).
+const EXAMPLE_PLANS: string = fileURLToPath(new URL('../dispatcher/provider-plans.full-roster.json', import.meta.url));
 
 // Q11a: quota.mjs is pure. Every input is handed in (plans, nodes, nowMs); nothing here reads the
 // real tree, the real plans file or the clock.
 type Json = Record<string, any>;
 const exampleText = readFileSync(EXAMPLE_PLANS, 'utf8');
 /** The shipped example, edited, then put through the strict parser so a fixture can never drift
- * from the schema the real loader enforces. */
+ * from the schema the real loader enforces. Q17 decoupling (the Q15 rule): the shipped
+ * glm/gemini/muse/cline are CodexBar counter pools now, but Q11's token/ms logic is still a
+ * supported plans shape — so these fixtures pin it explicitly instead of depending on the
+ * roster. The shipped counter shape itself is pinned in orchestra-counter-pools.test.ts and usage-readers-index.test.ts and in
+ * the Q17 counter test below, which parses the example without this override. */
 const plansWith = (edit: (doc: Json) => void = () => {}) => {
   const doc = JSON.parse(exampleText);
+  for (const [name, meteredBy] of [['glm', 'tokens'], ['gemini', 'tokens'], ['muse', 'ms'], ['cline', 'tokens']] as const) {
+    doc.providers[name].meteredBy = meteredBy;
+    doc.providers[name].limitIds = null;
+    delete doc.providers[name].limitScopes; // Q19: a scope names a limitId; a null-limitIds token pool has none
+    for (const w of doc.providers[name].windows) { w.capacity = { unit: 'unknown', value: null }; w.source = 'learned'; }
+  }
   edit(doc);
   return parsePlans(JSON.stringify(doc));
 };
@@ -117,6 +130,33 @@ describe('windowUsage — counter providers', () => {
       .toEqual({ usedPercent: null, source: 'counter', readAt: null, fresh: false });
     const onlyWeekly = codex(5, [win('codex', 70, 10080, FUTURE)]);
     expect(windowUsage(PLANS, [onlyWeekly], 'codex', '5h', NOW).usedPercent).toBeNull();
+  });
+});
+
+describe('Q17 — shipped CodexBar counter pools through quota', () => {
+  const SHIPPED = parsePlans(exampleText); // no token override: glm/gemini as shipped
+  const cbNode = (cli: string, model: string, windows: unknown[], minsAgo = 5) => ({
+    role: 'fixture', cli, model, task: 'fixture', exitCode: 0,
+    recordedAt: at(minsAgo), usageAfter: { status: 'ok', source: 'codexbar', updatedAt: at(minsAgo), windows },
+  });
+  it('glm reads its zai-primary counter; the unreported weekly kind stays unknown', () => {
+    const node = cbNode('opencode', 'zai-coding-plan/glm-5.3', [win('zai-primary', 30, 300, FUTURE)]);
+    expect(windowUsage(SHIPPED, [node], 'glm', '5h', NOW))
+      .toEqual({ usedPercent: 30, source: 'counter', readAt: at(5), fresh: true });
+    expect(windowUsage(SHIPPED, [node], 'glm', 'weekly', NOW).usedPercent).toBeNull();
+    const h = headroomFor(SHIPPED, [node], 'glm', NOW);
+    expect(h.windows[0]).toEqual({ kind: '5h', headroom: 55, unit: 'percent', unknown: false });
+    expect(h.min.unknown).toBe(true); // a declared kind CodexBar does not report is unknown, never room
+  });
+  it('gemini binds on the two gemini summary ids and the argon-wtu weekly pool (Q17b)', () => {
+    const node = cbNode('agy', 'gemini-4-argon-high', [
+      win('antigravity-quota-summary-gemini-5h', 20, 300, FUTURE),
+      win('antigravity-quota-summary-gemini-weekly', 30, 10080, FUTURE),
+      win('antigravity-quota-summary-gemini-argon-wtu-weekly', 44, 10080, FUTURE),
+    ]);
+    expect(windowUsage(SHIPPED, [node], 'gemini', 'weekly', NOW).usedPercent).toBe(44);
+    expect(headroomFor(SHIPPED, [node], 'gemini', NOW).min)
+      .toEqual({ kind: 'weekly', headroom: 41, unit: 'percent', unknown: false });
   });
 });
 
@@ -460,7 +500,9 @@ describe('decide', () => {
       .toEqual({ action: 'wait', until: iso(120), reasons: [{ role: 'implement', why: 'provider-stop' }] });
   });
   it('wait picks the EARLIEST reset that frees some route — not a reset that frees nothing', () => {
-    const plans = plansWith(d => { d.providers.cline.overflow = false; });
+    // Q15: the shipped example caps codex at maxSize S; this test prices an M codex run, so it
+    // declares the cap away on its own fixture instead of depending on the shipped roster.
+    const plans = plansWith(d => { d.providers.cline.overflow = false; d.providers.codex.maxSize = null; });
     const nodes = [
       glmStop(10, 5_000_000, 130), // glm frees at +120 (the 5M before the stop also calibrates its 5h cap)
       cline(10, { exitCode: 1, providerStop: { provider: 'cline', resetsAt: iso(30), evidence: 'limit' } }), // +30, but M > maxSize S
@@ -496,5 +538,28 @@ describe('decide', () => {
   it('refuses a missing clock or an unknown size, never a silent default', () => {
     expect(() => decide(PLANS, [], [glmRoute], { size: 'M' })).toThrow(/nowMs/);
     expect(() => decide(PLANS, [], [glmRoute], { size: 'XL', nowMs: NOW })).toThrow(/size/);
+  });
+});
+
+// Q20: stored metered on old nodes is not trusted; read time recomputes from raw fields + cli.
+describe('Q20 read-time metered', () => {
+  // codex pre-Q20 node: stored metered 1500 = input + output + reasoning (cached and reasoning double-counted)
+  const RAW = { input: 1000, output: 300, cached: 600, reasoning: 200, metered: 1500 };
+  const oldCodex = (minsAgo: number, over: Json = {}) =>
+    codexRun(minsAgo, null, [[300, 7]], { size: 'M', tokens: { ...RAW }, ...over });
+  it('meteredOf recomputes an old codex node from its raw fields (700), never the stored 1500', () => {
+    expect(meteredOf(oldCodex(10), PLANS)).toBe(700);
+  });
+  it('meteredOf keeps a stored metered when the node has no raw fields', () => {
+    expect(meteredOf(codexRun(10, 1234, []), PLANS)).toBe(1234);
+  });
+  it('estimate history uses the recomputed tokens', () => {
+    const nodes = [oldCodex(30), oldCodex(20), oldCodex(10)];
+    expect(estimateFor(PLANS, nodes, 'codex', 'M').tokens).toBe(700);
+  });
+  it('calibration (%-per-token) divides by the recomputed tokens', () => {
+    const e = estimateFor(PLANS, [oldCodex(30), oldCodex(20)], 'codex', 'M');
+    // 14% over 2 × 700 tokens, not over 2 × 1500
+    expect(e.percent['5h']).toBeCloseTo(e.tokens * 14 / 1400, 9);
   });
 });

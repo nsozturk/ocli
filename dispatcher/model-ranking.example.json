@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "source": "Artificial Analysis Intelligence Index",
   "observedAt": "2026-10-17",
-  "_source": "Fetched from https://artificialanalysis.ai/leaderboards/models on 2026-10-17 (WebFetch); all 47 entries listed on 2026-10-11 re-checked, none changed; two added (gemini-4-argon high 53, muse-wonder-1.0 max 52). Only (model, reasoning level) pairs this machine can reach are listed: access checked against codex's model cache, `agy models`, a headless muse run, the Cline Pass catalogue of 2026-10-11 and Claude Code. New AA rows with unverified access (GPT-6.1 Sol, GPT-6 Luna, Grok 4.7, Muse Wonder Full, new Cline-hosted models) are deliberately not listed.",
+  "_source": "Fetched from https://artificialanalysis.ai/leaderboards/models on 2026-10-17 (WebFetch); all 47 entries listed on 2026-10-11 re-checked, none changed; two added (gemini-4-argon high 53, muse-wonder-1.0 max 52). Only (model, reasoning level) pairs this machine can reach are listed: access checked against codex's model cache, `agy models`, a headless muse run, the Cline Pass catalogue of 2026-10-11 and Claude Code. New AA rows with unverified access (GPT-6.1 Sol, GPT-6 Luna, Grok 4.7, Muse Wonder Full, new Cline-hosted models) are deliberately not listed. 2026-10-17 (lead): GPT-6.1 Sol added — access now verified (`codex debug models` on codex-cli 0.163.0 lists gpt-6.1-sol with low…ultra); AA rows re-read from the leaderboard: max 52, xhigh 51, high 50, medium 48, low 42.",
   "_rules": "One entry per (model, effort) exactly as AA measured it. effort null = AA published a single score with no reasoning level; it matches only a route that sets no effort. A route whose (cli, model, effort) is not listed is UNRANKED (aa null) — never the nearest neighbour. aa is stored, rank is derived at read time over the set being compared. access[].effortArg is the value the route's effort (or opencode variant) must equal; null = the route sets none (agy encodes the level in the model id).",
   "entries": [
     {
@@ -16,7 +16,21 @@
           "modelArg": "claude-opus-5-5",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 57.62,
+      "aaSlug": "claude-opus-5-5",
+      "price1m": {
+        "input": 4,
+        "output": 20,
+        "cacheHit": 0.2,
+        "cacheWrite": 5
+      },
+      "speed": {
+        "outputTokensPerSecond": 97.5,
+        "ttftSeconds": 728.3
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 5.982
     },
     {
       "model": "claude-opus-5.5",
@@ -29,7 +43,21 @@
           "modelArg": "claude-opus-5-5",
           "effortArg": "xhigh"
         }
-      ]
+      ],
+      "aaExact": 55.99,
+      "aaSlug": "claude-opus-5-5-xhigh",
+      "price1m": {
+        "input": 4,
+        "output": 20,
+        "cacheHit": 0.2,
+        "cacheWrite": 5
+      },
+      "speed": {
+        "outputTokensPerSecond": 86.5,
+        "ttftSeconds": 140.9
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 3.4591
     },
     {
       "model": "claude-sonnet-5.5",
@@ -42,7 +70,21 @@
           "modelArg": "claude-sonnet-5-5",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 56.0,
+      "aaSlug": "claude-sonnet-5-5",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 141.4,
+        "ttftSeconds": 471.4
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 5.4609
     },
     {
       "model": "claude-opus-5.5",
@@ -60,7 +102,21 @@
           "modelArg": "claude-opus-5-5-high",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 53.58,
+      "aaSlug": "claude-opus-5-5-high",
+      "price1m": {
+        "input": 4,
+        "output": 20,
+        "cacheHit": 0.2,
+        "cacheWrite": 5
+      },
+      "speed": {
+        "outputTokensPerSecond": 83.5,
+        "ttftSeconds": 35.0
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.8225
     },
     {
       "model": "claude-fable-5.1",
@@ -73,7 +129,21 @@
           "modelArg": "claude-fable-5-1",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 53.35,
+      "aaSlug": "claude-fable-5-1",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 0.25,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 70.9,
+        "ttftSeconds": 257.0
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 7.6297
     },
     {
       "model": "claude-fable-5.1",
@@ -86,7 +156,21 @@
           "modelArg": "claude-fable-5-1",
           "effortArg": "xhigh"
         }
-      ]
+      ],
+      "aaExact": 53.2,
+      "aaSlug": "claude-fable-5-1-xhigh",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 0.25,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 64.1,
+        "ttftSeconds": 63.1
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 5.9783
     },
     {
       "model": "gpt-6-astra",
@@ -99,7 +183,21 @@
           "modelArg": "gpt-6-astra",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 52.67,
+      "aaSlug": "gpt-6-astra",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 1,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 57.4,
+        "ttftSeconds": 269.3
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 3.2575
     },
     {
       "model": "gemini-4-argon",
@@ -112,7 +210,21 @@
           "modelArg": "gemini-4-argon-high",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 52.56,
+      "aaSlug": "gemini-4-argon",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": null,
+        "ttftSeconds": null
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.9903
     },
     {
       "model": "claude-sonnet-5.5",
@@ -125,7 +237,21 @@
           "modelArg": "claude-sonnet-5-5",
           "effortArg": "xhigh"
         }
-      ]
+      ],
+      "aaExact": 51.9,
+      "aaSlug": "claude-sonnet-5-5-xhigh",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 113.8,
+        "ttftSeconds": 24.6
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 2.012
     },
     {
       "model": "gpt-6-astra",
@@ -138,7 +264,21 @@
           "modelArg": "gpt-6-astra",
           "effortArg": "xhigh"
         }
-      ]
+      ],
+      "aaExact": 52.39,
+      "aaSlug": "gpt-6-astra-xhigh",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 1,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 54.5,
+        "ttftSeconds": 138.9
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 2.3088
     },
     {
       "model": "muse-wonder-1.0",
@@ -152,7 +292,21 @@
           "effortArg": "max"
         }
       ],
-      "note": "AA lists 'Muse Wonder (max)' 52 and a separate 'Muse Wonder Full (max)' 56; muse-wonder-1.0 resolves to muse-wonder-1.0-contributor (measured 2026-10-17), so it is mapped to the non-Full row. Full is not reachable here."
+      "note": "AA lists 'Muse Wonder (max)' 52 and a separate 'Muse Wonder Full (max)' 56; muse-wonder-1.0 resolves to muse-wonder-1.0-contributor (measured 2026-10-17), so it is mapped to the non-Full row. Full is not reachable here.",
+      "aaExact": 52.39,
+      "aaSlug": "muse-wonder",
+      "price1m": {
+        "input": 4,
+        "output": 20,
+        "cacheHit": 0.2,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 180.8,
+        "ttftSeconds": 40.6
+      },
+      "contextWindowTokens": 1048576,
+      "costPerIndexTask": 4.5157
     },
     {
       "model": "claude-fable-5.1",
@@ -165,7 +319,21 @@
           "modelArg": "claude-fable-5-1",
           "effortArg": "high"
         }
-      ]
+      ],
+      "aaExact": 51.15,
+      "aaSlug": "claude-fable-5-1-high",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 0.25,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 58.6,
+        "ttftSeconds": 7.9
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 3.9125
     },
     {
       "model": "claude-opus-5.5",
@@ -183,7 +351,21 @@
           "modelArg": "claude-opus-5-5-medium",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 51.24,
+      "aaSlug": "claude-opus-5-5-medium",
+      "price1m": {
+        "input": 4,
+        "output": 20,
+        "cacheHit": 0.2,
+        "cacheWrite": 5
+      },
+      "speed": {
+        "outputTokensPerSecond": 85.7,
+        "ttftSeconds": 17.4
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.336
     },
     {
       "model": "gpt-6-astra",
@@ -196,7 +378,21 @@
           "modelArg": "gpt-6-astra",
           "effortArg": "high"
         }
-      ]
+      ],
+      "aaExact": 50.92,
+      "aaSlug": "gpt-6-astra-high",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 1,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 52.9,
+        "ttftSeconds": 47.5
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.7253
     },
     {
       "model": "gpt-6-astra",
@@ -209,7 +405,21 @@
           "modelArg": "gpt-6-astra",
           "effortArg": "medium"
         }
-      ]
+      ],
+      "aaExact": 49.57,
+      "aaSlug": "gpt-6-astra-medium",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 1,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 48.5,
+        "ttftSeconds": 6.3
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.5406
     },
     {
       "model": "claude-fable-5.1",
@@ -222,7 +432,21 @@
           "modelArg": "claude-fable-5-1",
           "effortArg": "medium"
         }
-      ]
+      ],
+      "aaExact": 48.92,
+      "aaSlug": "claude-fable-5-1-medium",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 0.25,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 59.5,
+        "ttftSeconds": 7.3
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 2.9826
     },
     {
       "model": "muse-spark-1.3",
@@ -241,7 +465,21 @@
           "effortArg": "max"
         }
       ],
-      "note": "cline --thinking has no 'max' level (none..xhigh): the cline access is listed for completeness and is unreachable until cline exposes max"
+      "note": "cline --thinking has no 'max' level (none..xhigh): the cline access is listed for completeness and is unreachable until cline exposes max",
+      "aaExact": 48.09,
+      "aaSlug": "muse-spark-1-3",
+      "price1m": {
+        "input": 1.25,
+        "output": 4.25,
+        "cacheHit": 0.15,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 133.8,
+        "ttftSeconds": 52.8
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.6049
     },
     {
       "model": "claude-fable-5.1",
@@ -254,7 +492,21 @@
           "modelArg": "claude-fable-5-1",
           "effortArg": "low"
         }
-      ]
+      ],
+      "aaExact": 46.82,
+      "aaSlug": "claude-fable-5-1-low",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 0.25,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 59.9,
+        "ttftSeconds": 1.9
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 2.371
     },
     {
       "model": "claude-sonnet-5.5",
@@ -272,7 +524,21 @@
           "modelArg": "claude-sonnet-5-5-high",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 46.75,
+      "aaSlug": "claude-sonnet-5-5-high",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 110.4,
+        "ttftSeconds": 11.7
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.8844
     },
     {
       "model": "gpt-6-astra",
@@ -285,7 +551,21 @@
           "modelArg": "gpt-6-astra",
           "effortArg": "low"
         }
-      ]
+      ],
+      "aaExact": 45.78,
+      "aaSlug": "gpt-6-astra-low",
+      "price1m": {
+        "input": 10,
+        "output": 50,
+        "cacheHit": 1,
+        "cacheWrite": 12.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 53.2,
+        "ttftSeconds": 2.4
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.8175
     },
     {
       "model": "mimo-v2.6-pro",
@@ -298,7 +578,21 @@
           "modelArg": "cline-pass/mimo-v2.6-pro",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 46.32,
+      "aaSlug": "mimo-v2-6-pro",
+      "price1m": {
+        "input": 0.435,
+        "output": 0.87,
+        "cacheHit": 0.0036,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 48.0,
+        "ttftSeconds": 4.3
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.1332
     },
     {
       "model": "glm-5.3",
@@ -316,7 +610,21 @@
           "modelArg": "cline-pass/glm-5.3",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 44.78,
+      "aaSlug": "glm-5-3",
+      "price1m": {
+        "input": 1.4,
+        "output": 4.4,
+        "cacheHit": 0.26,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 80.6,
+        "ttftSeconds": 2.7
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 2.0056
     },
     {
       "model": "muse-spark-1.3",
@@ -334,7 +642,21 @@
           "modelArg": "cline-pass/muse-spark-1.3-contributor",
           "effortArg": "xhigh"
         }
-      ]
+      ],
+      "aaExact": 45.07,
+      "aaSlug": "muse-spark-1-3-xhigh",
+      "price1m": {
+        "input": 1.25,
+        "output": 4.25,
+        "cacheHit": 0.15,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 293.7,
+        "ttftSeconds": 21.4
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.3678
     },
     {
       "model": "qwen3.8-max",
@@ -347,7 +669,22 @@
           "modelArg": "cline-pass/qwen3.8-max",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 45.42,
+      "aaSlug": "qwen3-8-max",
+      "price1m": {
+        "input": 2,
+        "output": 6,
+        "cacheHit": 0.25,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 38.3,
+        "ttftSeconds": 3.1
+      },
+      "contextWindowTokens": 983616,
+      "costPerIndexTask": 5.4085,
+      "_aaNote": "AA lists it as 'Qwen3.8 Max (0902)': (0902) is a version date, not a reasoning level."
     },
     {
       "model": "kimi-k3",
@@ -360,7 +697,21 @@
           "modelArg": "cline-pass/kimi-k3",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 43.59,
+      "aaSlug": "kimi-k3",
+      "price1m": {
+        "input": 3,
+        "output": 15,
+        "cacheHit": 0.3,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 42.2,
+        "ttftSeconds": 3.7
+      },
+      "contextWindowTokens": 1048576,
+      "costPerIndexTask": 2.0001
     },
     {
       "model": "step-5-preview",
@@ -373,7 +724,21 @@
           "modelArg": "cline-free/step-5-preview",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 43.73,
+      "aaSlug": "step-5",
+      "price1m": {
+        "input": 1,
+        "output": 2.7,
+        "cacheHit": 0.1,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 91.1,
+        "ttftSeconds": 2.2
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.0264
     },
     {
       "model": "claude-haiku-5.5",
@@ -386,7 +751,21 @@
           "modelArg": "claude-haiku-5-5",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 43.4,
+      "aaSlug": "claude-haiku-5-5",
+      "price1m": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheHit": 0.01,
+        "cacheWrite": 0.125
+      },
+      "speed": {
+        "outputTokensPerSecond": 235.4,
+        "ttftSeconds": 336.4
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.2128
     },
     {
       "model": "claude-opus-5.5",
@@ -404,7 +783,21 @@
           "modelArg": "claude-opus-5-5-low",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 42.31,
+      "aaSlug": "claude-opus-5-5-low",
+      "price1m": {
+        "input": 4,
+        "output": 20,
+        "cacheHit": 0.2,
+        "cacheWrite": 5
+      },
+      "speed": {
+        "outputTokensPerSecond": 84.1,
+        "ttftSeconds": 6.7
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.5512
     },
     {
       "model": "glm-5.3-flash",
@@ -417,7 +810,21 @@
           "modelArg": "cline-pass/glm-5.3-flash",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 41.81,
+      "aaSlug": "glm-5-3-flash",
+      "price1m": {
+        "input": 0.15,
+        "output": 0.5,
+        "cacheHit": 0.03,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 70.8,
+        "ttftSeconds": 2.8
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.2836
     },
     {
       "model": "gpt-5.6-terra",
@@ -430,7 +837,21 @@
           "modelArg": "gpt-5.6-terra",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 42.08,
+      "aaSlug": "gpt-5-6-terra",
+      "price1m": {
+        "input": 2,
+        "output": 12,
+        "cacheHit": 0.2,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 136.4,
+        "ttftSeconds": 103.2
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.3987
     },
     {
       "model": "claude-haiku-5.5",
@@ -443,7 +864,21 @@
           "modelArg": "claude-haiku-5-5",
           "effortArg": "xhigh"
         }
-      ]
+      ],
+      "aaExact": 41.25,
+      "aaSlug": "claude-haiku-5-5-xhigh",
+      "price1m": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheHit": 0.01,
+        "cacheWrite": 0.125
+      },
+      "speed": {
+        "outputTokensPerSecond": 195.3,
+        "ttftSeconds": 76.8
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.1238
     },
     {
       "model": "claude-sonnet-5.5",
@@ -461,7 +896,21 @@
           "modelArg": "claude-sonnet-5-5-medium",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 40.84,
+      "aaSlug": "claude-sonnet-5-5-medium",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 112.3,
+        "ttftSeconds": 1.8
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.4833
     },
     {
       "model": "gemini-3.8-flash",
@@ -474,7 +923,21 @@
           "modelArg": "gemini-3.8-flash-high",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 40.93,
+      "aaSlug": "gemini-3-8-flash",
+      "price1m": {
+        "input": 0.75,
+        "output": 3.75,
+        "cacheHit": 0.075,
+        "cacheWrite": 0.75
+      },
+      "speed": {
+        "outputTokensPerSecond": 147.1,
+        "ttftSeconds": 22.6
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 1.2428
     },
     {
       "model": "gemini-3.8-flash",
@@ -487,7 +950,21 @@
           "modelArg": "gemini-3.8-flash-medium",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 39.77,
+      "aaSlug": "gemini-3-8-flash-medium",
+      "price1m": {
+        "input": 0.75,
+        "output": 3.75,
+        "cacheHit": 0.075,
+        "cacheWrite": 0.75
+      },
+      "speed": {
+        "outputTokensPerSecond": null,
+        "ttftSeconds": null
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.931
     },
     {
       "model": "deepseek-v4.1-flash",
@@ -500,7 +977,21 @@
           "modelArg": "cline-pass/deepseek-v4.1-flash",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 39.46,
+      "aaSlug": "deepseek-v4-1-flash",
+      "price1m": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheHit": 0.006,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 175.9,
+        "ttftSeconds": 1.2
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.2652
     },
     {
       "model": "claude-haiku-5.5",
@@ -513,7 +1004,21 @@
           "modelArg": "claude-haiku-5-5",
           "effortArg": "high"
         }
-      ]
+      ],
+      "aaExact": 37.82,
+      "aaSlug": "claude-haiku-5-5-high",
+      "price1m": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheHit": 0.01,
+        "cacheWrite": 0.125
+      },
+      "speed": {
+        "outputTokensPerSecond": 187.9,
+        "ttftSeconds": 24.9
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.0794
     },
     {
       "model": "gpt-5.6-terra",
@@ -526,7 +1031,21 @@
           "modelArg": "gpt-5.6-terra",
           "effortArg": "xhigh"
         }
-      ]
+      ],
+      "aaExact": 37.95,
+      "aaSlug": "gpt-5-6-terra-xhigh",
+      "price1m": {
+        "input": 2,
+        "output": 12,
+        "cacheHit": 0.2,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 114.9,
+        "ttftSeconds": 17.3
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.6318
     },
     {
       "model": "mimo-v2.6-flash",
@@ -544,7 +1063,21 @@
           "modelArg": "cline-free/mimo-v2.6-flash",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 37.88,
+      "aaSlug": "mimo-v2-6-flash",
+      "price1m": {
+        "input": 0.14,
+        "output": 0.28,
+        "cacheHit": 0.0028,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 51.9,
+        "ttftSeconds": 5.1
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.0624
     },
     {
       "model": "claude-sonnet-5.5",
@@ -562,7 +1095,21 @@
           "modelArg": "claude-sonnet-5-5-low",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 35.87,
+      "aaSlug": "claude-sonnet-5-5-low",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 108.8,
+        "ttftSeconds": 1.0
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.3452
     },
     {
       "model": "deepseek-v4-pro",
@@ -575,7 +1122,21 @@
           "modelArg": "cline-pass/deepseek-v4-pro",
           "effortArg": "max"
         }
-      ]
+      ],
+      "aaExact": 36.0,
+      "aaSlug": "deepseek-v4-pro",
+      "price1m": {
+        "input": 1.32,
+        "output": 3.96,
+        "cacheHit": 0.044,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 78.8,
+        "ttftSeconds": 1.7
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.674
     },
     {
       "model": "claude-haiku-5.5",
@@ -588,7 +1149,21 @@
           "modelArg": "claude-haiku-5-5",
           "effortArg": "medium"
         }
-      ]
+      ],
+      "aaExact": 34.46,
+      "aaSlug": "claude-haiku-5-5-medium",
+      "price1m": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheHit": 0.01,
+        "cacheWrite": 0.125
+      },
+      "speed": {
+        "outputTokensPerSecond": 181.1,
+        "ttftSeconds": 8.5
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.047
     },
     {
       "model": "glm-5.3",
@@ -606,7 +1181,21 @@
           "modelArg": "cline-pass/glm-5.3",
           "effortArg": "low"
         }
-      ]
+      ],
+      "aaExact": 34.3,
+      "aaSlug": "glm-5-3-low",
+      "price1m": {
+        "input": 1.4,
+        "output": 4.4,
+        "cacheHit": 0.26,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 70.4,
+        "ttftSeconds": 3.2
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.8522
     },
     {
       "model": "gpt-5.6-terra",
@@ -619,7 +1208,21 @@
           "modelArg": "gpt-5.6-terra",
           "effortArg": "high"
         }
-      ]
+      ],
+      "aaExact": 34.24,
+      "aaSlug": "gpt-5-6-terra-high",
+      "price1m": {
+        "input": 2,
+        "output": 12,
+        "cacheHit": 0.2,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 110.9,
+        "ttftSeconds": 2.7
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.3379
     },
     {
       "model": "gemini-3.8-flash",
@@ -632,7 +1235,21 @@
           "modelArg": "gemini-3.8-flash-low",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 33.45,
+      "aaSlug": "gemini-3-8-flash-low",
+      "price1m": {
+        "input": 0.75,
+        "output": 3.75,
+        "cacheHit": 0.075,
+        "cacheWrite": 0.75
+      },
+      "speed": {
+        "outputTokensPerSecond": null,
+        "ttftSeconds": null
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": null
     },
     {
       "model": "gpt-5.6-terra",
@@ -645,7 +1262,21 @@
           "modelArg": "gpt-5.6-terra",
           "effortArg": "medium"
         }
-      ]
+      ],
+      "aaExact": 30.09,
+      "aaSlug": "gpt-5-6-terra-medium",
+      "price1m": {
+        "input": 2,
+        "output": 12,
+        "cacheHit": 0.2,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 97.4,
+        "ttftSeconds": 1.6
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.1834
     },
     {
       "model": "kimi-k3",
@@ -658,7 +1289,21 @@
           "modelArg": "cline-pass/kimi-k3",
           "effortArg": "low"
         }
-      ]
+      ],
+      "aaExact": 30.07,
+      "aaSlug": "kimi-k3-low",
+      "price1m": {
+        "input": 3,
+        "output": 15,
+        "cacheHit": 0.3,
+        "cacheWrite": null
+      },
+      "speed": {
+        "outputTokensPerSecond": 42.1,
+        "ttftSeconds": 3.5
+      },
+      "contextWindowTokens": 1048576,
+      "costPerIndexTask": 1.1463
     },
     {
       "model": "claude-haiku-5.5",
@@ -671,7 +1316,21 @@
           "modelArg": "claude-haiku-5-5",
           "effortArg": "low"
         }
-      ]
+      ],
+      "aaExact": 29.45,
+      "aaSlug": "claude-haiku-5-5-low",
+      "price1m": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheHit": 0.01,
+        "cacheWrite": 0.125
+      },
+      "speed": {
+        "outputTokensPerSecond": 171.4,
+        "ttftSeconds": 6.3
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.0245
     },
     {
       "model": "minimax-m3",
@@ -684,7 +1343,21 @@
           "modelArg": "cline-pass/minimax-m3",
           "effortArg": null
         }
-      ]
+      ],
+      "aaExact": 29.22,
+      "aaSlug": "minimax-m3",
+      "price1m": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheHit": 0.06,
+        "cacheWrite": 0.375
+      },
+      "speed": {
+        "outputTokensPerSecond": 93.4,
+        "ttftSeconds": 1.2
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.5076
     },
     {
       "model": "gpt-5.6-terra",
@@ -697,7 +1370,157 @@
           "modelArg": "gpt-5.6-terra",
           "effortArg": "low"
         }
-      ]
+      ],
+      "aaExact": 27.5,
+      "aaSlug": "gpt-5-6-terra-low",
+      "price1m": {
+        "input": 2,
+        "output": 12,
+        "cacheHit": 0.2,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 95.8,
+        "ttftSeconds": 1.4
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.1445
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "max",
+      "aa": 52,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6.1-sol",
+          "effortArg": "max"
+        }
+      ],
+      "aaExact": 51.83,
+      "aaSlug": "gpt-6-1-sol",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 66.0,
+        "ttftSeconds": 324.2
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.7242
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "aa": 51,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6.1-sol",
+          "effortArg": "xhigh"
+        }
+      ],
+      "aaExact": 51.04,
+      "aaSlug": "gpt-6-1-sol-xhigh",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 58.5,
+        "ttftSeconds": 120.6
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.3929
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "aa": 50,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6.1-sol",
+          "effortArg": "high"
+        }
+      ],
+      "aaExact": 50.24,
+      "aaSlug": "gpt-6-1-sol-high",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 57.5,
+        "ttftSeconds": 43.7
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.3191
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "aa": 48,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6.1-sol",
+          "effortArg": "medium"
+        }
+      ],
+      "aaExact": 47.78,
+      "aaSlug": "gpt-6-1-sol-medium",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 48.0,
+        "ttftSeconds": 3.9
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.2137
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "aa": 42,
+      "creator": "OpenAI",
+      "access": [
+        {
+          "cli": "codex",
+          "modelArg": "gpt-6.1-sol",
+          "effortArg": "low"
+        }
+      ],
+      "aaExact": 42.08,
+      "aaSlug": "gpt-6-1-sol-low",
+      "price1m": {
+        "input": 2,
+        "output": 10,
+        "cacheHit": 0.1,
+        "cacheWrite": 2.5
+      },
+      "speed": {
+        "outputTokensPerSecond": 45.4,
+        "ttftSeconds": 2.7
+      },
+      "contextWindowTokens": 1000000,
+      "costPerIndexTask": 0.1308
     }
-  ]
+  ],
+  "_refresh": "2026-10-17 lead refresh (user asked): AA leaderboard initialModels parsed from the page; raw page kept in data/raw_aa.sqlite (gitignored). Each entry matched by AA slug with its reasoning level verified against the AA shortName; aa = rounded intelligenceIndex, plus additive aaExact, aaSlug, price1m {input, output, cacheHit, cacheWrite} (USD per 1M tokens), speed {median output tok/s, median TTFT s}, contextWindowTokens, costPerIndexTask (USD). parseRanking ignores the extra fields; routing still reads aa only."
 }

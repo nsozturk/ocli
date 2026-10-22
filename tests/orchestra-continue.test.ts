@@ -45,7 +45,7 @@ describe('dispatch --continue (Q9)', () => {
     vi.stubEnv('ORCHESTRA_TREE_DIR', treeDir);
     vi.stubEnv('ORCHESTRA_LIVE_DIR', liveDir);
     // Package-only: the shipped policy and ranking, never a user's gitignored dispatcher/policy.json.
-    vi.stubEnv('ORCHESTRA_POLICY', fileURLToPath(new URL('../dispatcher/policy.example.json', import.meta.url)));
+    vi.stubEnv('ORCHESTRA_POLICY', fileURLToPath(new URL('../dispatcher/policy.full-roster.json', import.meta.url)));
     vi.stubEnv('ORCHESTRA_RANKING_FILE', fileURLToPath(new URL('../dispatcher/model-ranking.example.json', import.meta.url)));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -81,6 +81,13 @@ describe('dispatch --continue (Q9)', () => {
   const sentPrompt = (call = 0) => argvOf(call).at(-1) as string;
   const rootOf = (call = 0) => argvOf(call)[argvOf(call).indexOf('-C') + 1];
   const node = (call = 0) => JSON.parse(mocks.appendFile.mock.calls[call][1]);
+
+  it('Q18: the prior run\'s final message (untrusted, up to 64 KiB on the node) never enters the --continue note', async () => {
+    seed(prior({ finalText: 'x'.repeat(3000) + ' REPORT-END-Q18.' }));
+    await dispatch('--continue', 'prior-1');
+    expect(sentPrompt()).not.toContain('REPORT-END-Q18');
+    expect(sentPrompt()).not.toContain('x'.repeat(100));
+  });
 
   it('appends the note after the suffix; the prompt bytes and prefixSha are a fresh run\'s', async () => {
     seed(prior());

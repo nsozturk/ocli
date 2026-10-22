@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,16 +11,23 @@ import * as path from 'node:path';
 // {type:"error",error:{...}} to stdout. Through main() with spawn mocked (never a real
 // provider); the tree is REAL via ORCHESTRA_TREE_DIR.
 const mocks = vi.hoisted(() => ({
-  codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), appendFile: vi.fn(), spawn: vi.fn(),
+  codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), counter: vi.fn(), appendFile: vi.fn(), spawn: vi.fn(),
 }));
 vi.mock('../dispatcher/usage.mjs', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
-  readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
-}));
+  }));
 // Spread, not bare: this file also uses execFileSync (TZ child run) from node:child_process.
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
   spawn: mocks.spawn,
+}));
+// Slice D: dispatch reads every counter through usage-readers/index.mjs; the stub routes by provider.
+vi.mock('../dispatcher/usage-readers/index.mjs', async importOriginal => ({
+  ...await importOriginal<Record<string, unknown>>(),
+  readProviderUsage: (provider: string) => {
+    const reader = ({ codex: mocks.codex, glm: mocks.glm, claude: mocks.claude } as Record<string, (() => unknown) | undefined>)[provider];
+    return reader ? reader() : mocks.counter(provider);
+  },
 }));
 vi.mock('node:fs', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
@@ -50,21 +58,40 @@ const opencodeErrLine = (message: string) =>
   JSON.stringify({ type: 'error', timestamp: 1791762679000, sessionID: 'ses_test',
     error: { name: 'APIError', data: { message, statusCode: 429, isRetryable: true } } });
 
+// Q14m: 2026-10-17 S7 failure, verbatim from the spec (including its request_id marker).
+const MUSE_LIMIT_MESSAGE = 'API error 429 [request_id=…]: Subscription quota exhausted. Your usage window resets at 2026-10-17T22:16:44Z. (rate_limit_error)';
+const museErrLine = (reason: string) =>
+  JSON.stringify({ payload_type: 'run.terminal.failed', payload: { reason } });
+
+// Q14z: 2026-10-17 22:17 local (+03) GLM stop message, verbatim from the spec (Asia/Shanghai UTC+8).
+const GLM_Q14Z_LIMIT_MESSAGE = 'Usage limit reached for 5 hour. Your limit will reset at 2026-10-18 06:16:53';
+
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 describe('PS1 provider-declared window stops', () => {
   let treeDir: string;
   let exitCode: typeof process.exitCode;
+  const plansDirs: string[] = [];
   beforeEach(() => {
     vi.clearAllMocks();
     exitCode = process.exitCode;
     treeDir = mkdtempSync(path.join(tmpdir(), 'orchestra-ps1-'));
     vi.stubEnv('ORCHESTRA_TREE_DIR', treeDir);
+    // Hermetic plans: a temp copy of the shipped example, so ~/.config/agent-rules is never read.
+    const plansDir = mkdtempSync(path.join(tmpdir(), 'orchestra-ps1-plans-'));
+    plansDirs.push(plansDir);
+    const plansFile = path.join(plansDir, 'plans.json');
+    writeFileSync(plansFile, readFileSync(new URL('../dispatcher/provider-plans.full-roster.json', import.meta.url), 'utf8'));
+    vi.stubEnv('ORCHESTRA_PLANS', plansFile);
+    vi.stubEnv('ORCHESTRA_LIVE_DIR', path.join(treeDir, 'live'));
+    // The suites run on the full roster; an unconfigured install would load the two-route starter.
+    vi.stubEnv('ORCHESTRA_POLICY', fileURLToPath(new URL('../dispatcher/policy.full-roster.json', import.meta.url)));
     rankingWith([]); // hermetic: no route ranked unless the test says so
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     mocks.codex.mockResolvedValue({ status: 'unknown', reason: 'no reading', windows: [] });
     mocks.glm.mockResolvedValue({ status: 'unknown', reason: 'no verified source', windows: [] });
+    mocks.counter.mockResolvedValue({ status: 'unavailable', reason: 'reader:unavailable' });
     mocks.spawn.mockImplementation(() => {
       const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
       queueMicrotask(() => {
@@ -79,6 +106,7 @@ describe('PS1 provider-declared window stops', () => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
     rmSync(treeDir, { recursive: true, force: true });
+    for (const d of plansDirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
   const rankingWith = (entries: unknown[]) => {
@@ -148,16 +176,79 @@ describe('PS1 provider-declared window stops', () => {
     expect(node()).toMatchObject({ blocked: false, blockedCheck: 'no usage-limit text in the transcript' });
   });
 
-  it('opencode stdout error event on a failed run records a zai stop at the local reset time', async () => {
+  it('opencode stdout error event on a failed run records a zai stop in UTC+8 (Beijing time)', async () => {
     failWith([opencodeErrLine(OPENCODE_LIMIT_MESSAGE)], [], 1);
     await main(['--role', 'implement', '--task', 'ps1-zai', '--prompt', 'stable']);
     expect(node().providerStop).toEqual({
       provider: 'zai',
-      resetsAt: new Date(2026, 9, 12, 9, 23, 37).toISOString(), // local wall time -> UTC
+      resetsAt: '2026-10-12T01:23:37.000Z', // 2026-10-12 09:23:37 at UTC+08:00
       evidence: expect.any(String),
     });
     expect(node().providerStop.evidence).toContain('Usage limit reached');
     expect(node()).toMatchObject({ blocked: true }); // ocli has no blockedBasis (Senatus R0 #4 not ported)
+  });
+
+  it('Q14z: captured GLM line verbatim on a zai route records resetsAt 2026-10-17T22:16:53.000Z in any TZ', async () => {
+    failWith([opencodeErrLine(GLM_Q14Z_LIMIT_MESSAGE)], [], 1);
+    await main(['--role', 'implement', '--task', 'q14z-glm', '--prompt', 'stable']);
+    expect(node().providerStop).toEqual({
+      provider: 'zai',
+      resetsAt: '2026-10-17T22:16:53.000Z',
+      evidence: expect.any(String),
+    });
+    expect(node().providerStop.evidence).toContain(GLM_Q14Z_LIMIT_MESSAGE);
+    const { execFileSync } = await import('node:child_process');
+    const href = new URL('../dispatcher/dispatch.mjs', import.meta.url).href;
+    const script = `import(${JSON.stringify(href)}).then(m => {`
+      + `const stop = m.decideProviderStop({ result: { code: 1 }, cliErrorText: ${JSON.stringify(GLM_Q14Z_LIMIT_MESSAGE)}, cli: 'opencode', model: 'zai-coding-plan/glm-5.3', runEndMs: 0 });`
+      + `console.log(stop?.resetsAt ?? 'null');`
+      + `});`;
+    for (const tz of ['Europe/Istanbul', 'UTC', 'America/New_York']) {
+      const out = execFileSync(process.execPath, ['--input-type=module', '-e', script],
+        { env: { ...process.env, TZ: tz }, encoding: 'utf8' }).trim();
+      expect(out, `TZ=${tz}`).toBe('2026-10-17T22:16:53.000Z');
+    }
+  });
+
+  it('Q14z: the same local-wall wording on a non-zai route keeps the machine local-wall reading', async () => {
+    const expectedLocal = new Date(2026, 9, 18, 6, 16, 53).toISOString();
+    failWith([], [clineErrLine(GLM_Q14Z_LIMIT_MESSAGE)], 1);
+    await main(['--role', 'cline-qwen', '--task', 'q14z-cline', '--prompt', 'stable']);
+    expect(node().providerStop).toEqual({
+      provider: 'cline',
+      resetsAt: expectedLocal,
+      evidence: expect.any(String),
+    });
+    expect(decideProviderStop({
+      result: { code: 1 }, cliErrorText: GLM_Q14Z_LIMIT_MESSAGE,
+      cli: 'muse', model: 'muse-wonder-1.0', runEndMs: 0,
+    })).toMatchObject({ provider: 'meta', resetsAt: expectedLocal });
+    expect(decideProviderStop({
+      result: { code: 1 }, cliErrorText: GLM_Q14Z_LIMIT_MESSAGE,
+      cli: 'agy', model: 'gemini-4-argon-high', runEndMs: 0,
+    })).toMatchObject({ provider: 'google', resetsAt: expectedLocal });
+  });
+
+  it('Q14z: zai/glm zone is fixed UTC+08:00 (DST-free across winter and summer) while ISO-UTC and relative forms stay unchanged', async () => {
+    for (const provider of ['zai', 'glm']) {
+      expect(parseProviderReset('will reset at 2026-01-15 06:16:53', 0, undefined, provider)).toBe('2026-01-14T22:16:53.000Z');
+      expect(parseProviderReset('will reset at 2026-07-15 06:16:53', 0, undefined, provider)).toBe('2026-07-14T22:16:53.000Z');
+      expect(parseProviderReset(GLM_Q14Z_LIMIT_MESSAGE, 0, undefined, provider)).toBe('2026-10-17T22:16:53.000Z');
+      expect(parseProviderReset('resets at 2026-10-17T22:16:44Z', 0, undefined, provider)).toBe('2026-10-17T22:16:44.000Z');
+      expect(parseProviderReset('resets in 1h 6m', Date.parse('2026-10-11T23:00:00.000Z'), undefined, provider))
+        .toBe('2026-10-12T00:06:00.000Z');
+    }
+    const { execFileSync } = await import('node:child_process');
+    const href = new URL('../dispatcher/dispatch.mjs', import.meta.url).href;
+    const script = `import(${JSON.stringify(href)}).then(m => {`
+      + `console.log([`
+      + `m.parseProviderReset('will reset at 2026-01-15 06:16:53', 0, undefined, 'zai'),`
+      + `m.parseProviderReset('will reset at 2026-07-15 06:16:53', 0, undefined, 'zai')`
+      + `].join(','));`
+      + `});`;
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script],
+      { env: { ...process.env, TZ: 'America/New_York' }, encoding: 'utf8' }).trim();
+    expect(out).toBe('2026-01-14T22:16:53.000Z,2026-07-14T22:16:53.000Z');
   });
 
   it('a transient rate limit / 429 never creates a stop (blocked only)', async () => {
@@ -167,6 +258,34 @@ describe('PS1 provider-declared window stops', () => {
     expect(decideProviderStop({ result: { code: 1 },
       cliErrorText: 'Rate limit exceeded (429). Retry after 30 seconds.',
       cli: 'cline', model: 'cline-pass/qwen3.8-max', runEndMs: 0 })).toBeNull();
+  });
+
+  it('Muse terminal quota exhaustion records a meta stop at the ISO UTC reset', async () => {
+    failWith([museErrLine(MUSE_LIMIT_MESSAGE)], [], 1);
+    await main(['--role', 'muse', '--task', 'q14m-muse', '--prompt', 'stable']);
+    expect(node().providerStop).toEqual({
+      provider: 'meta', resetsAt: '2026-10-17T22:16:44.000Z',
+      evidence: `run.terminal.failed: ${MUSE_LIMIT_MESSAGE}`,
+    });
+  });
+
+  it('Muse model output quoting the quota error does not create a stop', async () => {
+    failWith([JSON.stringify({ payload_type: 'run.output.delta', payload: { text: MUSE_LIMIT_MESSAGE } })], [], 1);
+    await main(['--role', 'muse', '--task', 'q14m-quoted', '--prompt', 'stable']);
+    expect(node().providerStop).toBeNull();
+  });
+
+  it.each(['rate limit', 'request rejected'])('Muse 429 with %s but no quota wording does not create a stop', async wording => {
+    failWith([museErrLine(MUSE_LIMIT_MESSAGE.replace('Subscription quota exhausted', wording))], [], 1);
+    await main(['--role', 'muse', '--task', 'q14m-transient', '--prompt', 'stable']);
+    expect(node().providerStop).toBeNull();
+    if (wording === 'rate limit') expect(node()).toMatchObject({ blocked: true, blockedBasis: 'cli-error-event' });
+  });
+
+  it('Muse quota error on an exit-zero run does not create a stop', async () => {
+    failWith([museErrLine(MUSE_LIMIT_MESSAGE)], [], 0);
+    await main(['--role', 'muse', '--task', 'q14m-success', '--prompt', 'stable']);
+    expect(node()).toMatchObject({ exitCode: 0, providerStop: null });
   });
 
   it('the absolute reset is interpreted in the machine local zone (Kiritimati child run)', async () => {
@@ -250,10 +369,10 @@ describe('PS1 provider-declared window stops', () => {
   it('a stopped route whose status is not ok reports excludedBy status', async () => {
     const fs = await import('node:fs/promises');
     const realRead = fs.readFile.bind(fs);
-    const policy = JSON.parse(String(await realRead(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8')));
+    const policy = JSON.parse(String(await realRead(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8')));
     policy.routes['cline-mimo'].status = 'dead';
     vi.spyOn(fs, 'readFile').mockImplementation((async (file: any, ...rest: any[]) =>
-      /policy(\.example)?\.json$/.test(String(file)) ? JSON.stringify(policy) : realRead(file, ...rest)) as any);
+      /policy(\.example|\.full-roster)?\.json$/.test(String(file)) ? JSON.stringify(policy) : realRead(file, ...rest)) as any);
     const resetsAt = new Date(Date.now() + 2 * 3600_000).toISOString();
     seedTree(stopNode({ providerStop: { provider: 'cline', resetsAt, evidence: 'x' } }));
     const routes = await listJson();
@@ -266,14 +385,15 @@ describe('PS1 provider-declared window stops', () => {
     seedTree(stopNode({ providerStop: { provider: 'cline', resetsAt, evidence: 'ClinePass limit reached' } }));
     const routes = await listJson();
     const cline = routes.filter(r => String(r.role).startsWith('cline-'));
-    expect(cline).toHaveLength(Object.values(JSON.parse(String(await (await import('node:fs/promises')).readFile(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'))).routes).filter((r: any) => r.cli === 'cline').length); // one billing pool, every cline route in the shipped policy
+    expect(cline).toHaveLength(Object.values(JSON.parse(String(await (await import('node:fs/promises')).readFile(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'))).routes).filter((r: any) => r.cli === 'cline').length); // one billing pool, every cline route in the shipped policy
     for (const r of cline) {
       expect(r).toMatchObject({ gate: 'stop', gateSource: 'provider-declared', excludedBy: 'budget-stop', resetsAt, eligible: false });
     }
     const byRole = Object.fromEntries(routes.map(r => [r.role, r]));
-    expect(byRole.implement).toMatchObject({ gate: 'ok', eligible: true }); // glm uncapped, untouched
-    expect(byRole.muse).toMatchObject({ gate: 'ok', eligible: true });
-    expect(byRole.reason).toMatchObject({ excludedBy: 'budget-unknown' }); // capped, no reading: as before
+    // Q17: glm/muse are until-stop CodexBar counters; with no reading they run, untouched by cline's stop.
+    expect(byRole.implement).toMatchObject({ gate: 'ok', gateSource: 'until-stop', eligible: true });
+    expect(byRole.muse).toMatchObject({ gate: 'ok', gateSource: 'until-stop', eligible: true });
+    expect(byRole.reason).toMatchObject({ excludedBy: 'budget-unknown' }); // refuse cap, no reading: as before
   });
 
   it('--list-routes text names the reset as until HH:MMZ', async () => {
@@ -295,7 +415,8 @@ describe('PS1 provider-declared window stops', () => {
   it('after resetsAt the provider is eligible again; the boundary is strict (== now is eligible)', async () => {
     seedTree(stopNode({ providerStop: { provider: 'cline', resetsAt: '2020-01-01T00:00:00.000Z', evidence: 'old' } }));
     const routes = await listJson();
-    expect(routes.find(r => r.role === 'cline-mimo')).toMatchObject({ gate: 'ok', gateSource: 'no-budget', eligible: true });
+    // Q17: cline is an until-stop counter now (was no-budget); an expired stop leaves it running.
+    expect(routes.find(r => r.role === 'cline-mimo')).toMatchObject({ gate: 'ok', gateSource: 'until-stop', eligible: true });
     expect(routes.find(r => r.role === 'cline-mimo')).not.toHaveProperty('resetsAt');
     const T = Date.parse('2026-10-11T23:00:27.355Z');
     vi.spyOn(Date, 'now').mockReturnValue(T);
@@ -303,7 +424,7 @@ describe('PS1 provider-declared window stops', () => {
       seedTree(stopNode({ providerStop: { provider: 'cline', resetsAt: new Date(at).toISOString(), evidence: 'x' } }));
       const found = (await listJson()).find(r => r.role === 'cline-mimo')!;
       expect(found.eligible).toBe(eligible);
-      expect(found.gateSource).toBe(eligible ? 'no-budget' : 'provider-declared');
+      expect(found.gateSource).toBe(eligible ? 'until-stop' : 'provider-declared');
     }
   });
 
@@ -329,7 +450,7 @@ describe('PS1 provider-declared window stops', () => {
 
   it('--role auto skips a stopped provider for the next ranked eligible route', async () => {
     // The muse route's model comes from the shipped policy, never a literal (a switch must not unrank it).
-    const museModel: string = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8')).routes.muse.model;
+    const museModel: string = JSON.parse(readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8')).routes.muse.model;
     rankingWith([entry('cline', 'cline-pass/mimo-v2.6-pro', null, 46), entry('muse', museModel, 'max', 44)]);
     await main(['--role', 'auto', '--task', 'ps1-auto', '--prompt', 'stable']);
     expect(JSON.parse(mocks.appendFile.mock.calls[0][1]).candidates.chosen).toBe('cline-mimo'); // control: no stop
@@ -364,6 +485,38 @@ describe('PS1 provider-declared window stops', () => {
 });
 
 describe('PS1 helpers', () => {
+  it.each([
+    ['resets at 2026-10-17T22:16:44Z', '2026-10-17T22:16:44.000Z'],
+    ['reset at 2026-10-17T22:16:44Z', '2026-10-17T22:16:44.000Z'],
+    ['resets at 2026-10-17T22:16:44.123Z', '2026-10-17T22:16:44.123Z'],
+    ['reset at 2026-10-17T22:16:44.007Z', '2026-10-17T22:16:44.007Z'],
+  ])('parseProviderReset: ISO UTC %s never uses the local-zone converter', (text, expected) => {
+    const localToIso = vi.fn(() => 'LOCAL-WALL');
+    expect(parseProviderReset(text, Number.NaN, localToIso)).toBe(expected);
+    expect(localToIso).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'will reset at 2026-10-18 09:00:00',
+    'resets in 1 hour 30 minutes',
+    'retry after 30 seconds',
+  ])('parseProviderReset: ISO UTC takes precedence over %s', other => {
+    const localToIso = vi.fn(() => 'LOCAL-WALL');
+    const text = `${other}; Your usage window resets at 2026-10-17T22:16:44Z.`;
+    expect(parseProviderReset(text, Date.parse('2026-10-17T18:30:00Z'), localToIso))
+      .toBe('2026-10-17T22:16:44.000Z');
+    expect(localToIso).not.toHaveBeenCalled();
+  });
+
+  it('parseProviderReset: invalid ISO UTC dates stay unknown or fall back to an existing reset form', () => {
+    for (const iso of ['2026-02-31T09:00:00Z', '2026-13-17T22:16:44Z', '2026-10-17T24:00:00Z']) {
+      expect(parseProviderReset(`resets at ${iso}`, 0)).toBeNull();
+      expect(parseProviderReset(`resets at ${iso}; resets in 1h`, 0)).toBe('1970-01-01T01:00:00.000Z');
+    }
+    expect(parseProviderReset('resets at 2026-02-31T09:00:00Z; will reset at 2026-10-18 09:00:00', 0, () => 'LOCAL-WALL'))
+      .toBe('LOCAL-WALL');
+  });
+
   it('parseProviderReset: relative ClinePass durations add to runEnd', () => {
     const T = Date.parse('2026-10-11T23:00:27.169Z');
     expect(parseProviderReset('The limit resets in 1h 6m, please try again later.', T))

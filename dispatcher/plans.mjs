@@ -11,9 +11,9 @@ export const EXAMPLE_PLANS = fileURLToPath(new URL('./provider-plans.example.jso
 const SIZES = ['S', 'M', 'L'];
 const fail = (p, msg) => { throw new Error(`plans: ${p}: ${msg}`); };
 
-function obj(v, p, keys) {
+function obj(v, p, keys, optional = []) {
   if (v === null || typeof v !== 'object' || Array.isArray(v)) fail(p, 'expected an object');
-  for (const k of Object.keys(v)) if (!keys.includes(k)) fail(`${p}.${k}`, 'unknown key');
+  for (const k of Object.keys(v)) if (!keys.includes(k) && !optional.includes(k)) fail(`${p}.${k}`, 'unknown key');
   for (const k of keys) if (!(k in v)) fail(`${p}.${k}`, 'missing');
   return v;
 }
@@ -43,7 +43,9 @@ function checkWindow(w, p) {
 
 function checkProvider(v, p) {
   obj(v, p, ['pool', 'plan', 'meteredBy', 'limitIds', 'reservePercent', 'onUnknown', 'uncalibratedMaxSize',
-    'overflow', 'maxSize', 'priorTokens', 'windows']);
+    'overflow', 'maxSize', 'priorTokens', 'windows'], ['_note', 'limitScopes']);
+  // Q17, additive: an optional free-text `_note` saying why a field is what it is. Never read by code.
+  if ('_note' in v) str(v._note, `${p}._note`);
   str(v.pool, `${p}.pool`);
   str(v.plan, `${p}.plan`);
   oneOf(v.meteredBy, `${p}.meteredBy`, ['counter', 'tokens', 'ms']);
@@ -51,6 +53,7 @@ function checkProvider(v, p) {
     if (!Array.isArray(v.limitIds)) fail(`${p}.limitIds`, 'expected an array or null');
     v.limitIds.forEach((id, i) => str(id, `${p}.limitIds[${i}]`));
   }
+  if ('limitScopes' in v) checkScopes(v.limitScopes, v.limitIds, `${p}.limitScopes`);
   num(v.reservePercent, `${p}.reservePercent`, 0, 50);
   oneOf(v.onUnknown, `${p}.onUnknown`, ['refuse', 'until-stop']);
   oneOf(v.uncalibratedMaxSize, `${p}.uncalibratedMaxSize`, [...SIZES, null]);
@@ -64,6 +67,38 @@ function checkProvider(v, p) {
     if (seen.has(w.kind)) fail(`${p}.windows[${i}].kind`, `duplicate window ${w.kind}`);
     seen.add(w.kind);
   });
+}
+
+// Q19, additive: `limitScopes: { <limitId>: { models: [...] } }` — that bucket counts only for routes
+// whose model is listed (an exact id, or a prefix ending in one trailing `*`; never a regex).
+const MODEL_PATTERN = /^[^*]+\*?$/;
+function checkScopes(v, limitIds, p) {
+  obj(v, p, Object.keys(v ?? {}));
+  for (const [id, scope] of Object.entries(v)) {
+    if (!Array.isArray(limitIds) || !limitIds.includes(id)) fail(`${p}.${id}`, "expected one of this provider's limitIds");
+    obj(scope, `${p}.${id}`, ['models']);
+    if (!Array.isArray(scope.models) || !scope.models.length) fail(`${p}.${id}.models`, 'expected a non-empty array');
+    scope.models.forEach((m, i) => {
+      if (typeof m !== 'string' || !MODEL_PATTERN.test(m)) fail(`${p}.${id}.models[${i}]`, 'expected a model id, or a prefix with one trailing *');
+    });
+  }
+}
+
+/** Whether `model` is one of `patterns`: equal, or starting with a `prefix*` pattern's prefix. */
+export function modelMatches(model, patterns) {
+  if (typeof model !== 'string') return false;
+  return patterns.some(m => (m.endsWith('*') ? model.startsWith(m.slice(0, -1)) : model === m));
+}
+
+/**
+ * Q19: the limitIds that bind a route on `model` — THE seam gateFor, the dispatch candidate gate and
+ * quota.decide all scope through. A scoped id stays only when the model matches its scope. No model
+ * (a pool-wide question: summaries, the usage printout) keeps every id, which is today's behaviour.
+ * `limitIds: null` (every window) is returned as is.
+ */
+export function scopedLimitIds({ limitIds, limitScopes = null }, model) {
+  if (!Array.isArray(limitIds) || !limitScopes || model == null) return limitIds ?? null;
+  return limitIds.filter(id => !Object.hasOwn(limitScopes, id) || modelMatches(model, limitScopes[id].models));
 }
 
 /** Strict schema-v1 parse; throws `plans: <path>: <reason>` on the first violation. */
@@ -123,11 +158,16 @@ export function loadPlans({ env = process.env, home = homedir() } = {}) {
   return loadFrom(EXAMPLE_PLANS, 'example');
 }
 
-/** Counter providers stop at 100 − reserve; until-stop (token/ms) providers have no percent cap (null). */
+/** Counter providers stop at 100 - reserve; token/ms providers have no percent cap (null). */
 export function stopAtPercentFor(plans, provider) {
   const p = Object.hasOwn(plans.providers, provider) ? plans.providers[provider] : fail(`providers.${provider}`, 'unknown provider');
-  // Only a counter pool that must refuse when unread gets a stop; `until-stop` is today's "uncapped" (it runs
-  // until the provider itself says stop), whatever meters it. Lead decision 2026-10-17: claude stays until-stop until a
-  // lead snapshot reader exists (Q13), so `--budget` councils do not shed @claude on an unreadable counter.
-  return p.meteredBy === 'counter' && p.onUnknown === 'refuse' ? 100 - p.reservePercent : null;
+  // Q17: every non-claude counter pool caps at 100 - reserve, even when `onUnknown` is `until-stop` -
+  // the cap binds on a readable counter; the until-stop half (what happens with no reading) is
+  // gateFor/quota's, not this number's. Deliberately not "counter pools WITH a reader": a counter
+  // without a reader (or without limitIds, muse/cline today) simply never has a reading, so its cap
+  // never binds - the number is harmless and starts working the day a reader returns one.
+  // Claude is the one exception until Q13 wires its lead snapshot, so `--budget` councils keep
+  // @claude on an unreadable counter (Q5 lead decision): it caps only when it must refuse.
+  if (provider === 'claude') return p.meteredBy === 'counter' && p.onUnknown === 'refuse' ? 100 - p.reservePercent : null;
+  return p.meteredBy === 'counter' ? 100 - p.reservePercent : null;
 }

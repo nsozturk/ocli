@@ -17,7 +17,7 @@
   "providers": {
     "codex": {
       "pool": "openai",
-      "plan": "chatgpt-pro",
+      "plan": "chatgpt-plus",
       "meteredBy": "counter",
       "limitIds": [
         "codex"
@@ -56,8 +56,10 @@
     "glm": {
       "pool": "zai",
       "plan": "glm-coding-lite",
-      "meteredBy": "tokens",
-      "limitIds": null,
+      "meteredBy": "counter",
+      "limitIds": [
+        "zai-primary"
+      ],
       "reservePercent": 15,
       "onUnknown": "until-stop",
       "uncalibratedMaxSize": "M",
@@ -72,127 +74,19 @@
         {
           "kind": "5h",
           "capacity": {
-            "unit": "unknown",
-            "value": null
+            "unit": "percent",
+            "value": 100
           },
-          "source": "learned",
+          "source": "counter",
           "priorCost": null
         },
         {
           "kind": "weekly",
           "capacity": {
-            "unit": "unknown",
-            "value": null
+            "unit": "percent",
+            "value": 100
           },
-          "source": "learned",
-          "priorCost": null
-        }
-      ]
-    },
-    "gemini": {
-      "pool": "google",
-      "plan": "google-ai-pro",
-      "meteredBy": "tokens",
-      "limitIds": null,
-      "reservePercent": 15,
-      "onUnknown": "until-stop",
-      "uncalibratedMaxSize": "M",
-      "overflow": false,
-      "maxSize": null,
-      "priorTokens": {
-        "S": 300000,
-        "M": 1200000,
-        "L": 4000000
-      },
-      "windows": [
-        {
-          "kind": "5h",
-          "capacity": {
-            "unit": "unknown",
-            "value": null
-          },
-          "source": "learned",
-          "priorCost": null
-        },
-        {
-          "kind": "weekly",
-          "capacity": {
-            "unit": "unknown",
-            "value": null
-          },
-          "source": "learned",
-          "priorCost": null
-        }
-      ]
-    },
-    "muse": {
-      "pool": "meta",
-      "plan": "meta-contributor",
-      "meteredBy": "ms",
-      "limitIds": null,
-      "reservePercent": 0,
-      "onUnknown": "until-stop",
-      "uncalibratedMaxSize": "M",
-      "overflow": false,
-      "maxSize": null,
-      "priorTokens": {
-        "S": 300000,
-        "M": 1200000,
-        "L": 4000000
-      },
-      "windows": [
-        {
-          "kind": "5h",
-          "capacity": {
-            "unit": "unknown",
-            "value": null
-          },
-          "source": "learned",
-          "priorCost": null
-        },
-        {
-          "kind": "weekly",
-          "capacity": {
-            "unit": "unknown",
-            "value": null
-          },
-          "source": "learned",
-          "priorCost": null
-        }
-      ]
-    },
-    "cline": {
-      "pool": "cline",
-      "plan": "cline-pass",
-      "meteredBy": "tokens",
-      "limitIds": null,
-      "reservePercent": 10,
-      "onUnknown": "until-stop",
-      "uncalibratedMaxSize": null,
-      "overflow": true,
-      "maxSize": "S",
-      "priorTokens": {
-        "S": 300000,
-        "M": 1200000,
-        "L": 4000000
-      },
-      "windows": [
-        {
-          "kind": "5h",
-          "capacity": {
-            "unit": "unknown",
-            "value": null
-          },
-          "source": "learned",
-          "priorCost": null
-        },
-        {
-          "kind": "weekly",
-          "capacity": {
-            "unit": "unknown",
-            "value": null
-          },
-          "source": "learned",
+          "source": "counter",
           "priorCost": null
         }
       ]

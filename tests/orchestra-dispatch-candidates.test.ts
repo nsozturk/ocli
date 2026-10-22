@@ -2,23 +2,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // RS1: every dispatch node records the candidate set. These tests go through main() with the
 // provider readers, spawn and the node append mocked (the pattern of orchestra-dispatch-usage);
 // the tree, however, is REAL — ORCHESTRA_TREE_DIR points at a temp dir, so readNodes is exercised
 // for true and the real orchestra/tree/ is never read or written.
 const mocks = vi.hoisted(() => ({
-  codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), gate: vi.fn(), appendFile: vi.fn(), spawn: vi.fn(),
+  codex: vi.fn(), glm: vi.fn(), claude: vi.fn(), counter: vi.fn(), gate: vi.fn(), appendFile: vi.fn(), spawn: vi.fn(),
+  appendFileSync: vi.fn(),
 }));
 vi.mock('../dispatcher/usage.mjs', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
-  readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
   gateFor: mocks.gate, // delegates to the real one by default; one test makes it throw
+}));
+// Slice D: dispatch reads every counter through usage-readers/index.mjs; the stub routes by provider.
+vi.mock('../dispatcher/usage-readers/index.mjs', async importOriginal => ({
+  ...await importOriginal<Record<string, unknown>>(),
+  readProviderUsage: (provider: string) => {
+    const reader = ({ codex: mocks.codex, glm: mocks.glm, claude: mocks.claude } as Record<string, (() => unknown) | undefined>)[provider];
+    return reader ? reader() : mocks.counter(provider);
+  },
 }));
 vi.mock('node:child_process', () => ({ spawn: mocks.spawn }));
 vi.mock('node:fs', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
-  appendFileSync: vi.fn(), mkdirSync: vi.fn(),
+  appendFileSync: mocks.appendFileSync, mkdirSync: vi.fn(),
 }));
 vi.mock('node:fs/promises', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
@@ -60,19 +69,21 @@ describe('dispatch records the candidate set (RS1)', () => {
     treeDir = mkdtempSync(path.resolve('tmp', 'rs1-tree-'));
     vi.stubEnv('ORCHESTRA_TREE_DIR', treeDir);
     const fsp = await import('node:fs/promises');
-    currentPolicy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+    currentPolicy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'));
     currentPolicy.developers = { rotation: { order: ['implement', 'reason', 'muse'] } };
     // Policy reads get the test policy; every other read (the ranking file) is real.
     const realRead = fsp.readFile.bind(fsp);
     vi.spyOn(fsp, 'readFile').mockImplementation((async (file: any, ...rest: any[]) =>
-      /policy(\.example)?\.json$/.test(String(file)) ? JSON.stringify(currentPolicy) : realRead(file, ...rest)) as any);
+      /policy(\.example|\.full-roster)?\.json$/.test(String(file)) ? JSON.stringify(currentPolicy) : realRead(file, ...rest)) as any);
     // No ranking unless a test provides one.
     vi.stubEnv('ORCHESTRA_RANKING_FILE', path.join(treeDir, 'no-ranking.json'));
+    vi.stubEnv('ORCHESTRA_LIVE_DIR', path.join(treeDir, 'live'));
     mocks.gate.mockImplementation((...a: unknown[]) => realGateFor(...a));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     mocks.codex.mockResolvedValue(okReading(Math.max(0, CAP - 10)));
     mocks.glm.mockResolvedValue({ status: 'unknown', reason: 'no verified source', windows: [] });
+    mocks.counter.mockResolvedValue({ status: 'unavailable', reason: 'reader:unavailable' });
     mocks.spawn.mockImplementation((command: string) => {
       const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
       queueMicrotask(() => {
@@ -103,13 +114,47 @@ describe('dispatch records the candidate set (RS1)', () => {
   const seedTree = (...nodes: Record<string, unknown>[]) =>
     writeFileSync(path.join(treeDir, 'hist.jsonl'), `${nodes.map(n => JSON.stringify(n)).join('\n')}\n`);
 
+  it.each([
+    ['3,000 characters', 'x'.repeat(2984) + ' All tests pass.', 'x'.repeat(2984) + ' All tests pass.', false],
+    ['100 KiB', 'x'.repeat(100 * 1024), 'x'.repeat(65536), true],
+    ['multi-byte overflow', 'x' + '🙂'.repeat(25600), 'x' + '🙂'.repeat(16383), true],
+  ])('Q18 records and prints the full final text for %s while pane events stay capped', async (_label, full, retained, cut) => {
+    mocks.spawn.mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+      queueMicrotask(() => {
+        child.stdout.emit('data', JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: full } }) + '\n');
+        child.stdout.emit('data', '{"type":"turn.completed","usage":{}}\n');
+        child.emit('close', 0, null);
+      });
+      return child;
+    });
+    await dispatch();
+    const saved = node();
+    expect(saved.finalText).toBe(retained);
+    expect(Buffer.byteLength(saved.finalText)).toBeLessThanOrEqual(65536);
+    expect(saved.finalTextTruncated === true).toBe(cut);
+    expect(process.stdout.write).toHaveBeenCalledWith(`${retained}\n`);
+    const liveEvents = mocks.appendFileSync.mock.calls
+      .filter(([file, body]) => String(file).endsWith('.jsonl') && !String(file).endsWith('.raw.jsonl') && body)
+      .map(([, body]) => JSON.parse(body));
+    const pane = liveEvents.find(event => event.kind === 'message');
+    expect(pane.text).toBe(String(full).slice(0, 500));
+    expect(pane).not.toHaveProperty('finalText');
+    expect(pane).not.toHaveProperty('finalTextTruncated');
+    if (!cut) {
+      expect(saved.finalText).toHaveLength(3000);
+      expect(saved.witness.claims).toContain('testsPass'); // claim is beyond the pane's 500 characters
+      expect(saved.witness.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'claimedTestsButNone' })]));
+    }
+  });
+
   it('lists every dispatchable route in policy key order; architect is not a candidate', async () => {
     await dispatch();
     expect(candidates().v).toBe(1);
     expect(candidates().rule).toBe('lead-explicit-role');
     expect(candidates().chosen).toBe('reason');
     expect(candidates().routes.map((r: { role: string }) => r.role))
-      .toEqual(['breadth', 'implement', 'reason', 'easy', 'muse', 'cline-mimo', 'cline-qwen']);
+      .toEqual(['breadth', 'breadth-flash', 'implement', 'reason', 'astra', 'easy', 'muse', 'opus', 'opus-high', 'cline-mimo', 'cline-qwen']);
     // One line of valid JSON: the append is a single record, newline-terminated.
     expect(mocks.appendFile.mock.calls[0][0]).toBe(path.join(treeDir, 'mock-candidates.jsonl'));
     expect(mocks.appendFile.mock.calls[0][1].slice(0, -1)).not.toContain('\n');
@@ -119,7 +164,7 @@ describe('dispatch records the candidate set (RS1)', () => {
     await dispatch();
     expect(candidates().rotation).toEqual(['implement', 'reason', 'muse']);
     const flags = Object.fromEntries(candidates().routes.map((r: { role: string; inRotation: boolean }) => [r.role, r.inRotation]));
-    expect(flags).toEqual({ breadth: false, implement: true, reason: true, easy: false, muse: true, 'cline-mimo': false, 'cline-qwen': false });
+    expect(flags).toEqual({ breadth: false, 'breadth-flash': false, implement: true, reason: true, astra: false, easy: false, muse: true, opus: false, 'opus-high': false, 'cline-mimo': false, 'cline-qwen': false });
   });
 
   it('takes the chosen route gate from its own usageBefore reading, with no extra provider call', async () => {
@@ -142,17 +187,36 @@ describe('dispatch records the candidate set (RS1)', () => {
     expect(mocks.claude).not.toHaveBeenCalled();
   });
 
-  it('classifies uncapped and budget-less providers without any reading', async () => {
+  it('classifies the Q17 until-stop counter providers without any reading', async () => {
     await dispatch('reason');
-    expect(routeOf('implement')).toMatchObject({ gate: 'ok', gateSource: 'uncapped', eligible: true }); // glm: uncapped
-    expect(routeOf('breadth')).toMatchObject({ gate: 'ok', gateSource: 'no-budget', eligible: false, excludedBy: 'status' }); // gemini: no budget row
-    expect(routeOf('muse')).toMatchObject({ gate: 'ok', gateSource: 'no-budget', eligible: true }); // provider muse (Q12), but no budget row
+    // Q17: glm/gemini/muse/cline are CodexBar counters capped at 100 - reserve, still until-stop:
+    // no reading anywhere is room to run until the provider itself stops, never a stop.
+    expect(routeOf('implement')).toMatchObject({ gate: 'ok', gateSource: 'until-stop', eligible: true }); // glm
+    expect(routeOf('breadth')).toMatchObject({ gate: 'ok', gateSource: 'until-stop', eligible: false, excludedBy: 'status' }); // gemini (shipped unverified)
+    expect(routeOf('muse')).toMatchObject({ gate: 'ok', gateSource: 'until-stop', eligible: true }); // muse
+    // Cline Pass has a CodexBar counter row too; with no reading it is until-stop, gate ok.
+    expect(routeOf('cline-mimo')).toMatchObject({ cli: 'cline', status: 'ok', gate: 'ok', gateSource: 'until-stop', eligible: true });
   });
 
   it('records uncapped, never live, for a chosen uncapped route with status: ok usageBefore (RS1-M2)', async () => {
+    // Q17 capped glm; claude is the uncapped (until-stop, no percent cap until Q13) pool this guard needs.
+    currentPolicy.routes['claude-dev'] = { cli: 'claude', model: 'claude-opus-5-5', argv: ['-p', '{prompt}'], status: 'ok' };
+    mocks.claude.mockReturnValue({ status: 'ok', windows: [
+      { limitId: '5-hour limit', usedPercent: 99, windowDurationMins: 300, resetsAt: FUTURE_RESET },
+    ] });
+    await dispatch('claude-dev');
+    expect(mocks.spawn.mock.calls[0][0]).toBe('claude');
+    expect(node().usageBefore).toMatchObject({ status: 'ok' }); // an ok reading WAS there...
+    expect(routeOf('claude-dev')).toMatchObject({ gate: 'ok', gateSource: 'uncapped', eligible: true }); // ...never the gate
+    expect(routeOf('claude-dev')).not.toHaveProperty('gateReadAt');
+  });
+
+  it('records live for a chosen Q17 counter route with status: ok usageBefore', async () => {
+    // Q17: glm is capped now, so the chosen route's own ok reading is its gate (live), where the
+    // old uncapped glm short-circuited before it. No window in it is still ok: until-stop.
     mocks.glm.mockResolvedValue({ status: 'ok', windows: [] });
     await dispatch('implement');
-    expect(routeOf('implement')).toMatchObject({ gate: 'ok', gateSource: 'uncapped' });
+    expect(routeOf('implement')).toMatchObject({ gate: 'ok', gateSource: 'live' });
     expect(routeOf('implement')).not.toHaveProperty('gateReadAt');
   });
 
@@ -257,9 +321,9 @@ describe('dispatch records the candidate set (RS1)', () => {
 
   it('uses the rotation the example policy ships', async () => {
     const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
-    currentPolicy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+    currentPolicy = JSON.parse(fs.readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'));
     await dispatch();
-    expect(candidates().rotation).toEqual(['implement', 'reason', 'muse', 'breadth', 'cline-mimo', 'cline-qwen']);
+    expect(candidates().rotation).toEqual(['implement', 'reason', 'muse', 'breadth', 'opus', 'cline-mimo', 'cline-qwen']);
   });
 
   it('prefers later equal timestamps, ignores missing timestamps and malformed/non-object lines', async () => {
@@ -287,7 +351,7 @@ describe('dispatch records the candidate set (RS1)', () => {
 
   it('never admits a prototype-polluting route key as a candidate', async () => {
     const fs = await import('node:fs/promises');
-    const real = await fs.readFile(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8');
+    const real = await fs.readFile(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8');
     // Injected via JSON text so __proto__ lands as an OWN data property (a JS object literal or
     // JSON.stringify would set a prototype instead, which is not the hostile shape). The separator
     // is matched loosely: policy.json pretty-prints with a space after the colon.
@@ -297,7 +361,7 @@ describe('dispatch records the candidate set (RS1)', () => {
     vi.spyOn(fs, 'readFile').mockResolvedValue(injected);
     await dispatch();
     expect(candidates().routes.map((r: { role: string }) => r.role))
-      .toEqual(['breadth', 'implement', 'reason', 'easy', 'muse', 'cline-mimo', 'cline-qwen']);
+      .toEqual(['breadth', 'breadth-flash', 'implement', 'reason', 'astra', 'easy', 'muse', 'opus', 'opus-high', 'cline-mimo', 'cline-qwen']);
   });
 
   // --- Q3: a reading whose window has reset is not room -----------------------------------------
@@ -342,7 +406,6 @@ describe('dispatch records the candidate set (RS1)', () => {
     vi.resetModules(); // budget() memoizes per process: load a fresh usage.mjs reading the broken file
     vi.doMock('../dispatcher/usage.mjs', async importOriginal => ({
       ...await importOriginal<Record<string, unknown>>(),
-      readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
     }));
     try {
       // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
@@ -366,39 +429,81 @@ describe('dispatch records the candidate set (RS1)', () => {
   };
   // The route's model comes from the shipped policy, never a literal: a model switch in policy.json
   // must not silently unrank these tests' entries.
-  const shippedPolicy = JSON.parse(readFileSync(new URL('../dispatcher/policy.example.json', import.meta.url), 'utf8'));
+  const shippedPolicy = JSON.parse(readFileSync(new URL('../dispatcher/policy.full-roster.json', import.meta.url), 'utf8'));
   const MUSE_MODEL: string = shippedPolicy.routes.muse.model;
   const BREADTH_MODEL: string = shippedPolicy.routes.breadth.model;
   const entry = (cli: string, modelArg: string, effortArg: string | null, aa: number) =>
     ({ model: modelArg, effort: effortArg, aa, access: [{ cli, modelArg, effortArg }] });
+  // Q15: the shipped effort and model of a route are data, never a literal here, or a roster change
+  // (gpt-6-astra high -> gpt-6.1-sol xhigh) silently unranks every codex entry below.
+  const REASON_EFFORT: string = shippedPolicy.routes.reason.effort;
+  const REASON_MODEL: string = shippedPolicy.routes.reason.model;
   const policyWith = async (edit: (p: any) => void) => { edit(currentPolicy); };
+  // Package: this file's test rotation already holds `reason`; kept so tests read as canonical's.
+  const REASON_IN_ROTATION = ['implement', 'reason', 'muse'];
+  const withReasonInRotation = () => policyWith(p => { p.developers.rotation.order = [...REASON_IN_ROTATION]; });
 
   it('--role auto with a broken plans file never live-reads codex usage: an unknown budget is no reason to spawn a read', async () => {
     const file = path.join(treeDir, 'plans.json');
     writeFileSync(file, '{"schemaVersion": 1, "providers": {}}');
     vi.stubEnv('ORCHESTRA_PLANS', file);
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 46), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 46), entry('muse', MUSE_MODEL, 'max', 44)]);
     vi.resetModules();
     vi.doMock('../dispatcher/usage.mjs', async importOriginal => ({
       ...await importOriginal<Record<string, unknown>>(),
-      readCodexUsage: mocks.codex, readGlmUsage: mocks.glm, claudeUsageFromLead: mocks.claude,
     }));
     try {
       // @ts-expect-error - dispatcher/ is plain ESM JavaScript tooling, not part of a typed build.
       const fresh = (await import('../dispatcher/dispatch.mjs')).main as typeof main;
-      await fresh(['--role', 'auto', '--task', 'mock-candidates', '--prompt', 'stable']);
+      // Q17: muse is a budgeted counter too, so a broken plans file leaves NO eligible ranked
+      // route (before Q17 muse was row-less and still ran). Auto refuses; nothing is read or spawned.
+      await expect(fresh(['--role', 'auto', '--task', 'mock-candidates', '--prompt', 'stable']))
+        .rejects.toThrow(/no eligible ranked route/);
+      expect(mocks.codex).not.toHaveBeenCalled(); // its gate can only be plans-error: never live-read
+      expect(mocks.counter).not.toHaveBeenCalled();
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      // Fail closed, visibly: every budgeted route lists as plans-error, none eligible.
+      const listed = await fresh(['--list-routes', 'x', '--json', 'x']) as unknown as Array<Record<string, unknown>>;
+      for (const role of ['reason', 'implement', 'muse', 'cline-mimo']) {
+        expect(listed.find(r => r.role === role), role).toMatchObject({ gate: 'unknown', gateSource: 'plans-error', eligible: false });
+      }
+      // An explicit --role still runs, and records the plans-error it ran under.
+      await fresh(['--role', 'muse', '--task', 'mock-candidates', '--prompt', 'stable']);
+      expect(mocks.spawn.mock.calls[0][0]).toBe('muse');
+      expect(routeOf('muse')).toMatchObject({ gate: 'unknown', gateSource: 'plans-error', excludedBy: 'budget-unknown' });
     } finally {
       vi.doUnmock('../dispatcher/usage.mjs');
       vi.resetModules();
     }
-    expect(mocks.codex).not.toHaveBeenCalled(); // codex outranks muse, yet its gate can only be plans-error
+  });
+
+  it('--role auto refreshes the capped counter pools in parallel, not one after another', async () => {
+    const DELAY = 300;
+    const slow = <T,>(value: T) => () => new Promise<T>(resolve => setTimeout(() => resolve(value), DELAY));
+    const empty = { status: 'ok', source: 'reader', updatedAt: null, windows: [] };
+    mocks.glm.mockImplementation(slow(empty));
+    mocks.counter.mockImplementation(slow(empty));
+    rankingWith([entry('muse', MUSE_MODEL, 'max', 44)]);
+    // Package: the shipped breadth is unverified, so the test rotation holds the three counter pools.
+    await policyWith(p => { p.routes.breadth.status = 'ok'; p.developers.rotation.order = ['implement', 'muse', 'breadth', 'cline-mimo']; });
+    let spawnedAt = 0;
+    const spawnImpl = mocks.spawn.getMockImplementation()!;
+    mocks.spawn.mockImplementation((...a: unknown[]) => { spawnedAt ||= Date.now(); return spawnImpl(...a); });
+    const start = Date.now();
+    await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
-    expect(routeOf('reason')).toMatchObject({ gate: 'unknown', gateSource: 'plans-error' });
+    // glm + gemini/muse/cline: four slow reads, all before the CLI spawned...
+    const spawnOrder = mocks.spawn.mock.invocationCallOrder[0];
+    expect(mocks.glm.mock.invocationCallOrder.filter((o: number) => o < spawnOrder)).toHaveLength(1);
+    expect(mocks.counter.mock.calls.filter((_: unknown, i: number) => mocks.counter.mock.invocationCallOrder[i] < spawnOrder)
+      .map((c: unknown[]) => c[0]).sort()).toEqual(['cline', 'gemini', 'muse']);
+    // ...in about one DELAY (the refresh doubles as usageBefore), where sequential reads take four.
+    expect(spawnedAt - start).toBeLessThan(DELAY * 2.5);
   });
 
   it('records the AA score of exactly the route (cli, model, effort); a different effort is unranked', async () => {
     rankingWith([entry('agy', BREADTH_MODEL, null, 41), entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 45),
-      entry('codex', 'gpt-6-astra', 'high', 51), entry('cline', 'cline-pass/qwen3.8-max', 'high', 45)]);
+      entry('codex', REASON_MODEL, REASON_EFFORT, 51), entry('cline', 'cline-pass/qwen3.8-max', 'high', 45)]);
     await dispatch();
     expect(routeOf('breadth').aa).toBe(41);
     expect(routeOf('reason').aa).toBe(51);
@@ -417,7 +522,7 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto picks the highest-AA eligible route in the rotation and records rule aa-rank', async () => {
-    rankingWith([entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 40), entry('codex', 'gpt-6-astra', 'high', 46),
+    rankingWith([entry('opencode', 'zai-coding-plan/glm-5.3', 'max', 40), entry('codex', REASON_MODEL, REASON_EFFORT, 46),
       entry('muse', MUSE_MODEL, 'max', 44), entry('agy', BREADTH_MODEL, null, 99),
       entry('cline', 'cline-pass/qwen3.8-max', null, 98)]);
     // An unexpired recorded reading under the cap makes the capped route eligible with no extra read.
@@ -432,7 +537,7 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto breaks an AA tie by rotation order and never picks an unranked route', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 44), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 44), entry('muse', MUSE_MODEL, 'max', 44)]);
     seedTree(codexHistory(Math.max(0, CAP - 10), '2026-10-11T09:00:00.000Z'));
     await policyWith(p => { p.developers.rotation.order = ['muse', 'implement', 'reason']; });
     await dispatch('auto');
@@ -440,7 +545,8 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto with --min-aa above every eligible ranked route refuses and spawns nothing', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 46), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 46), entry('muse', MUSE_MODEL, 'max', 44)]);
+    await withReasonInRotation(); // ranked routes below the bar exist; the bar is what refuses
     await expect(dispatch('auto', '--min-aa', '50')).rejects.toThrow(/no eligible ranked route in the rotation at aa >= 50/);
     // A usage read may have run before refusing, so the refusal claims only what holds (Q5f).
     await expect(dispatch('auto', '--min-aa', '50')).rejects.toThrow(/No developer CLI was spawned\.$/);
@@ -451,27 +557,28 @@ describe('dispatch records the candidate set (RS1)', () => {
   // Q3 replaces the old "no reading -> no provider call" rule: --role auto reads a capped route with
   // no reading ONCE (a usage read, never an inference call) and the fresh reading decides.
   it('--role auto live-reads a capped route with no reading once; the fresh reading decides', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     await dispatch('auto'); // default mock: CAP - 10 -> room
     expect(candidates().chosen).toBe('reason');
     expect(codexReadsBeforeSpawn()).toBe(1); // the refresh doubles as the chosen route's usageBefore
     expect(node().usageBefore).toMatchObject({ status: 'ok' });
-    expect(mocks.glm).not.toHaveBeenCalled(); // GLM is uncapped: auto never refreshes it
+    // Q17: GLM is a capped CodexBar counter now, so auto refreshes it once like codex (unranked, so it cannot be picked).
+    expect(mocks.glm).toHaveBeenCalledTimes(1);
   });
 
   it('--role auto with an unreadable refresh keeps the capped route ineligible (no blind spend)', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     mocks.codex.mockResolvedValue({ status: 'unknown', reason: 'app-server silent', windows: [] });
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
     expect(mocks.codex).toHaveBeenCalledTimes(1);
     // A non-ok refresh is no reading: it falls through to the (empty) tree, never 'live-refresh'.
     expect(routeOf('reason')).toMatchObject({ gate: 'unknown', gateSource: 'none', eligible: false });
-    expect(mocks.glm).not.toHaveBeenCalled();
+    expect(mocks.glm).toHaveBeenCalledTimes(1); // Q17: capped GLM is refreshed too; codex's refuse cap is what stays ineligible
   });
 
   it('--role auto reads a capped provider ONCE however many of its routes are in rotation', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     await policyWith(p => { p.routes.easy.status = 'ok'; p.developers.rotation.order = ['reason', 'easy', 'muse']; });
     await dispatch('auto');
     expect(candidates().chosen).toBe('reason');
@@ -481,7 +588,7 @@ describe('dispatch records the candidate set (RS1)', () => {
 
   // A route that could not be picked is never refreshed: one test per half of that skip.
   it('--role auto never refreshes a capped route outside the rotation', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     await policyWith(p => { p.developers.rotation.order = ['muse', 'implement']; }); // reason ok, out of rotation
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
@@ -489,7 +596,7 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto never refreshes a capped route whose status is not ok', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     await policyWith(p => { p.routes.reason.status = 'slug-confirmed'; }); // in rotation, not ok
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
@@ -497,7 +604,7 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto with an EXPIRED codex reading reads once; fresh room picks codex', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     seedTree(codexHistory(CAP, '2026-09-30T09:00:00.000Z', PAST_RESET)); // pre-reset cap: stale
     await dispatch('auto');
     expect(codexReadsBeforeSpawn()).toBe(1);
@@ -507,8 +614,9 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto with an EXPIRED codex reading reads once; a fresh stop is recorded, muse picked', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     seedTree(codexHistory(Math.max(0, CAP - 30), '2026-09-30T09:00:00.000Z', PAST_RESET)); // stale room
+    await withReasonInRotation();
     mocks.codex.mockResolvedValue(okReading(CAP));
     await dispatch('auto');
     expect(mocks.codex).toHaveBeenCalledTimes(1);
@@ -518,10 +626,40 @@ describe('dispatch records the candidate set (RS1)', () => {
   });
 
   it('--role auto never picks an ineligible route however high its AA', async () => {
-    rankingWith([entry('codex', 'gpt-6-astra', 'high', 90), entry('muse', MUSE_MODEL, 'max', 44)]);
+    rankingWith([entry('codex', REASON_MODEL, REASON_EFFORT, 90), entry('muse', MUSE_MODEL, 'max', 44)]);
     seedTree(codexHistory(CAP, '2026-10-11T09:00:00.000Z')); // codex at its cap in the tree -> budget-stop
+    await withReasonInRotation();
     await dispatch('auto');
     expect(candidates().chosen).toBe('muse');
     expect(mocks.codex).not.toHaveBeenCalled(); // an unexpired reading is never refreshed
+  });
+
+  // --- Q16: Opus 5.5 medium as a developer route (claude stream-json) ---------------------------
+  it('dispatching opus spawns claude with every argv placeholder substituted and no bypass flag', async () => {
+    await dispatch('opus');
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    expect(mocks.spawn.mock.calls[0][0]).toBe('claude');
+    const route = shippedPolicy.routes.opus;
+    const argv: string[] = mocks.spawn.mock.calls[0][1];
+    expect(argv).toEqual(['-p', 'stable', '--model', route.model, '--effort', route.effort,
+      '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
+      '--add-dir', process.cwd(), '--strict-mcp-config', '--disable-slash-commands', '--no-chrome',
+      '--setting-sources', 'project,local', '--allowedTools', route.argv[route.argv.indexOf('--allowedTools') + 1]]);
+    // The resolved argv carries no bypass flag either, and no placeholder survived unresolved.
+    expect(argv).not.toContain('--dangerously-skip-permissions');
+    for (const item of argv) expect(item).not.toMatch(/\{[a-z]+\}/);
+    expect(node()).toMatchObject({ role: 'opus', cli: 'claude', model: route.model, exitCode: 0 });
+  });
+
+  it('opus sits in the shipped rotation right after breadth, ranked 51 by the shipped AA file', async () => {
+    const order: string[] = shippedPolicy.developers.rotation.order;
+    expect(order[order.indexOf('breadth') + 1]).toBe('opus');
+    // The shipped policy and the shipped model-ranking example must score the shipped route —
+    // the (claude, claude-opus-5-5, medium) = 51 pair the roster decision named.
+    currentPolicy = JSON.parse(JSON.stringify(shippedPolicy));
+    vi.stubEnv('ORCHESTRA_RANKING_FILE', fileURLToPath(new URL('../dispatcher/model-ranking.example.json', import.meta.url)));
+    await dispatch();
+    expect(routeOf('opus')).toMatchObject({ cli: 'claude', model: shippedPolicy.routes.opus.model,
+      inRotation: true, status: 'ok', aa: 51 });
   });
 });

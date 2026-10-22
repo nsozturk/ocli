@@ -14,7 +14,7 @@ import * as path from 'node:path';
 // treeState set). The commit takes the same pathspec, so an excluded path the CLI already staged
 // stays staged and out of the commit.
 const PATHSPEC = ['--', '.', ':(exclude)orchestra/live', ':(exclude)orchestra/tree', ':(exclude).orchestra-last.md',
-  ':(exclude)node_modules', ':(exclude,glob)**/node_modules/**'];
+  ':(exclude,glob)**/node_modules', ':(exclude,glob)**/node_modules/**'];
 // The hooks that can refuse a commit. A failure with none of them executable is git's own.
 const COMMIT_HOOKS = ['pre-commit', 'prepare-commit-msg', 'commit-msg'];
 const GIT_TIMEOUT_MS = 10_000;
@@ -79,7 +79,7 @@ function* handoffSteps({ workspace, task, runId, reason, exitCode, signal = null
   const must = function* (args) {
     const result = yield* call(args);
     if (result.code !== 0) throw new Skip(`git-failed: ${firstLine(result.stderr) || `git ${args[0]} exited ${result.code}`}`);
-    return result.stdout.trim();
+    return result.stdout.trimEnd();
   };
   try {
     const inside = yield* call(['rev-parse', '--is-inside-work-tree']);
