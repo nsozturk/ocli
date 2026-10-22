@@ -1229,3 +1229,52 @@ describe('quota card: gate.window, the binding window (fix B)', () => {
     expect(boldOf(rowsOf(gated)[0]!)).toEqual(['wk 80%'])
   })
 })
+
+// Reviewer pins (u5 review): each kills one single-clause mutant the suites above let survive.
+describe('quota card pins (u5 review)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const H = 3_600_000
+  const at = (ms: number) => new Date(ms).toISOString()
+  const hm = (ms: number) => [new Date(ms).getHours(), new Date(ms).getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+  const w = (limitId: string, usedPercent: number, windowDurationMins: number, resetsAt: number | null = T + 48 * H) =>
+    ({ limitId, usedPercent, windowDurationMins, resetsAt: resetsAt === null ? null : at(resetsAt) })
+  const runOf = (cli: string, model: string) => ({ runId: 'r', task: 't', role: 'x', cli, model, lastAt: T, startedAt: T } as unknown as OcliRun)
+  const snap = (providers: Record<string, unknown>) => foldQuota(JSON.stringify({ v: 1, providers }))!
+  const rows = (q: OcliQuota, columns = 100) => quotaVariants(q, T, columns, true)[0]!.rows.slice(1)
+  const boldOf = (r: Card['rows'][number]) => (r.kind === 'segs' ? r.segs.filter(s => s.isBold).map(s => s.text) : [])
+  const ARGON = w('antigravity-quota-summary-gemini-argon-wtu-weekly', 100, 10080, T + 5 * H)
+  const WK = w('antigravity-quota-summary-gemini-weekly', 39, 10080)
+  const gemini = (extra: Record<string, unknown> = {}) => snap({ gemini: { readAt: at(T), status: 'ok', windows: [WK, ARGON],
+    gate: { state: 'stop', window: ARGON }, stop: null,
+    routes: [{ role: 'breadth', model: 'gemini-4-argon-high', gate: { state: 'stop', window: ARGON } }], ...extra } })
+
+  test('an unavailable provider is ? even when its gate says ok (until-stop)', () => {
+    const q = snap({ glm: { readAt: at(T), status: 'unavailable', windows: [], gate: { state: 'ok', window: null }, stop: null } })
+    expect(rowText(rows(q)[0]!)).toMatch(/^glm {4}\? /)
+  })
+
+  test('a route with no model is dropped', () => {
+    const q = gemini({ routes: [{ role: 'x', model: '', gate: { state: 'ok', window: WK } }] })
+    expect(q.providers[0]!.routes).toEqual([])
+  })
+
+  test('a STOP route sub-row names when its bound window resets', () => {
+    expect(rowText(rows(gemini())[1]!)).toContain(`argon STOP wk 100% until ${hm(T + 5 * H)} (5h00m)`)
+  })
+
+  test('a gate.window missing from the windows list is still the bold window and the task line', () => {
+    const q = snap({ codex: { readAt: at(T), status: 'ok', windows: [w('codex', 20, 300)], gate: { state: 'ok', window: w('codex', 30, 10080) }, stop: null } })
+    expect(boldOf(rows(q)[0]!)).toEqual(['wk 30%'])
+    expect(quotaLine([runOf('codex', 'm')], q, T)?.text).toBe('quota: codex OK · wk 30%')
+  })
+
+  test('below 32 columns the open card drops the route sub-rows', () => {
+    expect(rows(gemini(), 31).map(r => r.key)).toEqual(['quota:row:gemini'])
+    expect(rows(gemini(), 32).map(r => r.key)).toEqual(['quota:row:gemini', 'quota:routes:gemini'])
+  })
+
+  test('a reset already past is not drawn as `resets`', () => {
+    const q = snap({ codex: { readAt: at(T), status: 'ok', windows: [w('codex', 20, 300, T - H)], gate: { state: 'ok', window: w('codex', 20, 300, T - H) }, stop: null } })
+    expect(rowText(rows(q)[0]!)).not.toContain('resets')
+  })
+})
