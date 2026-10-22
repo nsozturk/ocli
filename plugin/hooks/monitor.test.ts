@@ -1645,7 +1645,7 @@ function textsOf(node: El | string | null, out: { text: string; bold: boolean; d
 const QUOTA_ROWS = (until: string) => [
   'codex  OK   ██░░░ 5h 42% wk 18% · resets 2h10m',
   'claude OK   stale 2h ██░░░ 5h 30% wk 20% · resets 1h00m',
-  `glm    STOP until ${until} █████ 5h 96% · resets 40m`,
+  `glm    STOP until ${until} (40m) █████ 5h 96% · resets 40m`,
   'gemini OK   ██░░░ 5h 10% wk 39% · resets 2d3h',
   '       argon high/medium STOP · flash OK',
   'muse   ?    no reader',
@@ -1797,7 +1797,7 @@ test("a task card names its newest run's provider quota: the route for gemini, S
     const tree = await drawnAt($, surface, 100, 60)
     const cards = cardsOf(tree)
     expect(cards.get('task:task-g')![3]).toBe('quota: gemini flash OK · wk 39%')
-    expect(cards.get('task:task-z')![3]).toBe(`quota: glm STOP until ${hhmm(GLM_UNTIL)}`)
+    expect(cards.get('task:task-z')![3]).toBe(`quota: glm STOP until ${hhmm(GLM_UNTIL)} (40m)`)
     expect(textsOf(nodeOf(tree, 'task:task-z')).find(t => t.text.startsWith('quota:'))?.color).toBe('warning')
     expect(cards.get('task:task-c')!.some(row => row.startsWith('quota:'))).toBe(false)
   }

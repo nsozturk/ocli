@@ -86,6 +86,8 @@ export type Checkpoint = { name: string; rows: { n: string; phase: string; statu
 /** A provider's quota state: a gate or route verdict as the dispatcher's snapshot names it. */
 export type QuotaState = 'ok' | 'stop' | 'unknown'
 
+export type QuotaWindow = { limitId: string; usedPercent: number | null; mins: number | null; resetsAt: number | null }
+
 /** One provider of `<live dir>/usage/latest.json` (schema v1), checked and cleaned; times in ms. */
 export type QuotaProvider = {
   /** One of codex, claude, glm, gemini, muse, cline. */
@@ -93,10 +95,12 @@ export type QuotaProvider = {
   readAt: number | null
   status: 'ok' | 'unknown' | 'unavailable'
   reason: string
-  windows: { limitId: string; usedPercent: number | null; mins: number | null; resetsAt: number | null }[]
+  windows: QuotaWindow[]
   gate: QuotaState
-  /** Scoped buckets (gemini's argon/flash): each route's own gate. */
-  routes: { role: string; model: string; gate: QuotaState }[]
+  /** The window the dispatcher's gate bound on (gate.window); null when the snapshot names none. */
+  window: QuotaWindow | null
+  /** Scoped buckets (gemini's argon/flash): each route's own gate and the window it bound on. */
+  routes: { role: string; model: string; gate: QuotaState; window: QuotaWindow | null }[]
   stop: { until: number | null; reason: string } | null
   /** Which setting is missing ('' when none). */
   setup: string

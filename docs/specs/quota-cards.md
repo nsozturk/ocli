@@ -47,7 +47,7 @@ Schema v1:
 2. **Quota card** first in the pane (above the Resume card): one row per provider in a fixed order (codex, claude,
    glm, gemini, muse, cline): name, a compact bar + `5h NN%` and `wk NN%` (the binding window bold), reset as
    relative time (`resets 2h10m`), a state chip OK / STOP / ? (unknown) using the pane's existing status colours; a
-   STOP row shows `until HH:MM`. Scoped routes (gemini) get sub-rows `argon high/medium STOP · flash OK`. A `setup`
+   STOP row shows `until HH:MM (2h10m)` (`until reset unknown` when the bound window has no reset). Scoped routes (gemini) get sub-rows `argon high/medium STOP wk 90% until … · flash OK wk 39%` (each route's `gate.window` bold). A `setup`
    line is shown dim under an unavailable provider. Stale: `readAt` older than 30 min ⇒ dim row + `stale 2h`.
    Collapsible like other cards (head row ▸/▾), state remembered like the others.
 3. **Task cards:** the newest run's route provider gets one line in the card head area: `quota: gemini flash OK ·
