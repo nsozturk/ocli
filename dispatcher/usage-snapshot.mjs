@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gateFor, budget } from './usage.mjs';
-import { setupHint } from './usage-readers/doctor.mjs';
+import { setupHint, claudeConsentGiven } from './usage-readers/doctor.mjs';
 import { providerForNode, readNodes, latestProviderStop, providerStopActive, STOP_POOL } from './tree-read.mjs';
 
 // ORCHESTRA_LIVE_DIR / ORCHESTRA_TREE_DIR (read per call, so tests can point them at temp dirs) move the roots.
@@ -51,7 +51,11 @@ export function policyRoutes(policy) {
     .map(([role, r]) => ({ role, model: r.model, provider: providerForNode({ cli: r.cli, model: r.model }) }));
 }
 
-const gateOf = g => ({ state: g.state, reason: text(g.reason) });
+// gate.window: the window gateFor BOUND on (its scoped fullest), passed through — never re-derived here, so the
+// pane's bold window and a gate STOP's `until` (window.resetsAt) are exactly the dispatcher's. null = no window.
+const windowOf = w => (w ? { limitId: text(w.limitId, 80), windowDurationMins: num(w.windowDurationMins),
+  usedPercent: num(w.usedPercent), resetsAt: text(w.resetsAt, 40) } : null);
+const gateOf = g => ({ state: g.state, reason: text(g.reason), window: windowOf(g.window) });
 
 function entry(provider, reading, { readAt, routes, nodes, nowMs, claudeConsent }) {
   const gate = gateFor(provider, reading);
@@ -64,7 +68,7 @@ function entry(provider, reading, { readAt, routes, nodes, nowMs, claudeConsent 
       limitId: text(w?.limitId, 80), usedPercent: num(w?.usedPercent),
       windowDurationMins: num(w?.windowDurationMins), resetsAt: text(w?.resetsAt, 40),
     })),
-    gate: { ...gateOf(gate), headroomPercent: num(gate.headroomPercent) },
+    gate: { state: gate.state, reason: text(gate.reason), headroomPercent: num(gate.headroomPercent), window: windowOf(gate.window) },
   };
   if (budget()[provider]?.limitScopes) {
     out.routes = routes.filter(r => r.provider === provider)
@@ -92,7 +96,7 @@ function previous(file) {
  * ponytail: read-merge-rename is not locked; two writers racing can drop one's providers until the next read.
  */
 export async function writeUsageSnapshot({ dir, treeDir, readings = {}, routes = [],
-  now = Date.now(), claudeConsent = process.env.OCLI_CLAUDE_KEYCHAIN_CONSENT === '1' } = {}) {
+  now = Date.now(), claudeConsent } = {}) {
   let tmp = null;
   try {
     // A test process never falls back to the cwd's real orchestra/live or orchestra/tree (like usage-readers'
@@ -100,6 +104,9 @@ export async function writeUsageSnapshot({ dir, treeDir, readings = {}, routes =
     if (isTestProcess() && ((!dir && !process.env.ORCHESTRA_LIVE_DIR) || (!treeDir && !process.env.ORCHESTRA_TREE_DIR))) {
       return { ok: false, error: 'test process without ORCHESTRA_LIVE_DIR / ORCHESTRA_TREE_DIR' };
     }
+    // Same consent as runUsageCli (env or usage-readers.json); a test process never reads the real config file.
+    claudeConsent ??= claudeConsentGiven(isTestProcess() && !process.env.OCLI_USAGE_READERS_CONFIG
+      ? { configPath: '/nonexistent/ocli-test/usage-readers.json' } : {});
     dir ??= liveRoot();
     treeDir ??= treeRoot();
     const nowMs = typeof now === 'number' ? now : Date.now();

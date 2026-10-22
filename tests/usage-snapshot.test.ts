@@ -73,7 +73,8 @@ describe('usage snapshot writer (dispatcher/usage-snapshot.mjs)', () => {
         { limitId: 'codex', usedPercent: 20, windowDurationMins: 300, resetsAt: FUTURE },
         { limitId: 'codex', usedPercent: 40, windowDurationMins: 10080, resetsAt: FUTURE },
       ],
-      gate: { state: 'ok', reason: expect.stringContaining('codex at 40%'), headroomPercent: 55 },
+      gate: { state: 'ok', reason: expect.stringContaining('codex at 40%'), headroomPercent: 55,
+        window: { limitId: 'codex', windowDurationMins: 10080, usedPercent: 40, resetsAt: FUTURE } },
       stop: null, setup: null,
     });
     expect(codex).not.toHaveProperty('routes'); // codex has no scoped buckets
@@ -81,7 +82,7 @@ describe('usage snapshot writer (dispatcher/usage-snapshot.mjs)', () => {
     // Unscoped gate: argon's bucket at 99% binds the pool as a whole.
     expect(gemini.gate.state).toBe('stop');
     const byRole = Object.fromEntries(gemini.routes.map((r: { role: string }) => [r.role, r]));
-    expect(byRole.breadth).toEqual({ role: 'breadth', model: 'gemini-4-argon-high', gate: { state: 'stop', reason: expect.any(String) } });
+    expect(byRole.breadth).toEqual({ role: 'breadth', model: 'gemini-4-argon-high', gate: { state: 'stop', reason: expect.any(String), window: expect.any(Object) } });
     expect(byRole['breadth-flash'].gate.state).toBe('ok');
     expect(gemini.routes.every((r: Record<string, unknown>) => Object.keys(r).sort().join() === 'gate,model,role')).toBe(true);
   });
@@ -185,6 +186,44 @@ describe('usage snapshot writer (dispatcher/usage-snapshot.mjs)', () => {
     const st = statSync(snapshotFile(live));
     expect(st.mode & 0o777).toBe(0o644);
     expect(st.ino).not.toBe(before);
+  });
+
+  // fixA (u4 C1): gate.window is the window the gate BINDS on, per provider and per route — from gateFor, never
+  // the fullest window the writer could see.
+  it('gate.window: gemini provider/breadth bind argon-wtu, breadth-flash binds gemini weekly', async () => {
+    await write({ gemini: geminiReading(100) });
+    const gemini = read().providers.gemini;
+    const argon = { limitId: 'antigravity-quota-summary-gemini-argon-wtu-weekly', windowDurationMins: 10080, usedPercent: 100, resetsAt: FUTURE };
+    expect(gemini.gate.window).toEqual(argon); // unscoped gateFor binds the whole pool's fullest
+    const byRole = Object.fromEntries(gemini.routes.map((r: { role: string }) => [r.role, r]));
+    expect(byRole.breadth.gate).toMatchObject({ state: 'stop', window: argon });
+    expect(byRole['breadth-flash'].gate).toEqual({ state: 'ok', reason: expect.any(String),
+      window: { limitId: 'antigravity-quota-summary-gemini-weekly', windowDurationMins: 10080, usedPercent: 39, resetsAt: FUTURE } });
+  });
+
+  it('gate.window: codex with 3 pools binds the codex pool, not a fuller foreign window', async () => {
+    await write({ codex: ok(win('codex', 20, 300), win('codex', 30, 10080, '2099-02-01T00:00:00.000Z'),
+      win('codex-spark', 95, 300), win('codex-spark', 10, 10080), win('codex-other', 60, 300)) });
+    const codex = read().providers.codex;
+    expect(codex.gate.state).toBe('ok');
+    expect(codex.gate.window).toEqual({ limitId: 'codex', windowDurationMins: 10080, usedPercent: 30, resetsAt: '2099-02-01T00:00:00.000Z' });
+  });
+
+  it('gate.window is null when the gate binds no window (unavailable / until-stop)', async () => {
+    await write({ gemini: { status: 'unavailable', reason: 'reader:unavailable', windows: [] }, codex: { status: 'unavailable', windows: [] } });
+    const doc = read();
+    expect(doc.providers.gemini.gate.window).toBeNull();
+    expect(doc.providers.gemini.routes.every((r: { gate: { window: unknown } }) => r.gate.window === null)).toBe(true);
+    expect(doc.providers.codex.gate).toMatchObject({ state: 'unknown', window: null });
+  });
+
+  it('claude consent: with no claudeConsent passed, the writer reads it like runUsageCli (config, not env only)', async () => {
+    const cfg = path.join(tree, 'usage-readers.json');
+    writeFileSync(cfg, JSON.stringify({ claude: { keychainReadConsent: true } }));
+    vi.stubEnv('OCLI_USAGE_READERS_CONFIG', cfg);
+    vi.stubEnv('OCLI_CLAUDE_KEYCHAIN_CONSENT', '');
+    await writeUsageSnapshot({ dir: live, treeDir: tree, readings: { claude: { status: 'unavailable', reason: 'credentials-not-found', windows: [] } } });
+    expect(read().providers.claude.setup).toMatch(/no stored credential/);
   });
 
   it('runUsageCli writes every provider it read', async () => {
