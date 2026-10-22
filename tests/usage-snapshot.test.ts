@@ -152,6 +152,41 @@ describe('usage snapshot writer (dispatcher/usage-snapshot.mjs)', () => {
     expect(res.ok).toBe(false);
   });
 
+  // Review pins (u3 adversarial review): each kills a mutant the suite above let survive.
+  it('pin: a prefix-less mixed-case token and an opaque Bearer value are scrubbed', async () => {
+    const PLAIN = 'Qx7mZp2LkV9wRt4NbY6cHs8D'; // 24 chars, upper+lower+digit, no sk-/eyJ prefix
+    const OPAQUE = 'abc123opaquevalue';
+    await write({ glm: { status: 'unavailable', windows: [], reason: `key ${PLAIN}; header Bearer ${OPAQUE}` } });
+    const body = readFileSync(snapshotFile(live), 'utf8');
+    expect(body).not.toContain(PLAIN);
+    expect(body).not.toContain(OPAQUE);
+    expect(read().providers.glm.reason).toContain('Bearer [secret]');
+  });
+
+  it('pin: off-schema status and non-number window fields are coerced, never copied', async () => {
+    await write({ codex: { status: 'weird', windows: [{ limitId: 'codex', usedPercent: '5', windowDurationMins: '300', resetsAt: null }] } });
+    const codex = read().providers.codex;
+    expect(codex.status).toBe('unknown');
+    expect(codex.windows).toEqual([{ limitId: 'codex', usedPercent: null, windowDurationMins: null, resetsAt: null }]);
+  });
+
+  it('pin: a failed rename leaves no temp file behind', async () => {
+    mkdirSync(path.join(snapshotFile(live), 'blocker'), { recursive: true }); // latest.json is a non-empty dir
+    const res = await write({ codex: ok(win('codex', 1, 300)) });
+    expect(res.ok).toBe(false);
+    expect(readdirSync(path.join(live, 'usage'))).toEqual(['latest.json']);
+  });
+
+  it('pin: 0644 whatever the umask, and the file is replaced by rename (new inode)', async () => {
+    await write({ codex: ok(win('codex', 1, 300)) });
+    const before = statSync(snapshotFile(live)).ino;
+    const old = process.umask(0o077);
+    try { await write({ codex: ok(win('codex', 2, 300)) }); } finally { process.umask(old); }
+    const st = statSync(snapshotFile(live));
+    expect(st.mode & 0o777).toBe(0o644);
+    expect(st.ino).not.toBe(before);
+  });
+
   it('runUsageCli writes every provider it read', async () => {
     const readAllImpl = async () => ({
       codex: ok(win('codex', 10, 300)), claude: ok(win('5-hour limit', 5, 300)), glm: ok(win('zai-primary', 3, 300)),
@@ -233,6 +268,20 @@ describe('dispatch writes the usage snapshot', () => {
     const glm = read().providers.glm;
     expect(glm.windows[0].usedPercent).toBe(97);
     expect(glm.stop).toEqual({ until: '2099-01-01T00:00:00.000Z', reason: expect.stringContaining('Usage limit reached') });
+  });
+
+  it('pin: usageBefore is in the snapshot while the CLI runs (before usageAfter)', async () => {
+    let reads = 0;
+    mocks.glm.mockImplementation(async () => ok(win('zai-primary', ++reads === 1 ? 12 : 97, 300)));
+    let atSpawn: number | null = null;
+    const spawnImpl = mocks.spawn.getMockImplementation()!;
+    mocks.spawn.mockImplementation((...a: unknown[]) => {
+      atSpawn = read().providers.glm.windows[0].usedPercent;
+      return spawnImpl(...a);
+    });
+    await main(['--role', 'implement', '--task', 't', '--prompt', 'p']);
+    expect(atSpawn).toBe(12);
+    expect(read().providers.glm.windows[0].usedPercent).toBe(97);
   });
 
   it('a snapshot write failure never fails the dispatch', async () => {
