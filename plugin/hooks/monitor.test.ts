@@ -1842,3 +1842,34 @@ test('the Quota card collapses from its head and stays collapsed across drawings
   await again.unmount()
   expect(cardsOf(await drawnAt($, 'terminal')).get('quota')!.length).toBe(11)
 })
+
+test('the more-line names exactly the cards it cut: quota and checkpoint each by their own index, never counted as tasks (u4 review pin)', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  checkpoints(h, on)
+  h.put(QUOTA, snapshotText())
+  await h.start($)
+  await h.tick()
+  let isCheckpointOnlyCut = false
+  for (const surface of SURFACES) {
+    for (let rows = 4; rows <= 30; rows++) {
+      const tree = await drawnAt($, surface, 100, rows)
+      const cards = cardsOf(tree)
+      const text = rowsOf(tree).join('\n')
+      expect(text.includes('quota hidden'), `${surface} ${rows}`).toBe(!cards.has('quota'))
+      expect(text.includes('checkpoint hidden'), `${surface} ${rows}`).toBe(!cards.has('checkpoint'))
+      expect(text, `${surface} ${rows}`).not.toMatch(/more task/)
+      if (cards.has('quota') && !cards.has('checkpoint')) isCheckpointOnlyCut = true
+    }
+  }
+  // The case the old hardcoded index 0 got wrong is actually drawn.
+  expect(isCheckpointOnlyCut).toBe(true)
+})
+
+test('a run file under usage/ is never a task: the dir holds the quota snapshot only (u4 review pin)', OPTIONS, async ($, on) => {
+  const h = harness(on)
+  h.put(QUOTA, snapshotText())
+  h.put(`${ROOT}/usage/r9.jsonl`, runLines('r9', [START], NOW, { task: 'usage' }))
+  await h.start($)
+  await h.tick()
+  expect([...cardsOf(await drawnAt($, 'terminal')).keys()].filter(key => key.startsWith('task:'))).toEqual([])
+})

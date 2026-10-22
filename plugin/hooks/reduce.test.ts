@@ -2,10 +2,10 @@ import { test, expect, describe } from 'claude-code/testing'
 
 import { AGY, CODEX, GLM_LIVE, MUSE, OPENCODE } from './fixtures'
 import { addHistory, card, cardVariants, cells, checkpointCard, checkpointDrift, clean, colorOf, displayStatus, fitCards, foldHistory, foldPlan, HEADER_HEIGHT, historyEntry, historyVariants, isDismissed, isDismissible, isLooping, latestAt, parseCheckpoint, parseLines, resumePrompt, phasesOf, reduce, runDetail, runLine, sparkline, taskSpan, taskStatus, tokensOf, wrap } from './reduce'
-import { foldQuota, quotaLine } from './reduce'
+import { foldQuota, quotaLine, quotaVariants } from './reduce'
 import type { Card } from './reduce'
 import { SNAPSHOT } from './quota-fixtures'
-import type { OcliRun } from '../types'
+import type { OcliQuota, OcliRun } from '../types'
 
 const file = (lines: readonly string[]) => lines.join('\n') + '\n'
 const fold = (lines: readonly string[]) => reduce([], parseLines(file(lines)))
@@ -1109,5 +1109,46 @@ describe('foldQuota: the usage snapshot, checked and cleaned', () => {
 
   test('quotaLine: no snapshot or no run, no line', () => {
     expect(quotaLine([], foldQuota(JSON.stringify(SNAPSHOT)), 0)).toBe(null)
+  })
+})
+
+// Reviewer pins (u4 review): each kills one single-clause mutant the suite above let survive.
+describe('quota card pins (u4 review)', () => {
+  const T = Date.parse('2026-10-23T12:00:00Z')
+  const at = (ms: number) => new Date(ms).toISOString()
+  const one = (codex: Record<string, unknown>) => foldQuota(JSON.stringify({ v: 1, providers: { codex: {
+    readAt: at(T), status: 'ok', gate: { state: 'ok' }, stop: null,
+    windows: [{ limitId: 'codex', usedPercent: 50, windowDurationMins: 300, resetsAt: null }, { limitId: 'codex', usedPercent: 50, windowDurationMins: 10080, resetsAt: null }],
+    ...codex,
+  } } }))!
+  const row = (q: OcliQuota, now = T) => quotaVariants(q, now, 100, true)[0]!.rows.slice(1)
+  const segsOf = (r: Card['rows'][number]) => (r.kind === 'segs' ? r.segs : [])
+
+  test('an active stop with no end is STOP (fail closed) and names no until', () => {
+    const r = rowText(row(one({ stop: { until: null, reason: 'quota exhausted' } }))[0]!)
+    expect(r).toMatch(/^codex  STOP /)
+    expect(r).not.toContain('until')
+  })
+
+  test('a stop whose until has passed no longer counts: the gate decides, no until drawn', () => {
+    const r = rowText(row(one({ stop: { until: at(T - 60_000), reason: 'old' } }))[0]!)
+    expect(r).toMatch(/^codex  OK /)
+    expect(r).not.toContain('until')
+  })
+
+  test('on a tie the shorter window binds (bold)', () => {
+    expect(segsOf(row(one({}))[0]!).filter(s => s.isBold).map(s => s.text)).toEqual(['5h 50%'])
+  })
+
+  test('stale starts strictly after 30 minutes', () => {
+    const exact = row(one({ readAt: at(T - 30 * 60_000) }))[0]!
+    expect(rowText(exact)).not.toContain('stale')
+    const past = row(one({ readAt: at(T - 30 * 60_000 - 1000) }))[0]!
+    expect(rowText(past)).toContain('stale 30m')
+  })
+
+  test('the setup line is drawn under an unavailable provider only', () => {
+    expect(row(one({ setup: 'usage.codex is not set' })).map(rowText).join('\n')).not.toContain('setup:')
+    expect(row(one({ status: 'unavailable', setup: 'usage.codex is not set' })).map(rowText)).toContain('       setup: usage.codex is not set')
   })
 })
