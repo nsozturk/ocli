@@ -62,6 +62,9 @@ where you run it.
     config file, or the macOS Keychain service `ocli-usage-readers`. `node dispatcher/usage.mjs` says
     which setting is missing; it never prints a value or an account identity.
   - `OCLI_DISABLE_KEYCHAIN=1` turns every Keychain read off.
+  - Live-verified in this beta (macOS): the codex and antigravity readers. The claude, zai (glm),
+    cline and muse readers need a setting first (consent or an API key) and are not live-verified;
+    the cursor reader is not ported. `node dispatcher/usage.mjs` says what each one is missing.
   - Settings: environment variables first, then `~/.config/ocli/usage-readers.json`
     (`OCLI_USAGE_READERS_CONFIG` names another file).
 - The plugin (`ocli-monitor`) reads only the live dirs, `plan.json` and dated checkpoint files, skips

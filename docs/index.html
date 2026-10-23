@@ -202,6 +202,12 @@ snapshot the lead passes in. A capped codex route with an
 unknown reading is never dispatched on an assumption. Caps come from the provider plans
 (<code>ORCHESTRA_PLANS</code>, else <code>~/.config/agent-rules/provider-plans.json</code>, else
 <code>dispatcher/provider-plans.example.json</code>).</p>
+<p><strong>Reader verification status in this beta (macOS).</strong> Live-verified: codex (native)
+and antigravity (native local probe). Setup required, not live-verified: claude (needs
+<code>OCLI_CLAUDE_KEYCHAIN_CONSENT=1</code> or the config consent), zai/glm (<code>Z_AI_API_KEY</code>),
+cline (<code>CLINE_API_KEY</code>) and muse (<code>MUSE_DEVICE_TOKEN</code>). Cursor is not ported.
+<code>node dispatcher/usage.mjs</code> prints the exact setting each one is missing.</p>
+<pre><code>node dispatcher/usage.mjs          # every developer's quota, plus a setup hint where a reader cannot read</code></pre>
 </section>
 
 <section id="policy">

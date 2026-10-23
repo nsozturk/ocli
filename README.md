@@ -282,6 +282,21 @@ providers are hand-ported. Browser cookies are read from Chromium-family browser
 Firefox are out of scope; elsewhere a cookie-based reader reports `unavailable`). The readers use `node:sqlite`,
 so they need Node.js 22.13 or newer.
 
+**Verification status in this beta (macOS):**
+
+| Provider | Reader | Status |
+|---|---|---|
+| codex | native (`codex app-server`) | live-verified |
+| antigravity (gemini) | native local probe | live-verified |
+| claude | native (Claude Code's Keychain item) | setup required, not live-verified: needs `OCLI_CLAUDE_KEYCHAIN_CONSENT=1` or the config consent |
+| zai (glm) | vendored plugin | setup required, not live-verified: needs `Z_AI_API_KEY` |
+| cline | vendored plugin | setup required, not live-verified: needs `CLINE_API_KEY` |
+| muse | vendored plugin | setup required, not live-verified: needs `MUSE_DEVICE_TOKEN` (a fresh Muse Code login) |
+| cursor | — | not ported |
+
+`node dispatcher/usage.mjs` (the doctor) prints the exact setting each unverified reader is missing;
+see [Usage readers](#usage-readers).
+
 **Provider plans set the caps.** What each subscription allows lives in one strict JSON file (schema
 v1, `dispatcher/plans.mjs`), read from `ORCHESTRA_PLANS`, else `~/.config/agent-rules/provider-plans.json`,
 else the shipped [`dispatcher/provider-plans.example.json`](dispatcher/provider-plans.example.json) (with
