@@ -10,7 +10,7 @@ live dir, and never spawns or owns a CLI process.
 
 ## Changes
 
-- **0.6.0-beta.1** — Quota-aware `--role auto --size`, WIP hand-off and `--continue`, `--worktree auto`, built-in usage readers (ported from CodexBar), Claude Opus developer routes (stream-json mapped into the live contract), full final text on the node. Starter config ships codex + opencode only; see the root `CHANGELOG.md`.
+- **0.6.0-beta.1** — Quota card (per-provider 5h/weekly limits with OK/STOP chips, scoped Argon/Flash rows, stale dimming, a setup line) and a `quota:` line on task cards, from the dispatcher's `usage/latest.json` snapshot. Quota-aware `--role auto --size`, WIP hand-off and `--continue`, `--worktree auto`, built-in usage readers (ported from CodexBar), Claude Opus developer routes (stream-json mapped into the live contract), full final text on the node. Starter config ships codex + opencode only; see the root `CHANGELOG.md`.
 - **0.5.1** — A failed run whose CLI error event says the plan window is used up (ClinePass, ZAI) records a dated `providerStop`; `--list-routes` and `--role auto` skip that billing pool until the reset. Transient 429s never stop a route.
 - **0.5.0** — Cline (Cline Pass) is a developer CLI: its `--json` stream (tool calls, usage, final text, errors) feeds the cards like the others. The dispatcher records each route's Artificial Analysis Intelligence Index (`aa`), lists routes by it (`--list-routes`) and can pick by it (`--role auto [--min-aa N]`).
 - **0.4.0** — The card's head is the toggle: it opens the card in place, with one block per run
@@ -63,7 +63,8 @@ right away, and narrower ones keep it waiting until you run `/ocli`.
   root>/orchestra` via `$.process.run`, 20 s timeout. Nothing else is ever run.
 - **Reads** the live dirs (`liveDirs`, else `<project root>/orchestra/live`): `<task>/<runId>.jsonl`
   (never `*.raw.jsonl`, at most 500 per tick, none over 4 MiB) and `<task>/plan.json` (at most 64 KiB,
-  dated within a day); `<project root>/checkpoints/YYYY-MM-DD_*.md` (plain names, at most 256 KiB);
+  dated within a day); `usage/latest.json`, the dispatcher's quota snapshot (at most 64 KiB);
+  `<project root>/checkpoints/YYYY-MM-DD_*.md` (plain names, at most 256 KiB);
   and this session's subagent list (`$.agent.list`).
   Each file only when its resolved `realPath` lies under the resolved dir it was listed from; symlinks
   are skipped and a path that moves during the read is dropped.
@@ -75,6 +76,14 @@ falls back to the session cwd. The bundled scripts live in `lib/`, not `bin/`, s
 nothing to the Bash tool's `PATH`.
 
 ## What it shows
+
+**Quota card** (first, when `<live dir>/usage/latest.json` exists): one row per provider (codex,
+claude, glm, gemini, muse, cline) with `5h NN%` / `wk NN%` (the binding window bold), the reset time
+and an `OK` / `STOP` / `?` chip; a `STOP` row shows `until HH:MM`. Gemini's scoped buckets get
+`argon` and `flash` sub-rows. Readings older than 30 minutes are dimmed (`stale Nh`); an unavailable
+provider shows a dim `setup` line. Each task card gets one `quota:` line for its newest run's
+provider. The pane only reads the snapshot; it never runs a usage reader.
+
 
 One card per task (`orchestra/live/<task>/`), the task with the most recent activity first,
 modelled on Claude Code's Workflow progress card:

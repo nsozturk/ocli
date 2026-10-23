@@ -75,7 +75,17 @@ What else it does:
   the runs that report both (unknown is never `0%`). Each dispatch records `prefixSha`, the first 12 hex
   of sha256 of its `--prompt` (never the `--suffix`); `⚠prefix×K` marks a phase whose runs on one CLI
   carry K > 1 distinct prefixes, so the cached prefix drifted.
-- **Resume card** (optional). In a project that keeps dated checkpoint files, the first card shows the
+- **Quota card.** The first card shows every developer's plan limits: one row per provider (codex,
+  claude, glm, gemini, muse, cline) with its 5-hour and weekly use (`5h NN%`, `wk NN%`, the window the
+  gate binds on in bold), when it resets, and an `OK` / `STOP` / `?` chip. A `STOP` row says
+  `until HH:MM` (the later of the provider's own stop and the window reset). Scoped buckets get
+  sub-rows (gemini: `argon high/medium` and `flash` apart, since Argon's weekly bucket stops only
+  Argon routes). A reading older than 30 minutes is dimmed with `stale Nh`; a provider without a
+  reading shows a dim `setup` line saying which setting is missing. Each task card also carries one
+  line for its newest run's provider, e.g. `quota: gemini flash OK · wk 39%`. The pane never runs a
+  reader: it only reads the snapshot the dispatcher writes (below), so the card is as fresh as the
+  last dispatch or `node dispatcher/usage.mjs`.
+- **Resume card** (optional). In a project that keeps dated checkpoint files, a card shows the
   newest one's phase table, next action and resume command, with a `Queue resume` button.
 
 ## Requirements
@@ -351,6 +361,8 @@ writes nothing.
   `<task>/<runId>.jsonl` files in them (never `*.raw.jsonl`); at most 500 files per tick, none over
   4 MiB;
 - `<task>/plan.json` in a live dir: at most 64 KiB, dated within a day;
+- `usage/latest.json` in a live dir: the quota snapshot, at most 64 KiB; missing or malformed means no
+  Quota card, never an error;
 - `<project root>/checkpoints/YYYY-MM-DD_*.md`: plain names only, at most 256 KiB, the ten newest;
 - this session's subagent list (`$.agent.list`), for the "Claude subagents" card.
 
@@ -460,6 +472,15 @@ Store a keychain secret (macOS prompts for the value because `-w` comes last; do
     security add-generic-password -s ocli-usage-readers -a muse.MUSE_DEVICE_TOKEN -w
 
 The config file is `~/.config/ocli/usage-readers.json` (override with env `OCLI_USAGE_READERS_CONFIG`).
+
+### The quota snapshot
+
+After every live reading (the doctor, a `--role auto` refresh, a run's usage before and after, a
+recorded provider stop) the dispatcher writes `<live dir>/usage/latest.json`, the file the pane's
+Quota card reads. It is written atomically, merged per provider (a codex-only reading keeps the other
+providers with their own `readAt`), never on `--dry-run`, and a failed write never fails a run. Every
+entry is rebuilt field by field and scrubbed: no account identity, no secret and no home path ever
+reaches it (schema: [`docs/specs/quota-cards.md`](docs/specs/quota-cards.md)).
 
 ## Repository layout
 

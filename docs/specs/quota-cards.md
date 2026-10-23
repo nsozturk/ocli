@@ -1,6 +1,6 @@
 # Quota cards — the pane shows each provider's limits (user request 2026-10-23)
 
-User: "kartlarda kota/limit göstergesiyle başlayalım." The in-house usage readers (0.6) read every provider's
+User: "let's start with a quota/limit indicator on the cards." The in-house usage readers (0.6) read every provider's
 5h / weekly windows, but nothing outside the tree keeps the latest reading, and the pane never shows quota.
 
 ## Measured (lead map, ocli main 3d429c9)

@@ -121,6 +121,14 @@ plugin</strong> that draws those runs as Workflow-style cards with phases, live.
 failed). A running run keeps one line: its sparkline and last action. Press the card's head to open it in place: one block per run says what it was asked, where
 it works, what it is doing and how it ended. Finished cards get an <code>×</code> that moves them to a
 History card at the bottom, by hand only. Ended runs raise one toast each.</p>
+<p><strong>Quota card.</strong> The first card shows every developer's plan limits: one row per
+provider (codex, claude, glm, gemini, muse, cline) with <code>5h NN%</code> and <code>wk NN%</code> (the
+window the gate binds on in bold), the reset time and an <code>OK</code> / <code>STOP</code> /
+<code>?</code> chip; a <code>STOP</code> row says <code>until HH:MM</code>. Gemini gets
+<code>argon</code> and <code>flash</code> sub-rows, readings older than 30 minutes are dimmed, and an
+unavailable provider shows a <code>setup</code> line. Each task card carries one <code>quota:</code>
+line. The pane only reads <code>&lt;live dir&gt;/usage/latest.json</code>, which the dispatcher writes
+after every live reading, scrubbed of identity, secrets and home paths; it never runs a reader.</p>
 </section>
 
 <section id="requirements">

@@ -28,6 +28,11 @@ Quota-aware routing, resumable hand-offs, and a starter config that runs with tw
   `~/.config/ocli/data/raw_usage.sqlite` with secrets stripped. A pool without a reading runs `until-stop`.
   Providers: codex, claude, antigravity, zai, muse, cline. Needs Node.js 22.13+ (`node:sqlite`); browser
   cookies are read on macOS only.
+- **Quota card** in the pane: per-provider 5-hour and weekly use (binding window bold), reset time,
+  `OK` / `STOP` / `?` chips with `until`, scoped Argon/Flash sub-rows, stale dimming after 30 minutes,
+  a `setup` line for unavailable readers, and a `quota:` line on each task card. Fed by
+  `<live dir>/usage/latest.json`, which the dispatcher writes after every live reading (atomic, merged
+  per provider, scrubbed of identity, secrets and home paths). The pane never runs a reader.
 - **Usage doctor**: `node dispatcher/usage.mjs [--json]` prints every developer's quota and, where a
   reader cannot read, which setting is missing (env var, `ocli-usage-readers` Keychain service or
   config key). Claude Code's keychain item is read only with explicit consent (default off).
