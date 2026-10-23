@@ -506,7 +506,7 @@ reaches it (schema: [`docs/specs/quota-cards.md`](docs/specs/quota-cards.md)).
 | `plugin/lib/` | `digest.mjs` and `pane-label.mjs`, byte-identical copies of the dispatcher's, so the installed plugin is self-contained |
 | `tools/gen-fixtures.mjs` | regenerates `plugin/hooks/fixtures.ts` from the captures in `tests/fixtures/` |
 | `dispatcher/` | `dispatch.mjs`, `events.mjs` (normalizer), `witness.mjs` (claims vs trace), `digest.mjs` (night digest), `usage.mjs` (built-in usage readers), `tree-read.mjs` (read-only tree queries), `handoff.mjs` (WIP hand-off), `worktree.mjs` (`--worktree auto`), `plans.mjs` + `provider-plans.example.json` / `.full-roster.json` (caps), `quota.mjs` (pure headroom + `decide` run/split/wait, used by `--role auto --size`), `ranking.mjs` + `model-ranking.example.json` (AA index), `policy.example.json` (starter) and `policy.full-roster.json` |
-| `.github/workflows/test.yml` | CI: `npm ci && npm test` on Ubuntu and macOS, Node 22 and 24 |
+| `.github/workflows/test.yml` | CI: `npm ci && npm test` on Ubuntu and macOS, Node 22 and 24; `claude plugin validate` + `claude plugin test plugin` on macOS |
 | `SECURITY.md`, `CHANGELOG.md` | threat model and reporting; release notes |
 | `docs/LIVE-EVENTS.md` | the normalized live-event contract |
 | `tests/` | dispatcher, normalizer, witness and digest tests (vitest), with one real capture per CLI |
@@ -519,6 +519,11 @@ claude plugin test plugin            # the plugin's own tests, in Claude Code's 
 claude plugin validate .             # the marketplace manifest only
 claude plugin validate plugin        # the plugin manifest, types and hooks
 ```
+
+CI runs all four: the package suite on Ubuntu and macOS (Node 22 and 24), and the plugin job on macOS
+with the npm build of Claude Code (`@anthropic-ai/claude-code@2.1.309`), which needs no credentials for
+these commands. The plugin suites are not run on Linux. If your `claude` is a shell alias that adds
+flags, call the binary directly; `claude plugin test` refuses options before `plugin`.
 
 ## Limitations
 

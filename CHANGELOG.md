@@ -47,7 +47,8 @@ Quota-aware routing, resumable hand-offs, and a starter config that runs with tw
 - **Provider window stops** for Muse ("Subscription quota exhausted … resets"), alongside Cline Pass and Z.ai.
 - `ORCHESTRA_POLICY`, `ORCHESTRA_PLANS` and `ORCHESTRA_RANKING_FILE` overrides; per-window usage
   deltas (5-hour and weekly apart) and summed `tokens` on every node.
-- CI (`.github/workflows/test.yml`): `npm ci && npm test` on Ubuntu and macOS, Node 22 and 24.
+- CI (`.github/workflows/test.yml`): `npm ci && npm test` on Ubuntu and macOS, Node 22 and 24, and the
+  plugin job on macOS (`claude plugin validate` + `claude plugin test plugin`, Claude Code 2.1.309 from npm).
 - `SECURITY.md`: the threat model of running agents headless, and private vulnerability reporting.
 
 ### Changed

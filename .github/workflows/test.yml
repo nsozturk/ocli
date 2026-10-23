@@ -24,3 +24,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  # The pane's own suites run only under Claude Code's plugin test runner. Measured 2026-10-23: the
+  # npm build runs them with an empty HOME and no credentials (211/211). macOS only: the plugin tests
+  # were not measured on Linux.
+  plugin:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code@2.1.309
+      - run: claude plugin validate .
+      - run: claude plugin validate plugin
+      - run: claude plugin test plugin
