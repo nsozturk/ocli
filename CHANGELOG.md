@@ -2,6 +2,16 @@
 
 All notable changes to ocli. Versions follow [semver](https://semver.org); pre-releases are marked.
 
+## 0.6.0-beta.2
+
+Fix release for 0.6.0-beta.1 (its Linux CI was red).
+
+### Fixed
+
+- A timed-out child (`run()` with `timeoutMs`, e.g. the hand-off's git calls) returned only when
+  its grandchildren closed the pipes: on Linux, where `/bin/sh` forks, or with a git hook that spawns
+  a child, the timeout did not hold. It now settles on the child's exit after the SIGKILL.
+
 ## 0.6.0-beta.1
 
 Quota-aware routing, resumable hand-offs, and a starter config that runs with two CLIs.
@@ -62,9 +72,6 @@ Quota-aware routing, resumable hand-offs, and a starter config that runs with tw
 
 ### Fixed
 
-- A timed-out child (`run()` with `timeoutMs`, e.g. the hand-off's git calls) returned only when
-  its grandchildren closed the pipes: on Linux, where `/bin/sh` forks, or with a git hook that spawns
-  a child, the timeout did not hold. It now settles on the child's exit after the SIGKILL.
 - `tokens.metered` over-counted codex: its input already includes cached tokens and its output
   includes reasoning. Metered tokens are now computed per CLI, and quota recomputes them at read time.
 

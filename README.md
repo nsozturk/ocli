@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.6.0--beta.1-8b5cf6" alt="Version 0.6.0-beta.1">
+  <img src="https://img.shields.io/badge/version-0.6.0--beta.2-8b5cf6" alt="Version 0.6.0-beta.2">
   <a href="https://github.com/nsozturk/ocli/actions/workflows/test.yml"><img src="https://github.com/nsozturk/ocli/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?logo=node.js&logoColor=white" alt="Node.js 22.13+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22d3ee" alt="License: MIT"></a>

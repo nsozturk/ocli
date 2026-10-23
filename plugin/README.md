@@ -10,6 +10,7 @@ live dir, and never spawns or owns a CLI process.
 
 ## Changes
 
+- **0.6.0-beta.2** — no pane change; the dispatcher's timed-out `run()` now settles on exit (Linux CI fix).
 - **0.6.0-beta.1** — Quota card (per-provider 5h/weekly limits with OK/STOP chips, scoped Argon/Flash rows, stale dimming, a setup line) and a `quota:` line on task cards, from the dispatcher's `usage/latest.json` snapshot. Quota-aware `--role auto --size`, WIP hand-off and `--continue`, `--worktree auto`, built-in usage readers (ported from CodexBar), Claude Opus developer routes (stream-json mapped into the live contract), full final text on the node. Starter config ships codex + opencode only; see the root `CHANGELOG.md`.
 - **0.5.1** — A failed run whose CLI error event says the plan window is used up (ClinePass, ZAI) records a dated `providerStop`; `--list-routes` and `--role auto` skip that billing pool until the reset. Transient 429s never stop a route.
 - **0.5.0** — Cline (Cline Pass) is a developer CLI: its `--json` stream (tool calls, usage, final text, errors) feeds the cards like the others. The dispatcher records each route's Artificial Analysis Intelligence Index (`aa`), lists routes by it (`--list-routes`) and can pick by it (`--role auto [--min-aa N]`).
