@@ -145,6 +145,15 @@ export function run(command, args, cwd, live = null, timeoutMs = null) {
     });
     child.on('error', error => finish(null, null, error));
     child.on('close', (code, signal) => finish(code, signal));
+    // Past the timeout, settle on 'exit': a grandchild (dash forks the last command of `sh -c`; a git
+    // hook may spawn one) can keep the pipes open long after the SIGKILL, and 'close' waits for them.
+    // ponytail: the grandchild itself keeps running; kill the process group if one ever matters.
+    child.on('exit', (code, signal) => {
+      if (!timedOut) return;
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      finish(code, signal);
+    });
   });
 }
 

@@ -290,6 +290,22 @@ describe('run() timeout', () => {
     expect(r).toMatchObject({ timedOut: true, signal: 'SIGKILL' });
     expect(r.ms).toBeLessThan(4000);
   });
+
+  it('returns at the timeout even when a grandchild keeps the pipes open', async () => {
+    // Linux /bin/sh (dash) forks `sleep` instead of exec'ing it, so the SIGKILL hits only the shell and
+    // the orphaned sleep holds stdout/stderr open; `sleep 5; true` forces that fork on every shell.
+    // Waiting for 'close' would return after 5 s; a git hook that spawns a child does the same.
+    const r = await runChild('/bin/sh', ['-c', 'sleep 5; true'], temp('orchestra-handoff-run-'), null, 50);
+    expect(r).toMatchObject({ timedOut: true, signal: 'SIGKILL' });
+    expect(r.ms).toBeLessThan(4000);
+  }, 10_000);
+
+  it('without a timeout still waits for the pipes: late output from a background job is kept', async () => {
+    // Only the timeout path settles on 'exit'; a normal run must keep everything written before close.
+    const r = await runChild('/bin/sh', ['-c', '(sleep 0.3; echo late) & echo early'], temp('orchestra-handoff-run-'), null, null);
+    expect(r).toMatchObject({ code: 0, timedOut: false });
+    expect(r.stdout).toBe('early\nlate\n');
+  });
 });
 
 describe('dispatch wiring (real spawn of a /bin/sh fake CLI)', () => {
