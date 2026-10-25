@@ -19,8 +19,7 @@
 
 # ocli — Orchestrated CLI
 
-> **ocli (Orchestrated CLI):** run headless coding CLIs — Codex, opencode, Antigravity `agy`, Muse, Cline, Claude Code —
-> under one lead and watch them live in Claude Code as Workflow-style cards.
+ocli is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards.
 
 **ocli** shows what your headless coding CLIs are doing while they do it. When Claude Code
 orchestrates other agents (Codex, opencode, Antigravity `agy`, Muse, Cline, Claude Code itself) as background developers, each
@@ -545,6 +544,50 @@ flags, call the binary directly; `claude plugin test` refuses options before `pl
   `node`, or where the runtime has no `$.process`, it answers `ocli digest unavailable: <reason>`.
 - **CLI flags drift.** The argv in the shipped policies is what each CLI accepted when it was
   verified; re-probe a route after upgrading a CLI.
+
+## Alternatives and how ocli compares
+
+ocli does not replace the coding CLIs it drives; it runs them headless and adds routing, quota gating and a live view. How that differs from other ways of doing the same job:
+
+| Approach | What it gives you | What ocli adds |
+|---|---|---|
+| Each CLI run by hand in its own terminal | Full control of every session | One dispatcher call per run, a normalized live-event file per run, one card per task, plan-quota gating, WIP hand-off |
+| Generic multi-agent frameworks | Libraries for building agents and their loops | No agent loop of its own: it drives the CLIs you already use with their own logins, and records what they did |
+| Terminal multiplexers such as tmux | Several terminals on one screen | Event-level status (tools, tokens, phases, warnings) instead of raw terminal output, plus routing and quota decisions |
+
+## FAQ
+
+### How do I run Codex and opencode as background developers from Claude Code?
+
+Install the ocli-monitor plugin, copy `dispatcher/policy.example.json` to `dispatcher/policy.json` (the starter routes are `implement` = opencode and `reason` = codex), then run `node dispatcher/dispatch.mjs --role implement --task fix-parser --prompt "..."` from your project root. Each call runs one CLI headless and writes a live-event file, which the plugin draws as a Workflow-style card.
+
+### Does ocli need API keys?
+
+No. ocli never asks for a credential, and the developer CLIs use their own logins. Its built-in usage readers read the sessions those CLIs already keep, locally, to fetch plan usage. Some readers (GLM, Cline, Muse) need a key or token that you supply to show quota; a provider without a reading simply runs until it stops itself.
+
+### How does it decide which CLI gets a task?
+
+`--role` names a route in `dispatcher/policy.json`. With `--role auto` it picks the highest-ranked eligible route by the AA Intelligence Index. With `--role auto --size S|M|L` it also checks the provider plans and the recorded runs, and answers `run`, `split` or `wait`; `split` and `wait` print one JSON line, exit with code 3 and spawn nothing.
+
+### Does it work on Linux?
+
+Yes. It needs Node.js 22.13 or newer, and CI runs the package tests on Ubuntu and macOS. The usage readers are macOS first (browser cookies are read from Chromium-family browsers on macOS only), so elsewhere a cookie-based reader reports `unavailable` and that provider runs until it stops itself.
+
+### Is it safe to run agents without approval prompts?
+
+Only the codex routes run inside an OS sandbox. The other example routes pass each CLI's own no-prompt flags, and a git worktree is not a security boundary, so run them in a disposable VM or container, or under a dedicated user account. The agy routes ship unverified and are refused until you set them to ok. The threat model is in [SECURITY.md](SECURITY.md).
+
+### Can I see each provider's quota?
+
+Yes. The first card in the pane shows one row per provider (codex, claude, glm, gemini, muse, cline) with its 5-hour and weekly use, when it resets and an OK, STOP or ? chip. Running `node dispatcher/usage.mjs` prints the same readings and says which setting a reader is missing.
+
+### What happens when a run dies halfway?
+
+When the CLI started and the run ends with a non-zero exit, a block, a provider stop or a signal, whatever it left in the workspace is committed as `wip(<task>)` with an `Ocli-Handoff` trailer, and the run record keeps a hand-off. `--continue` with that node id starts the next developer from that work. It never commits on the default branch.
+
+### Is it an alternative to running each CLI by hand or to tmux?
+
+It does not replace the CLIs; it runs them headless and adds routing by plan quota, WIP hand-offs, scoring that ignores an untouched work tree, and a live card per task. See the comparison above for how this differs from separate terminals, generic multi-agent frameworks and terminal multiplexers.
 
 ## License
 

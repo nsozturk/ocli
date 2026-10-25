@@ -4,32 +4,113 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ocli — Orchestrated CLI for headless coding CLIs in Claude Code</title>
-<meta name="description" content="ocli runs headless coding CLIs (Codex, opencode, agy, Muse, Cline, Claude Code) under one lead, with in-house quota readers and live Workflow-style cards in Claude Code.">
+<meta name="description" content="ocli is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards.">
 <link rel="canonical" href="https://nsozturk.github.io/ocli/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="ocli">
 <meta property="og:title" content="ocli — Orchestrated CLI">
-<meta property="og:description" content="ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse, Cline, Claude Code — under one lead and watch them live in Claude Code as Workflow-style cards.">
+<meta property="og:description" content="ocli is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards.">
 <meta property="og:image" content="https://nsozturk.github.io/ocli/assets/banner.png">
 <meta property="og:url" content="https://nsozturk.github.io/ocli/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="ocli — Orchestrated CLI">
-<meta name="twitter:description" content="Codex, opencode, agy and Muse runs as live Workflow-style cards in Claude Code.">
+<meta name="twitter:description" content="ocli is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards.">
 <meta name="twitter:image" content="https://nsozturk.github.io/ocli/assets/banner.png">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "url": "https://nsozturk.github.io/ocli/",
   "name": "ocli",
-  "softwareVersion": "0.6.0-beta.2",
-  "description": "ocli (Orchestrated CLI): run headless coding CLIs — Codex, opencode, Antigravity agy, Muse, Cline, Claude Code — under one lead and watch them live in Claude Code as Workflow-style cards.",
+  "description": "ocli is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards.",
+  "url": "https://nsozturk.github.io/ocli/",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
+  "softwareVersion": "0.6.0-beta.2",
   "license": "https://opensource.org/licenses/MIT",
-  "author": { "@type": "Person", "name": "Enes Öztürk" },
-  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "codeRepository": "https://github.com/nsozturk/ocli",
+  "downloadUrl": "https://github.com/nsozturk/ocli/releases",
+  "author": {
+    "@type": "Person",
+    "name": "Enes Öztürk"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
   "keywords": "claude code, plugin, codex, opencode, antigravity, gemini, muse, coding agents, orchestration, live events"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "How do I run Codex and opencode as background developers from Claude Code?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Install the ocli-monitor plugin, copy dispatcher/policy.example.json to dispatcher/policy.json (the starter routes are implement = opencode and reason = codex), then run node dispatcher/dispatch.mjs --role implement --task fix-parser --prompt \"...\" from your project root. Each call runs one CLI headless and writes a live-event file, which the plugin draws as a Workflow-style card."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does ocli need API keys?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. ocli never asks for a credential, and the developer CLIs use their own logins. Its built-in usage readers read the sessions those CLIs already keep, locally, to fetch plan usage. Some readers (GLM, Cline, Muse) need a key or token that you supply to show quota; a provider without a reading simply runs until it stops itself."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How does it decide which CLI gets a task?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "--role names a route in dispatcher/policy.json. With --role auto it picks the highest-ranked eligible route by the AA Intelligence Index. With --role auto --size S|M|L it also checks the provider plans and the recorded runs, and answers run, split or wait; split and wait print one JSON line, exit with code 3 and spawn nothing."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it work on Linux?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. It needs Node.js 22.13 or newer, and CI runs the package tests on Ubuntu and macOS. The usage readers are macOS first (browser cookies are read from Chromium-family browsers on macOS only), so elsewhere a cookie-based reader reports unavailable and that provider runs until it stops itself."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is it safe to run agents without approval prompts?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Only the codex routes run inside an OS sandbox. The other example routes pass each CLI's own no-prompt flags, and a git worktree is not a security boundary, so run them in a disposable VM or container, or under a dedicated user account. The agy routes ship unverified and are refused until you set them to ok. The threat model is in SECURITY.md."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I see each provider's quota?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The first card in the pane shows one row per provider (codex, claude, glm, gemini, muse, cline) with its 5-hour and weekly use, when it resets and an OK, STOP or ? chip. Running node dispatcher/usage.mjs prints the same readings and says which setting a reader is missing."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What happens when a run dies halfway?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "When the CLI started and the run ends with a non-zero exit, a block, a provider stop or a signal, whatever it left in the workspace is committed as wip(<task>) with an Ocli-Handoff trailer, and the run record keeps a hand-off. --continue with that node id starts the next developer from that work. It never commits on the default branch."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is it an alternative to running each CLI by hand or to tmux?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It does not replace the CLIs; it runs them headless and adds routing by plan quota, WIP hand-offs, scoring that ignores an untouched work tree, and a live card per task. See the comparison above for how this differs from separate terminals, generic multi-agent frameworks and terminal multiplexers."
+      }
+    }
+  ]
 }
 </script>
 <style>
@@ -53,6 +134,7 @@ main{padding:24px 32px 80px;min-width:0}
 .banner-hero img{width:100%;border-radius:12px;border:1px solid var(--border)}
 section{padding-top:12px}
 h1{font-size:30px;margin:24px 0 8px}
+h3{font-size:16px;margin:20px 0 4px}
 h2{font-size:22px;margin:36px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px}
 pre{position:relative;background:var(--code);border:1px solid var(--border);border-radius:10px;padding:14px 16px;overflow:auto;font-size:13.5px;line-height:1.5}
 pre button{position:absolute;top:8px;right:8px;font-size:12px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card-bg);color:var(--muted);cursor:pointer}
@@ -89,6 +171,7 @@ th{background:var(--card-bg)}
   <a href="#limitations">Limitations</a>
   <div class="group">AI agents</div>
   <a href="#agents">Agent integration</a>
+  <a href="#faq">FAQ</a>
 </aside>
 <main>
 <div class="banner-hero">
@@ -97,8 +180,7 @@ th{background:var(--card-bg)}
 
 <section id="overview">
 <h1>ocli — Orchestrated CLI</h1>
-<p><strong>ocli (Orchestrated CLI)</strong>: run headless coding CLIs — Codex, opencode, Antigravity
-<code>agy</code>, Muse, Cline, Claude Code — under one lead and watch them live in Claude Code as Workflow-style cards.</p>
+<p><strong>ocli</strong> is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards.</p>
 <p>When Claude Code
 orchestrates Codex, opencode, Antigravity <code>agy</code> or Muse as background developers, each
 one runs out of sight. ocli is a <strong>dispatcher</strong> that runs one CLI per call and turns its
@@ -308,6 +390,25 @@ Any tool that writes this contract shows up in the pane. Full specification:
 instructions so a lead agent dispatches through ocli by default.</p>
 <pre><code>node &lt;ocli&gt;/dispatcher/dispatch.mjs --role reason --task review-42 --phase review \
   --title "Review slice 42" --root ../repo-review-42 --prompt "$(cat review.md)"</code></pre>
+</section>
+<section id="faq">
+<h2>FAQ</h2>
+<h3>How do I run Codex and opencode as background developers from Claude Code?</h3>
+<p>Install the ocli-monitor plugin, copy dispatcher/policy.example.json to dispatcher/policy.json (the starter routes are implement = opencode and reason = codex), then run node dispatcher/dispatch.mjs --role implement --task fix-parser --prompt "..." from your project root. Each call runs one CLI headless and writes a live-event file, which the plugin draws as a Workflow-style card.</p>
+<h3>Does ocli need API keys?</h3>
+<p>No. ocli never asks for a credential, and the developer CLIs use their own logins. Its built-in usage readers read the sessions those CLIs already keep, locally, to fetch plan usage. Some readers (GLM, Cline, Muse) need a key or token that you supply to show quota; a provider without a reading simply runs until it stops itself.</p>
+<h3>How does it decide which CLI gets a task?</h3>
+<p>--role names a route in dispatcher/policy.json. With --role auto it picks the highest-ranked eligible route by the AA Intelligence Index. With --role auto --size S|M|L it also checks the provider plans and the recorded runs, and answers run, split or wait; split and wait print one JSON line, exit with code 3 and spawn nothing.</p>
+<h3>Does it work on Linux?</h3>
+<p>Yes. It needs Node.js 22.13 or newer, and CI runs the package tests on Ubuntu and macOS. The usage readers are macOS first (browser cookies are read from Chromium-family browsers on macOS only), so elsewhere a cookie-based reader reports unavailable and that provider runs until it stops itself.</p>
+<h3>Is it safe to run agents without approval prompts?</h3>
+<p>Only the codex routes run inside an OS sandbox. The other example routes pass each CLI's own no-prompt flags, and a git worktree is not a security boundary, so run them in a disposable VM or container, or under a dedicated user account. The agy routes ship unverified and are refused until you set them to ok. The threat model is in SECURITY.md.</p>
+<h3>Can I see each provider's quota?</h3>
+<p>Yes. The first card in the pane shows one row per provider (codex, claude, glm, gemini, muse, cline) with its 5-hour and weekly use, when it resets and an OK, STOP or ? chip. Running node dispatcher/usage.mjs prints the same readings and says which setting a reader is missing.</p>
+<h3>What happens when a run dies halfway?</h3>
+<p>When the CLI started and the run ends with a non-zero exit, a block, a provider stop or a signal, whatever it left in the workspace is committed as wip(&lt;task&gt;) with an Ocli-Handoff trailer, and the run record keeps a hand-off. --continue with that node id starts the next developer from that work. It never commits on the default branch.</p>
+<h3>Is it an alternative to running each CLI by hand or to tmux?</h3>
+<p>It does not replace the CLIs; it runs them headless and adds routing by plan quota, WIP hand-offs, scoring that ignores an untouched work tree, and a live card per task. See the comparison above for how this differs from separate terminals, generic multi-agent frameworks and terminal multiplexers.</p>
 </section>
 </main>
 </div>

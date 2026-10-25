@@ -1,0 +1,30 @@
+# ocli
+
+> ocli is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards.
+
+## What it does
+
+- A dispatcher (Node.js 22.13+, no runtime dependencies) runs one headless coding CLI per call (Codex, opencode, Antigravity agy, Muse, Cline, Claude Code) and turns its native JSON event stream into one normalized live-event file per run.
+- A Claude Code plugin (ocli-monitor) draws those runs as Workflow-style cards with phases, status dots, token counts and the latest tool call.
+- Routing follows provider plan quota (5-hour and weekly windows); a run that dies leaves a WIP hand-off the next developer can continue.
+
+## Install
+
+- Requires Claude Code 2.1.292 or newer, Node.js 22.13 or newer, and the developer CLIs you route to, logged in with their own login.
+- `claude plugin marketplace add "$PWD/ocli"` then `claude plugin install ocli-monitor@ocli`, from a local clone of https://github.com/nsozturk/ocli
+- Copy `dispatcher/policy.example.json` to `dispatcher/policy.json` and set each route's model to one your CLI lists.
+
+## Use
+
+- `node dispatcher/dispatch.mjs --role implement --task fix-parser --phase implement --title "Fix the tokenizer edge cases" --prompt "$(cat brief.md)" --verify "npm test"`
+- Open the pane with `/ocli`; `/ocli-digest` summarizes the last 12 hours; `node dispatcher/usage.mjs` prints every developer's quota.
+
+## Docs
+
+- [README](https://github.com/nsozturk/ocli): install, flags, configuration, FAQ
+- [AGENTS.md](https://github.com/nsozturk/ocli/blob/main/AGENTS.md): contract for coding agents working in or with the repo
+- [SECURITY.md](https://github.com/nsozturk/ocli/blob/main/SECURITY.md): threat model and reporting
+- [CHANGELOG](https://github.com/nsozturk/ocli/blob/main/CHANGELOG.md): release notes
+- [Live-event contract](https://github.com/nsozturk/ocli/blob/main/docs/LIVE-EVENTS.md): normalized event format
+- [Documentation site](https://nsozturk.github.io/ocli/)
+- [Releases](https://github.com/nsozturk/ocli/releases)

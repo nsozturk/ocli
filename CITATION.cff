@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use ocli, please cite it using these metadata."
+title: ocli
+type: software
+authors:
+  - family-names: Öztürk
+    given-names: Enes
+version: 0.6.0-beta.2
+date-released: 2026-10-23
+license: MIT
+repository-code: "https://github.com/nsozturk/ocli"
+url: "https://nsozturk.github.io/ocli/"
+abstract: "ocli is a free, open-source orchestrator for Claude Code that runs headless coding CLIs under one lead, routes work by plan quota and shows every run live as Workflow-style cards."
+keywords:
+  - claude-code
+  - claude-code-plugin
+  - codex
+  - opencode
+  - gemini
+  - antigravity
+  - muse
+  - cline
+  - coding-agents
+  - orchestration
+  - quota-routing
+  - live-events
