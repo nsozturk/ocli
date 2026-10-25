@@ -30,6 +30,23 @@ Workflow-style cards with phases, status dots, token counts and the latest tool 
 
 ## The card
 
+<p align="center">
+  <img src="assets/screenshots/full-window.png" alt="Claude Code with the ocli pane: a Quota card with per-provider 5-hour and weekly use, and one card per task with phases, models and cache ratio" width="100%">
+</p>
+
+<table>
+<tr>
+<td width="50%"><img src="assets/screenshots/pane-running.png" alt="ocli pane while a GLM-5.3 run is in progress: the task card shows Running, its phase and the last tool call"></td>
+<td width="50%"><img src="assets/screenshots/pane-completed.png" alt="ocli pane after the runs: every task card Completed with tokens, phases and cache ratio"></td>
+</tr>
+<tr>
+<td align="center">A run in progress</td>
+<td align="center">After the runs</td>
+</tr>
+</table>
+
+Real runs of a small demo project: GLM-5.3 (opencode) and GPT-6.1 Sol (codex) as developers. In text:
+
 ```
 ╭──────────────────────────────────────────────────────────╮
 │ ▸ fix-parser                                       4m12s │   press ▸ to open it in place; × once every run ended
